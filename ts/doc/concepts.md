@@ -87,23 +87,31 @@ position, which it decides from the active rule alone — it is stateless:
   `#VL` token. So `1px solid #fff` becomes a single value.
 
 - **Key mode** — otherwise. It peeks ahead: if a top-level `{` is
-  reached before any `;`/`}`, the text is a **selector** (the whole
-  prelude, trimmed, as `#TX`); if a `;`/`}`/end-of-input is reached
-  first, it is a **property name** (the identifier, as `#TX`). A leading
-  `@` instead emits a distinct `#AT` at-keyword token.
+  reached before any `;`/`}`, the text is a **selector** (as `#TX`); if a
+  `;`/`}`/end-of-input is reached first, it is a **property name** (the
+  identifier, as `#TX`). A leading `@` instead emits a distinct `#AT`
+  at-keyword token. A selector ends at the next top-level `,` as well, and
+  the comma itself is emitted as a `#GC` token, so a group like `h1, h2`
+  arrives as two `#TX` keys rather than one split string. (A block at-rule
+  prelude, `@media screen, print`, is read whole up to `{` — its commas
+  are a media-query list.)
 
 Both scans skip over quoted strings, `/* */` comments, and balanced
-`()` / `[]`, so a `;` inside `url(...)` or a `{` inside an attribute
-selector does not fool the classifier.
+`()` / `[]`, so a `;` inside `url(...)`, a `{` inside an attribute
+selector, or a `,` inside `:not(.a, .b)` does not fool the classifier.
 
 ## Selector vs property vs at-rule
 
-The matcher's lookahead is what lets the text tokens stand for three
+The matcher's lookahead is what lets the text tokens stand for several
 different things, disambiguated in the grammar by the key token and the
 **next** token:
 
 - `#TX #CL` (`property :`) → a **declaration**; the value follows.
 - `#TX #OB` (`selector {`) → a **nested ruleset**; the block follows.
+- `#TX #GC` (`selector ,`) → one selector of a **group**; its key is held
+  on a kept `pend` list and the rule loops for the next selector. When the
+  ruleset's value is built, it is assigned to every pending key (deep-copied
+  so each is independent) — no selector string is ever split.
 - `#AT` (`@keyword`) → a **statement at-rule**; the grammar pushes `val`
   straight away, so the params are read as the value.
 

@@ -17,12 +17,13 @@
 #     "@media screen": { "a": { "color": "blue" } }
 #   }
 #
-# The custom cssToken lex matcher emits three text tokens by position:
-#   - #TX : a key in key position — a selector (whole prelude up to "{",
-#           when a "{" is reached before any ";"/"}") or a property name
-#           (the identifier up to ":", otherwise).
+# The custom cssToken lex matcher emits the text tokens by position:
+#   - #TX : a key in key position — one selector (up to a top-level "," or
+#           "{") or a property name (the identifier up to ":").
 #   - #AT : a statement at-keyword (e.g. "@import") — a key whose value
 #           follows without a ":" separator.
+#   - #GC : a top-level comma separating the selectors of a group (so each
+#           selector arrives as its own #TX key, never a split string).
 #   - #VL : a value, in value position (when the val rule is open): the run
 #           of text up to the next top-level ";" or "}" (trimmed), so
 #           '1px solid #fff' is one value.
@@ -50,32 +51,43 @@
     }
 
     # An explicit "{ ... }" block: a declaration block or a nested ruleset.
+    # @cssClearPend gives the block a fresh (empty) pending-key list so the
+    # enclosing ruleset's selectors don't leak into this block's members.
     block: {
       open: [
         # Empty block: {}.
         { s: '#OB #CB' b: 1 a: '@object$' g: 'css,block,empty' }
-        { s: '#OB' a: '@object$' p: pair g: 'css,block' }
+        { s: '#OB' a: ['@object$' '@cssClearPend'] p: pair g: 'css,block' }
       ]
       close: [
         { s: '#CB' g: 'css,block,end' }
       ]
     }
 
-    # A member of a map. Three shapes, disambiguated by the key token and
-    # what follows it: #TX ":" -> declaration, #TX "{" -> nested ruleset,
-    # #AT -> statement at-rule. In every case the value side is the val rule,
-    # so the matcher reads a value purely because val is open (no flag).
-    # @key$ captures the key; @cssSetval assigns the built value, expanding a
-    # comma-grouped selector key (e.g. "h1, h2") into one entry per selector.
+    # A member of a map. Four open shapes, disambiguated by the key token and
+    # what follows it:
+    #   #TX ":"  -> declaration       (single key, captured with @key$)
+    #   #AT      -> statement at-rule  (single key, captured with @key$)
+    #   #TX ","  -> grouped selector   (pend this key, loop for the next)
+    #   #TX "{"  -> ruleset (last/only selector: pend the key, push the block)
+    # A selector group accumulates its keys on the kept "pend" list via
+    # @cssPendKey across the open-phase "r: pair" loop; @cssSetval then assigns
+    # the built value to every pending key (or to the single @key$ key for a
+    # declaration / at-rule). No selector text is split — each selector arrives
+    # as its own #TX token, with #GC commas between them.
     pair: {
       open: [
         # Declaration:  property : value
         { s: '#TX #CL' a: '@key$' p: val g: 'css,decl' }
-        # Ruleset:  selector { ... }   (b:1 re-feeds "{" to the val/block).
-        { s: '#TX #OB' b: 1 a: '@key$' p: val g: 'css,rule' }
         # Statement at-rule:  @import "x"   The at-keyword (#AT) pushes val
         # directly; val then reads the params as a value (#VL).
         { s: '#AT' a: '@key$' p: val g: 'css,atrule' }
+        # Grouped selector:  selector ,   Pend the key and loop for the next
+        # selector (k.pend propagates across the replace).
+        { s: '#TX #GC' a: '@cssPendKey' r: pair g: 'css,rule,group' }
+        # Ruleset (last/only selector):  selector { ... }   Pend the key, then
+        # push val (b:1 re-feeds "{" to the val/block).
+        { s: '#TX #OB' b: 1 a: '@cssPendKey' p: val g: 'css,rule' }
       ]
       close: [
         # Trailing ";" before "}" -> end of block (re-fed to block close).

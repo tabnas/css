@@ -92,12 +92,12 @@ applied together through one `GrammarSpec`:
    and `#AT` (statement at-keyword).
 
 4. **Grammar overlay.** Four rules — `stylesheet`, `block`, `pair`,
-   `val` — drive the structure. `pair` has three open shapes,
+   `val` — drive the structure. `pair` has four open shapes,
    disambiguated by the key token and what follows: `#TX #CL`
-   (declaration), `#TX #OB` (nested ruleset), `#AT` (statement at-rule).
-   Its close alts handle `;`-separated declarations, trailing `;`,
-   block/sheet end,
-   and an implicit next ruleset.
+   (declaration), `#TX #OB` (ruleset, last/only selector), `#TX #GC`
+   (grouped selector — pend the key and loop), and `#AT` (statement
+   at-rule). Its close alts handle `;`-separated declarations, trailing
+   `;`, block/sheet end, and an implicit next ruleset.
 
 ## One context-sensitive matcher
 
@@ -112,14 +112,29 @@ looks only at the active rule to choose what to emit:
   grammar pushes `val` exactly at a value position (after a `:`, or after
   an `#AT` at-keyword), so no flag or lookbehind is needed.
 - **Key mode** — peek ahead to choose between a **selector** (a top-level
-  `{` is reached first → the whole prelude, trimmed, as `#TX`) and a
-  **property name** (a top-level `;`/`}` is reached first → the
-  identifier up to `:`, as `#TX`). A leading `@` instead emits a distinct
-  `#AT` at-keyword token.
+  `{` is reached first → emitted as `#TX`) and a **property name** (a
+  top-level `;`/`}` is reached first → the identifier up to `:`, as `#TX`).
+  A leading `@` instead emits a distinct `#AT` at-keyword token. A selector
+  ends at the next top-level `,` as well, with the comma emitted as a `#GC`
+  token, so a group (`h1, h2`) arrives as two `#TX` keys — never a split
+  string. (A block at-rule prelude, `@media screen, print`, is read whole
+  up to `{`.)
 
 While scanning, the matcher skips over strings, `( )`, `[ ]`, and
-comments, so the punctuation inside `rgb(1, 2, 3)`, `url(http://…)`, or
-`[type=text]` never ends a key or value prematurely.
+comments, so the punctuation inside `rgb(1, 2, 3)`, `url(http://…)`,
+`[type=text]`, or `:not(.a, .b)` never ends a key or value prematurely.
+
+## Selector groups
+
+A comma-grouped selector is collected structurally, not by splitting a
+string. Each selector arrives as its own `#TX` token (with `#GC` commas
+between), and three grammar-local actions on the kept `pend` list build
+the result: `@cssPendKey` appends each selector across the open-phase
+`r: pair` loop, `@cssSetval` assigns the built block to every pending key
+(deep-copied so the entries are independent), and `@cssClearPend` resets
+`pend` when a block opens so an enclosing ruleset's selectors don't leak
+in. The kept map (`K`) propagates on push and replace, so `pend` is reset
+by reassignment, never mutated in place.
 
 ## The statement-at-rule token
 

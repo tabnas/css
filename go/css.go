@@ -52,12 +52,13 @@ const grammarText = `
 #     "@media screen": { "a": { "color": "blue" } }
 #   }
 #
-# The custom cssToken lex matcher emits three text tokens by position:
-#   - #TX : a key in key position — a selector (whole prelude up to "{",
-#           when a "{" is reached before any ";"/"}") or a property name
-#           (the identifier up to ":", otherwise).
+# The custom cssToken lex matcher emits the text tokens by position:
+#   - #TX : a key in key position — one selector (up to a top-level "," or
+#           "{") or a property name (the identifier up to ":").
 #   - #AT : a statement at-keyword (e.g. "@import") — a key whose value
 #           follows without a ":" separator.
+#   - #GC : a top-level comma separating the selectors of a group (so each
+#           selector arrives as its own #TX key, never a split string).
 #   - #VL : a value, in value position (when the val rule is open): the run
 #           of text up to the next top-level ";" or "}" (trimmed), so
 #           '1px solid #fff' is one value.
@@ -85,32 +86,43 @@ const grammarText = `
     }
 
     # An explicit "{ ... }" block: a declaration block or a nested ruleset.
+    # @cssClearPend gives the block a fresh (empty) pending-key list so the
+    # enclosing ruleset's selectors don't leak into this block's members.
     block: {
       open: [
         # Empty block: {}.
         { s: '#OB #CB' b: 1 a: '@object$' g: 'css,block,empty' }
-        { s: '#OB' a: '@object$' p: pair g: 'css,block' }
+        { s: '#OB' a: ['@object$' '@cssClearPend'] p: pair g: 'css,block' }
       ]
       close: [
         { s: '#CB' g: 'css,block,end' }
       ]
     }
 
-    # A member of a map. Three shapes, disambiguated by the key token and
-    # what follows it: #TX ":" -> declaration, #TX "{" -> nested ruleset,
-    # #AT -> statement at-rule. In every case the value side is the val rule,
-    # so the matcher reads a value purely because val is open (no flag).
-    # @key$ captures the key; @cssSetval assigns the built value, expanding a
-    # comma-grouped selector key (e.g. "h1, h2") into one entry per selector.
+    # A member of a map. Four open shapes, disambiguated by the key token and
+    # what follows it:
+    #   #TX ":"  -> declaration       (single key, captured with @key$)
+    #   #AT      -> statement at-rule  (single key, captured with @key$)
+    #   #TX ","  -> grouped selector   (pend this key, loop for the next)
+    #   #TX "{"  -> ruleset (last/only selector: pend the key, push the block)
+    # A selector group accumulates its keys on the kept "pend" list via
+    # @cssPendKey across the open-phase "r: pair" loop; @cssSetval then assigns
+    # the built value to every pending key (or to the single @key$ key for a
+    # declaration / at-rule). No selector text is split — each selector arrives
+    # as its own #TX token, with #GC commas between them.
     pair: {
       open: [
         # Declaration:  property : value
         { s: '#TX #CL' a: '@key$' p: val g: 'css,decl' }
-        # Ruleset:  selector { ... }   (b:1 re-feeds "{" to the val/block).
-        { s: '#TX #OB' b: 1 a: '@key$' p: val g: 'css,rule' }
         # Statement at-rule:  @import "x"   The at-keyword (#AT) pushes val
         # directly; val then reads the params as a value (#VL).
         { s: '#AT' a: '@key$' p: val g: 'css,atrule' }
+        # Grouped selector:  selector ,   Pend the key and loop for the next
+        # selector (k.pend propagates across the replace).
+        { s: '#TX #GC' a: '@cssPendKey' r: pair g: 'css,rule,group' }
+        # Ruleset (last/only selector):  selector { ... }   Pend the key, then
+        # push val (b:1 re-feeds "{" to the val/block).
+        { s: '#TX #OB' b: 1 a: '@cssPendKey' p: val g: 'css,rule' }
       ]
       close: [
         # Trailing ";" before "}" -> end of block (re-fed to block close).
@@ -164,13 +176,18 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 	// instance, so the matcher emits the same tin the grammar's `#AT` alts
 	// resolve to.
 	atTin := j.Token("#AT")
+	gcTin := j.Token("#GC")
 
-	// @cssSetval is the one grammar-local action: it assigns a pair's built
-	// value into the enclosing map, expanding a comma-grouped selector key
-	// (e.g. "h1, h2") into a separate entry per selector. Everything else uses
+	// Three grammar-local actions handle selector grouping structurally (no
+	// string splitting): @cssPendKey accumulates each grouped selector token
+	// as a pending key, @cssSetval assigns the built value to every pending
+	// key, and @cssClearPend resets the pending list when entering a block so
+	// an enclosing ruleset's selectors don't leak in. Everything else uses
 	// builtin ($) actions.
 	gs, err := parseGrammarText(grammarText, map[jsonic.FuncRef]any{
-		"@cssSetval": jsonic.AltAction(cssSetval),
+		"@cssPendKey":   jsonic.AltAction(cssPendKey),
+		"@cssSetval":    jsonic.AltAction(cssSetval),
+		"@cssClearPend": jsonic.AltAction(cssClearPend),
 	})
 	if err != nil {
 		return err
@@ -230,7 +247,7 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 				// Runs ahead of the fixed-token matcher so it owns selectors,
 				// property names and values; it defers on the fixed
 				// punctuation and on whitespace/comments.
-				"cssToken": {Order: 100000, Make: buildCssTokenMatcher(lowercaseProperties, lowercaseValues, atTin)},
+				"cssToken": {Order: 100000, Make: buildCssTokenMatcher(lowercaseProperties, lowercaseValues, atTin, gcTin)},
 			},
 		},
 	}
@@ -327,7 +344,7 @@ func Parse(src string, opts ...CssOptions) (any, error) {
 // a value position (after `:`, or after an #AT key). This keeps the logic
 // identical to the TS plugin, which likewise cannot read the grammar's
 // expected-token columns or inject lookahead tokens.
-func buildCssTokenMatcher(lowercaseProperties, lowercaseValues bool, atTin jsonic.Tin) jsonic.MakeLexMatcher {
+func buildCssTokenMatcher(lowercaseProperties, lowercaseValues bool, atTin, gcTin jsonic.Tin) jsonic.MakeLexMatcher {
 	return func(_ *jsonic.LexConfig, _ *jsonic.Options) jsonic.LexMatcher {
 		return func(lex *jsonic.Lex, rule *jsonic.Rule) *jsonic.Token {
 			pnt := lex.Cursor()
@@ -366,19 +383,37 @@ func buildCssTokenMatcher(lowercaseProperties, lowercaseValues bool, atTin jsoni
 				return tkn
 			}
 
-			// Key position. A selector may begin with `:` (a pseudo-class), so
-			// `:` is not block punctuation here.
+			// Key position. A top-level comma separates the selectors of a
+			// group (`h1, h2`); emit it as a #GC token so the grammar can
+			// collect each selector as its own key. (Commas inside selectors /
+			// values / at-rule preludes never reach here — they are consumed
+			// as text below.)
+			if c == ',' {
+				tkn := lex.Token("#GC", gcTin, ",", ",")
+				pnt.SI = sI + 1
+				pnt.CI++
+				return tkn
+			}
+			// A selector may begin with `:` (a pseudo-class), so `:` is not
+			// block punctuation here.
 			if c == '{' || c == '}' || c == ';' {
 				return nil
 			}
 			kind, idx := scanToBraceOrEnd(src, sI)
 			if kind == selectorKind {
-				// A selector or block at-rule prelude: the whole run up to `{`.
-				raw := src[sI:idx]
+				// A single selector (one member of a possible group) ends at
+				// the next top-level `,` or `{`. A block at-rule prelude
+				// (`@media …`) is kept whole up to `{` — its commas are a
+				// media-query list, not a group.
+				end := idx
+				if src[sI] != '@' {
+					end = scanSelectorEnd(src, sI)
+				}
+				raw := src[sI:end]
 				sel := strings.TrimRight(raw, " \t\r\n")
 				tkn := lex.Token("#TX", jsonic.TinTX, sel, raw)
-				pnt.SI = idx
-				pnt.CI += idx - sI
+				pnt.SI = end
+				pnt.CI += end - sI
 				return tkn
 			}
 			// A property name or a statement at-keyword: the identifier up to
@@ -453,6 +488,35 @@ func scanToBraceOrEnd(src string, i int) (int, int) {
 	return declKind, i
 }
 
+// scanSelectorEnd returns the index of the next top-level `,` (a group
+// separator) or `{` (or end-of-input). Strings, (), [] and comments are
+// skipped, so a comma inside `:not(.a, .b)` is part of the selector.
+func scanSelectorEnd(src string, i int) int {
+	depth := 0
+	for i < len(src) {
+		c := src[i]
+		if c == '"' || c == '\'' {
+			i = skipString(src, i)
+			continue
+		}
+		if c == '/' && i+1 < len(src) && src[i+1] == '*' {
+			i = skipComment(src, i)
+			continue
+		}
+		if c == '(' || c == '[' {
+			depth++
+		} else if c == ')' || c == ']' {
+			if depth > 0 {
+				depth--
+			}
+		} else if depth == 0 && (c == ',' || c == '{') {
+			return i
+		}
+		i++
+	}
+	return i
+}
+
 // scanValueEnd returns the index of the next top-level `;` or `}` (or
 // end-of-input). Strings, (), [] and comments are skipped.
 func scanValueEnd(src string, i int) int {
@@ -517,12 +581,24 @@ func isPropChar(c byte) bool {
 		c == '-' || c == '_'
 }
 
+// cssPendKey records the just-matched key token (a selector of a group) onto
+// the rule's kept "pend" list. K propagates across the open-phase `r: pair`
+// loop, so each selector in `h1, h2, …` accumulates a pending key.
+func cssPendKey(r *jsonic.Rule, _ *jsonic.Context) {
+	if r.O0 == nil {
+		return
+	}
+	sel, _ := r.O0.Val.(string)
+	pend, _ := r.K["pend"].([]any)
+	r.K["pend"] = append(pend, sel)
+}
+
 // cssSetval assigns the pair's built value (r.Child.Node) into the enclosing
-// map under the captured key. A comma-grouped selector key like "h1, h2" is
-// expanded into one entry per selector, each with its own copy of the value
-// (so the entries are independent). At-rule preludes (e.g.
-// "@media screen, print") are left intact — their commas are a media-query
-// list, not a selector group — as are keys with no top-level comma.
+// map. A ruleset has collected one or more keys on K["pend"] (one per grouped
+// selector); the value is assigned to each, with its own deep copy so the
+// entries stay independent. A declaration / statement at-rule has a single
+// captured key in U["key"]. No selector text is parsed or split here — the
+// keys arrived as separate tokens from the lexer.
 func cssSetval(r *jsonic.Rule, _ *jsonic.Context) {
 	if r.Child == nil {
 		return
@@ -531,61 +607,28 @@ func cssSetval(r *jsonic.Rule, _ *jsonic.Context) {
 	if !ok {
 		return
 	}
-	key, _ := r.U["key"].(string)
 	val := r.Child.Node
-	if len(key) > 0 && key[0] != '@' && strings.IndexByte(key, ',') >= 0 {
-		if sels := splitSelectors(key); len(sels) > 1 {
-			for i, sel := range sels {
-				if i == 0 {
-					m[sel] = val
-				} else {
-					m[sel] = cloneNode(val)
-				}
+	if pend, ok := r.K["pend"].([]any); ok && len(pend) > 0 {
+		for i, k := range pend {
+			sel, _ := k.(string)
+			if i == 0 {
+				m[sel] = val
+			} else {
+				m[sel] = cloneNode(val)
 			}
-			return
 		}
+		r.K["pend"] = []any{} // reset for the next member at this level
+		return
 	}
+	key, _ := r.U["key"].(string)
 	m[key] = val
 }
 
-// splitSelectors splits a selector group on top-level commas, skipping commas
-// inside strings, `()`/`[]` and comments (so `:not(.a, .b)` stays one
-// selector). Each part is trimmed; empty parts are dropped.
-func splitSelectors(s string) []string {
-	var out []string
-	depth := 0
-	start := 0
-	i := 0
-	for i < len(s) {
-		c := s[i]
-		if c == '"' || c == '\'' {
-			i = skipString(s, i)
-			continue
-		}
-		if c == '/' && i+1 < len(s) && s[i+1] == '*' {
-			i = skipComment(s, i)
-			continue
-		}
-		if c == '(' || c == '[' {
-			depth++
-		} else if c == ')' || c == ']' {
-			if depth > 0 {
-				depth--
-			}
-		} else if depth == 0 && c == ',' {
-			out = append(out, strings.TrimSpace(s[start:i]))
-			start = i + 1
-		}
-		i++
-	}
-	out = append(out, strings.TrimSpace(s[start:]))
-	res := out[:0]
-	for _, p := range out {
-		if p != "" {
-			res = append(res, p)
-		}
-	}
-	return res
+// cssClearPend resets the pending-key list for a freshly opened block. The
+// list is given a NEW slice (not cleared in place), so the enclosing ruleset's
+// own K["pend"] — shared up the stack — keeps its selectors.
+func cssClearPend(r *jsonic.Rule, _ *jsonic.Context) {
+	r.K["pend"] = []any{}
 }
 
 // cloneNode deep-copies a parsed value (map / slice / scalar) so grouped
@@ -682,8 +725,22 @@ func buildGrammarAlts(def any) []*jsonic.GrammarAltSpec {
 		if r, ok := m["r"].(string); ok {
 			ga.R = r
 		}
-		if a, ok := m["a"].(string); ok {
-			ga.A = jsonic.FuncRef(a)
+		if a, ok := m["a"]; ok {
+			switch av := a.(type) {
+			case string:
+				ga.A = jsonic.FuncRef(av)
+			case []any:
+				// An ordered list of action refs, e.g. ['@object$' '@cssClearPend'].
+				refs := make([]any, len(av))
+				for i, v := range av {
+					if s, ok := v.(string); ok {
+						refs[i] = jsonic.FuncRef(s)
+					} else {
+						refs[i] = v
+					}
+				}
+				ga.A = refs
+			}
 		}
 		if c, ok := m["c"]; ok {
 			switch cv := c.(type) {

@@ -45,12 +45,13 @@ const grammarText = `
 #     "@media screen": { "a": { "color": "blue" } }
 #   }
 #
-# The custom cssToken lex matcher emits three text tokens by position:
-#   - #TX : a key in key position — a selector (whole prelude up to "{",
-#           when a "{" is reached before any ";"/"}") or a property name
-#           (the identifier up to ":", otherwise).
+# The custom cssToken lex matcher emits the text tokens by position:
+#   - #TX : a key in key position — one selector (up to a top-level "," or
+#           "{") or a property name (the identifier up to ":").
 #   - #AT : a statement at-keyword (e.g. "@import") — a key whose value
 #           follows without a ":" separator.
+#   - #GC : a top-level comma separating the selectors of a group (so each
+#           selector arrives as its own #TX key, never a split string).
 #   - #VL : a value, in value position (when the val rule is open): the run
 #           of text up to the next top-level ";" or "}" (trimmed), so
 #           '1px solid #fff' is one value.
@@ -78,32 +79,43 @@ const grammarText = `
     }
 
     # An explicit "{ ... }" block: a declaration block or a nested ruleset.
+    # @cssClearPend gives the block a fresh (empty) pending-key list so the
+    # enclosing ruleset's selectors don't leak into this block's members.
     block: {
       open: [
         # Empty block: {}.
         { s: '#OB #CB' b: 1 a: '@object$' g: 'css,block,empty' }
-        { s: '#OB' a: '@object$' p: pair g: 'css,block' }
+        { s: '#OB' a: ['@object$' '@cssClearPend'] p: pair g: 'css,block' }
       ]
       close: [
         { s: '#CB' g: 'css,block,end' }
       ]
     }
 
-    # A member of a map. Three shapes, disambiguated by the key token and
-    # what follows it: #TX ":" -> declaration, #TX "{" -> nested ruleset,
-    # #AT -> statement at-rule. In every case the value side is the val rule,
-    # so the matcher reads a value purely because val is open (no flag).
-    # @key$ captures the key; @cssSetval assigns the built value, expanding a
-    # comma-grouped selector key (e.g. "h1, h2") into one entry per selector.
+    # A member of a map. Four open shapes, disambiguated by the key token and
+    # what follows it:
+    #   #TX ":"  -> declaration       (single key, captured with @key$)
+    #   #AT      -> statement at-rule  (single key, captured with @key$)
+    #   #TX ","  -> grouped selector   (pend this key, loop for the next)
+    #   #TX "{"  -> ruleset (last/only selector: pend the key, push the block)
+    # A selector group accumulates its keys on the kept "pend" list via
+    # @cssPendKey across the open-phase "r: pair" loop; @cssSetval then assigns
+    # the built value to every pending key (or to the single @key$ key for a
+    # declaration / at-rule). No selector text is split — each selector arrives
+    # as its own #TX token, with #GC commas between them.
     pair: {
       open: [
         # Declaration:  property : value
         { s: '#TX #CL' a: '@key$' p: val g: 'css,decl' }
-        # Ruleset:  selector { ... }   (b:1 re-feeds "{" to the val/block).
-        { s: '#TX #OB' b: 1 a: '@key$' p: val g: 'css,rule' }
         # Statement at-rule:  @import "x"   The at-keyword (#AT) pushes val
         # directly; val then reads the params as a value (#VL).
         { s: '#AT' a: '@key$' p: val g: 'css,atrule' }
+        # Grouped selector:  selector ,   Pend the key and loop for the next
+        # selector (k.pend propagates across the replace).
+        { s: '#TX #GC' a: '@cssPendKey' r: pair g: 'css,rule,group' }
+        # Ruleset (last/only selector):  selector { ... }   Pend the key, then
+        # push val (b:1 re-feeds "{" to the val/block).
+        { s: '#TX #OB' b: 1 a: '@cssPendKey' p: val g: 'css,rule' }
       ]
       close: [
         # Trailing ";" before "}" -> end of block (re-fed to block close).
@@ -159,6 +171,7 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
             '#CA': '; — declaration terminator',
             '#TX': 'key: a selector or property name',
             '#AT': 'key: a statement at-keyword (e.g. @import)',
+            '#GC': ', — selector-group separator',
             '#VL': 'value: a declaration value (raw text)',
           })
         },
@@ -167,11 +180,17 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
   })
 
   const grammarDef = new Tabnas().use(jsonic).parse(grammarText)
-  // @cssSetval is the one grammar-local action: it assigns a pair's built
-  // value into the enclosing map, expanding a comma-grouped selector key
-  // (e.g. `h1, h2`) into a separate entry per selector. Everything else uses
-  // builtin ($) actions.
-  grammarDef.ref = { '@cssSetval': cssSetval }
+  // Three grammar-local actions handle selector grouping structurally (no
+  // string splitting): @cssPendKey accumulates each grouped selector token as
+  // a pending key, @cssSetval assigns the built value to every pending key,
+  // and @cssClearPend resets the pending list when entering a block so an
+  // enclosing ruleset's selectors don't leak in. Everything else uses builtin
+  // ($) actions.
+  grammarDef.ref = {
+    '@cssPendKey': cssPendKey,
+    '@cssSetval': cssSetval,
+    '@cssClearPend': cssClearPend,
+  }
 
   // All jsonic option overrides live on the grammar object so the plugin
   // applies them atomically alongside its rule alts.
@@ -284,16 +303,30 @@ function buildCssTokenMatcher(
         return tkn
       }
 
-      // Key position. A selector may begin with `:` (a pseudo-class), so `:`
-      // is NOT block punctuation here.
+      // Key position. A top-level comma separates the selectors of a group
+      // (`h1, h2`); emit it as a #GC token so the grammar can collect each
+      // selector as its own key. (Commas inside selectors / values / at-rule
+      // preludes never reach here — they are consumed as text below.)
+      if (',' === c) {
+        const tkn = lex.token('#GC', ',', ',', pnt)
+        pnt.sI = sI + 1
+        pnt.cI = cI + 1
+        return tkn
+      }
+      // A selector may begin with `:` (a pseudo-class), so `:` is NOT block
+      // punctuation here.
       if ('{' === c || '}' === c || ';' === c) return undefined
       const brace = scanToBraceOrEnd(src, sI)
       if (brace.kind === 'selector') {
-        // A selector or block at-rule prelude: the whole run up to `{`.
-        const sel = src.substring(sI, brace.index).replace(/\s+$/, '')
-        const tkn = lex.token('#TX', sel, src.substring(sI, brace.index), pnt)
-        pnt.sI = brace.index
-        pnt.cI = cI + (brace.index - sI)
+        // A single selector (one member of a possible group) ends at the next
+        // top-level `,` or `{`. A block at-rule prelude (`@media …`) is kept
+        // whole up to `{` — its commas are a media-query list, not a group.
+        const end =
+          '@' === src[sI] ? brace.index : scanSelectorEnd(src, sI)
+        const sel = src.substring(sI, end).replace(/\s+$/, '')
+        const tkn = lex.token('#TX', sel, src.substring(sI, end), pnt)
+        pnt.sI = end
+        pnt.cI = cI + (end - sI)
         return tkn
       }
       // A property name or a statement at-keyword: the identifier up to `:`,
@@ -343,6 +376,33 @@ function scanToBraceOrEnd(
     i++
   }
   return { kind: 'decl', index: i }
+}
+
+// Scan a single selector: return the index of the next top-level `,` (a
+// group separator) or `{` (or end-of-input). Strings, (), [] and comments
+// are skipped, so a comma inside `:not(.a, .b)` is part of the selector.
+function scanSelectorEnd(src: string, i: number): number {
+  let depth = 0
+  while (i < src.length) {
+    const c = src[i]
+    if ('"' === c || '\'' === c) {
+      i = skipString(src, i)
+      continue
+    }
+    if ('/' === c && '*' === src[i + 1]) {
+      i = skipComment(src, i)
+      continue
+    }
+    if ('(' === c || '[' === c) {
+      depth++
+    } else if (')' === c || ']' === c) {
+      if (depth > 0) depth--
+    } else if (0 === depth && (',' === c || '{' === c)) {
+      return i
+    }
+    i++
+  }
+  return i
 }
 
 // Scan a declaration value: return the index of the next top-level `;` or
@@ -405,58 +465,41 @@ function isPropChar(c: number): boolean {
   )
 }
 
+// Grammar action: record the just-matched key token (a selector of a group)
+// onto the rule's kept `pend` list. `k` propagates across the open-phase
+// `r: pair` loop, so each selector in `h1, h2, …` accumulates a pending key.
+function cssPendKey(r: Rule, _ctx: Context) {
+  const pend: string[] = (r.k.pend as string[]) || (r.k.pend = [])
+  const tok = r.o[0]
+  if (tok) pend.push(tok.val)
+}
+
 // Grammar action: assign the pair's built value (r.child.node) into the
-// enclosing map under the captured key. A comma-grouped selector key like
-// `h1, h2` is expanded into one entry per selector, each with its own copy of
-// the value (so the entries are independent). At-rule preludes (e.g.
-// `@media screen, print`) are left intact — their commas are a media-query
-// list, not a selector group — as are keys with no top-level comma.
+// enclosing map. A ruleset has collected one or more keys on `k.pend` (one per
+// grouped selector); the value is assigned to each, with its own deep copy so
+// the entries stay independent. A declaration / statement at-rule has a single
+// captured key in `u.key`. No selector text is ever parsed or split here — the
+// keys arrived as separate tokens from the lexer.
 function cssSetval(r: Rule, _ctx: Context) {
   const node: any = r.node
   if (null == node || 'object' !== typeof node) return
-  const key: any = r.u.key
   const val = r.child.node
-  if ('string' === typeof key && '@' !== key[0] && -1 < key.indexOf(',')) {
-    const sels = splitSelectors(key)
-    if (1 < sels.length) {
-      for (let i = 0; i < sels.length; i++) {
-        node[sels[i]] = 0 === i ? val : cloneNode(val)
-      }
-      return
+  const pend = r.k.pend as string[] | undefined
+  if (pend && 0 < pend.length) {
+    for (let i = 0; i < pend.length; i++) {
+      node[pend[i]] = 0 === i ? val : cloneNode(val)
     }
+    r.k.pend = [] // reset for the next member at this level
+    return
   }
-  node[key] = val
+  node[r.u.key] = val
 }
 
-// Split a selector group on top-level commas, skipping commas inside strings,
-// `()`/`[]` and comments (so `:not(.a, .b)` stays one selector). Each part is
-// trimmed; empty parts are dropped.
-function splitSelectors(s: string): string[] {
-  const out: string[] = []
-  let depth = 0
-  let start = 0
-  let i = 0
-  while (i < s.length) {
-    const c = s[i]
-    if ('"' === c || '\'' === c) {
-      i = skipString(s, i)
-      continue
-    }
-    if ('/' === c && '*' === s[i + 1]) {
-      i = skipComment(s, i)
-      continue
-    }
-    if ('(' === c || '[' === c) depth++
-    else if (')' === c || ']' === c) {
-      if (depth > 0) depth--
-    } else if (0 === depth && ',' === c) {
-      out.push(s.substring(start, i).trim())
-      start = i + 1
-    }
-    i++
-  }
-  out.push(s.substring(start).trim())
-  return out.filter((p) => '' !== p)
+// Grammar action: reset the pending-key list for a freshly opened block. The
+// list is given a NEW array (not cleared in place), so the enclosing ruleset's
+// own `k.pend` — shared by reference up the stack — keeps its selectors.
+function cssClearPend(r: Rule, _ctx: Context) {
+  r.k.pend = []
 }
 
 // Deep-copy a parsed value (plain map / array / scalar) so grouped selectors

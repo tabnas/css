@@ -56,17 +56,22 @@ letting the grammar carry the structure:
   needed. Otherwise the matcher reads a **key**.
 - **Selector vs declaration** is decided by lookahead: scanning past strings,
   `()`/`[]` and comments, if a top-level `{` is reached first the key is a
-  **selector** (`#TX`, the whole prelude verbatim); if a `;`/`}` is reached
-  first it is a **property name** (`#TX`, the identifier up to `:`).
+  **selector** (`#TX`); if a `;`/`}` is reached first it is a **property name**
+  (`#TX`, the identifier up to `:`). A selector ends at the next top-level `,`
+  too, so a group like `h1, h2` yields two `#TX` keys separated by a `#GC`
+  token (a block at-rule prelude is read whole — its commas stay text).
 - A leading `@` in the declaration branch marks a **statement at-rule**: the
   matcher emits a distinct `#AT` key token, and the grammar's `#AT` alt pushes
   `val` directly so the params are read as a value (`@import "x"` →
   `{ "@import": "\"x\"" }`).
 
-A comma-grouped selector key (e.g. `h1, h2`) is **expanded** at assignment
-time by the one grammar-local action, `@cssSetval`, into a separate map entry
-per selector (each with its own deep copy of the block). At-rule preludes and
-commas nested in `:not(...)`/strings/`()`/`[]` are not split.
+A comma-grouped selector (e.g. `h1, h2`) is handled **structurally**, not by
+splitting a string: the matcher emits each selector as its own `#TX` key with
+a `#GC` token for the top-level group comma; the grammar accumulates the keys
+on a kept `pend` list and assigns the built block to each (deep-copied so they
+stay independent). At-rule preludes and commas nested in
+`:not(...)`/strings/`()`/`[]` are kept as text by the matcher, so they never
+become `#GC` separators.
 
 Two options shape output, both applied in the matcher: `lowercaseProperties`
 (lowercase declaration property names) and `lowercaseValues` (lowercase
@@ -161,14 +166,23 @@ builds them first.
   next top-level `;`/`}`. They are not parsed further: `'1px solid #fff'`,
   `'rgb(1, 2, 3)'`, `'red !important'` are single string values. A single
   selector is likewise kept verbatim as the map key.
-- **Comma-grouped selectors are expanded by `@cssSetval`**, the only
-  grammar-local action (a `ref` on the grammar object, mirrored in both
-  runtimes). It replaces the builtin `@setval$` on every `pair`-close alt and,
-  when the captured key is a non-`@` string with a top-level comma, splits it
-  (via `splitSelectors`, which skips strings/`()`/`[]`/comments) and assigns a
-  deep `cloneNode` copy of the value to each selector. At-rule preludes (keys
-  starting with `@`, e.g. `@media screen, print`) are never split. Keep the
-  TS and Go `@cssSetval`/`splitSelectors`/`cloneNode` in step.
+- **Comma-grouped selectors are collected structurally, never split.** The
+  matcher reads one selector per `#TX` (stopping at a top-level `,` or `{`,
+  via `scanSelectorEnd`) and emits a `#GC` token for the group comma; only
+  non-`@` selectors split (a block at-rule prelude like `@media screen, print`
+  is read whole up to `{`). Three grammar-local actions (`ref`s on the grammar
+  object, mirrored in both runtimes) drive it: `@cssPendKey` appends each
+  selector token's value to the kept `k.pend` list across the open-phase
+  `r: pair` loop; `@cssSetval` (which replaces the builtin `@setval$` on every
+  `pair`-close alt) assigns the built value to every pending key (`cloneNode`
+  deep-copy for all but the first), else to the single `@key$` key for a
+  declaration / at-rule; `@cssClearPend` gives each opened `block` a fresh
+  `pend` so the enclosing ruleset's selectors don't leak in. `k` propagates on
+  both push and replace, so `pend` must be reset by **reassignment** (a new
+  array), never mutated in place. Keep the TS and Go
+  `@cssPendKey`/`@cssSetval`/`@cssClearPend`/`scanSelectorEnd`/`cloneNode` in
+  step. Note the Go `buildGrammarAlts` must handle an **array** `a:` field
+  (e.g. `['@object$' '@cssClearPend']`), not just a string.
 - **Statement at-rules require a terminating `;`** (or end-of-input / `}`); the
   value reader stops at top-level `;`/`}` only, so an unterminated statement
   at-rule before a `{` would run into the block.
