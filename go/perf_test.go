@@ -1,6 +1,6 @@
-/* Copyright (c) 2025 Richard Rodger, MIT License */
+/* Copyright (c) 2025 Richard Rodger and other contributors, MIT License */
 
-package tabnaszon
+package tabnascss
 
 import (
 	"testing"
@@ -8,17 +8,17 @@ import (
 )
 
 // TestParseReusesInstance guards against a performance regression where the
-// convenience Parse() rebuilds the (expensive) ZON grammar on every call
-// instead of reusing a cached instance. Building the grammar dominates a
-// parse, so a rebuild-per-call Parse() is many times slower than reusing one
-// MakeJsonic() instance.
+// convenience Parse() rebuilds the (expensive) CSS grammar on every call
+// instead of reusing the cached default instance. Building the grammar
+// dominates a parse, so a rebuild-per-call Parse() is many times slower than
+// reusing one MakeJsonic() instance.
 //
-// The check is machine-INDEPENDENT: it compares Parse() against instance
-// reuse on the SAME machine in the SAME run, so a slow CI box cannot make it
-// flaky (both sides scale together). There is deliberately NO wall-clock
-// budget.
+// The check is machine-INDEPENDENT: it compares the cached Parse() against
+// instance reuse on the SAME machine in the SAME run, so a slow CI box cannot
+// make it flaky (both sides scale together). There is deliberately NO
+// wall-clock budget.
 func TestParseReusesInstance(t *testing.T) {
-	const src = `.{ .a = 1, .b = "x", .c = .{ 1, 2, 3 } }`
+	const src = "a { color: red; font: 12px sans-serif } .b > .c { margin: 0 }"
 	const n = 3000
 
 	// Warm both paths so the comparison is steady-state.

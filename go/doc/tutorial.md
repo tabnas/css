@@ -1,9 +1,10 @@
-# Tutorial — your first ZON parse (Go)
+# Tutorial — your first CSS parse (Go)
 
-This walks you from nothing to a working parse, then through one option
-and one error. Follow it in order; each step builds on the last. When
-you finish you will have installed the module, parsed a struct and a
-tuple, switched on an option, and handled a parse error.
+This walks you from nothing to a working parse, then through nesting,
+at-rules, and one option. Follow it in order; each step builds on the
+last. When you finish you will have installed the module, parsed a
+rule, grouped selectors, nested an at-rule, parsed a statement at-rule,
+and switched on an option.
 
 For a recipe-style index of individual tasks, see the
 [how-to guide](guide.md). For exhaustive signatures and the full
@@ -13,103 +14,120 @@ how the Go version differs from TypeScript — see
 
 ## 1. Install
 
-`zon` is a jsonic plugin. The convenience helpers pull in the jsonic
+`css` is a jsonic plugin. The convenience helpers pull in the jsonic
 engine for you, so a single `go get` is enough:
 
 ```bash
-go get github.com/tabnas/zon/go@latest
+go get github.com/tabnas/css/go@latest
 ```
 
 ```go
-import tabnaszon "github.com/tabnas/zon/go"
+import tabnascss "github.com/tabnas/css/go"
 ```
 
-## 2. Parse a struct
+## 2. Parse a rule
 
-`tabnaszon.Parse` is the one-call entry point. Give it ZON source and it
-returns the parsed value as `any` plus an `error`:
+`tabnascss.Parse` is the one-call entry point. Give it CSS source and
+it returns the parsed value as `any` plus an `error`:
 
 ```go
-result, err := tabnaszon.Parse(`.{ .name = "Alice", .age = 30 }`)
-// result: map[string]any{"name": "Alice", "age": float64(30)}
+result, err := tabnascss.Parse(`a { color: red; font-size: 12px }`)
+// result: map[string]any{"a": map[string]any{"color": "red", "font-size": "12px"}}
 // err:    nil
 ```
 
-You wrote Zig anonymous-struct syntax — `.{ ... }` to open, `.field`
-for each key, `=` to assign — and got back a `map[string]any`. Note
-that numbers come back as `float64`; that is the only numeric type ZON
-produces.
+A stylesheet becomes a `map[string]any` keyed by selector; each rule's
+block is itself a `map[string]any` of `property → value`. Every
+declaration value comes back as a raw `string` — the parser does not
+interpret colours, lengths, or numbers. A trailing `;` is optional, so
+`a { color: red }` parses the same as `a { color: red; }`.
 
-## 3. Parse a tuple
+## 3. Group and combine selectors
 
-The same `.{ ... }` opener also makes tuples. When the brace is *not*
-immediately followed by `.field =`, the values inside become a slice:
+A selector is kept verbatim as the map key, including selector lists
+(grouping with a comma), combinators, pseudo-classes, and attribute
+selectors:
 
 ```go
-result, err := tabnaszon.Parse(`.{ 1, 2, 3 }`)
-// result: []any{float64(1), float64(2), float64(3)}
+result, err := tabnascss.Parse(`h1, h2 { margin: 0 }`)
+// result: map[string]any{"h1, h2": map[string]any{"margin": "0"}}
 
-result, err = tabnaszon.Parse(`.{ "a", "b" }`)
-// result: []any{"a", "b"}
+result, err = tabnascss.Parse(`.nav > li:hover { color: red }`)
+// result: map[string]any{".nav > li:hover": map[string]any{"color": "red"}}
 ```
 
-The plugin decides struct-vs-tuple by peeking past the opening brace,
-so you never mark which one you mean — just write it.
+The whole prelude up to the opening `{` is the key, trimmed of trailing
+whitespace, so you never quote or escape it — just write the selector.
 
-## 4. Nest and mix
+## 4. Nest an at-rule
 
-Structs and tuples nest freely, and a struct can hold both:
+A block at-rule such as `@media` keeps its prelude (`@media screen`) as
+the key, and its block recurses into another `map[string]any` of rules:
 
 ```go
-result, err := tabnaszon.Parse(`.{ .xs = .{ 1, 2, 3 }, .y = .{ .z = true } }`)
+result, err := tabnascss.Parse(`@media screen { a { color: blue } }`)
 // result: map[string]any{
-//   "xs": []any{float64(1), float64(2), float64(3)},
-//   "y":  map[string]any{"z": true},
+//   "@media screen": map[string]any{
+//     "a": map[string]any{"color": "blue"},
+//   },
 // }
 ```
 
-This is the shape of a real `build.zig.zon` manifest: named fields,
-some holding nested structs, some holding tuple-style path lists.
+This nests to any depth: the inner block is parsed exactly like a
+top-level stylesheet.
 
-## 5. Turn on an option
+## 5. Parse a statement at-rule
 
-Options are passed as a `tabnaszon.ZonOptions` value after the source. For
-example, a Zig char literal like `'A'` is a one-character string by
-default; set `CharAsNumber` to get its code point (a `float64`)
-instead:
-
-```go
-charAsNum := true
-result, err := tabnaszon.Parse(`'A'`, tabnaszon.ZonOptions{CharAsNumber: &charAsNum})
-// result: float64(65)
-```
-
-`CharAsNumber` is a `*bool` so you can express "leave it at the
-default" (nil) versus "set it". There are only two options,
-`CharAsNumber` and `EnumTag`; the [reference](reference.md#options)
-lists both.
-
-## 6. Handle an error
-
-ZON is not a superset of JSON. A bare `{` is not a valid opener — the
-plugin removes it on purpose — so parsing one returns an error rather
-than panicking:
+A statement at-rule such as `@import` has no block — it ends at `;`.
+Its at-keyword becomes the key and its parameters become the raw-string
+value:
 
 ```go
-result, err := tabnaszon.Parse(`{ a = 1 }`) // not ZON: bare { is rejected
-// result: nil
-// err:    non-nil parse error
-if err != nil {
-    // handle the syntax error
-}
+result, err := tabnascss.Parse(`@import "base.css";`)
+// result: map[string]any{"@import": "\"base.css\""}
 ```
 
-Go never panics on a parse error; always check the returned `error`.
+Note the value keeps its surrounding quotes: declaration and at-rule
+values are never unquoted or otherwise decoded.
+
+## 6. Turn on an option
+
+Options are passed as a `tabnascss.CssOptions` value after the source.
+For example, CSS property names are case-insensitive; set
+`LowercaseProperties` to normalise them (selectors are left untouched):
+
+```go
+yes := true
+result, err := tabnascss.Parse(
+    `A { COLOR: Red }`,
+    tabnascss.CssOptions{LowercaseProperties: &yes},
+)
+// result: map[string]any{"A": map[string]any{"color": "Red"}}
+```
+
+The fields are `*bool` so you can express "leave it at the default"
+(nil) versus "set it". There are only two options,
+`LowercaseProperties` and `LowercaseValues`; the
+[reference](reference.md#options) covers both.
+
+## 7. The empty cases
+
+A zero-length source runs no rules and returns `nil`; any non-empty
+source — even pure whitespace or a comment — returns an empty
+stylesheet map:
+
+```go
+tabnascss.Parse("")                     // nil
+tabnascss.Parse("   \n  ")              // map[string]any{}
+tabnascss.Parse("/* only a comment */") // map[string]any{}
+```
+
+`Parse` returns an `error` rather than panicking, so always check it.
 
 ## Where to go next
 
 - [How-to guide](guide.md) — focused recipes for individual tasks.
 - [Reference](reference.md) — the public API, every option, the full
-  ZON syntax accepted.
+  CSS syntax accepted.
 - [Concepts](concepts.md) — how the plugin reshapes the engine, and
   how the Go version differs from TypeScript.

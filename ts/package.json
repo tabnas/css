@@ -1,15 +1,15 @@
 {
-  "name": "@tabnas/zon",
-  "version": "0.2.0",
-  "description": "This plugin allows the [Tabnas](https://github.com/tabnas/parser) JSON parser to support Zig Object Notation (ZON) syntax.",
-  "main": "dist/zon.js",
+  "name": "@tabnas/css",
+  "version": "0.1.0",
+  "description": "This plugin allows the [Tabnas](https://github.com/tabnas/parser) JSON parser to parse CSS (Cascading Style Sheets) into a nested object.",
+  "main": "dist/css.js",
   "type": "commonjs",
-  "browser": "zon.min.js",
-  "types": "dist/zon.d.ts",
-  "homepage": "https://github.com/tabnas/zon",
+  "browser": "css.min.js",
+  "types": "dist/css.d.ts",
+  "homepage": "https://github.com/tabnas/css",
   "keywords": [
-    "zon",
-    "zig",
+    "css",
+    "stylesheet",
     "tabnas",
     "parser",
     "object",
@@ -18,12 +18,12 @@
   "author": "Richard Rodger (http://richardrodger.com)",
   "repository": {
     "type": "git",
-    "url": "git://github.com/tabnas/zon.git"
+    "url": "git://github.com/tabnas/css.git"
   },
   "scripts": {
     "test": "node --enable-source-maps --test \"dist-test/*.test.js\"",
     "test-some": "node --enable-source-maps --test-name-pattern=\"$npm_config_pattern\" --test \"dist-test/*.test.js\"",
-    "test-watch": "node --test --watch dist-test/zon.test.js",
+    "test-watch": "node --test --watch dist-test/css.test.js",
     "embed": "node embed-grammar.js",
     "watch": "tsc --build src test -w",
     "build": "node embed-grammar.js && tsc --build src test",

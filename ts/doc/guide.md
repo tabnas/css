@@ -10,154 +10,176 @@ Every recipe starts from the same three imports:
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 ```
 
 ## Use it as a plugin
 
-`Zon` is a plugin, not a standalone parser. Layer it onto a Tabnas
+`Css` is a plugin, not a standalone parser. Layer it onto a Tabnas
 engine that already has the jsonic grammar, then call `.parse()`:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon)
+const c = new Tabnas().use(jsonic).use(Css)
 
-j.parse('.{ .a = 1, .b = 2 }') // => { a: 1, b: 2 }
+c.parse('a { color: red }') // => { a: { color: 'red' } }
 ```
 
 The instance is reusable — build it once and call `.parse()` as many
 times as you like. (Building the grammar is the expensive part; do not
 reconstruct the instance per parse.)
 
-## Parse a realistic build.zig.zon
+## Parse a realistic stylesheet
 
-A ZON manifest mixes named struct fields with tuple-style `paths`
-lists and allows trailing commas and `//` line comments:
+A real stylesheet mixes plain rules, grouped and combinator selectors,
+multi-part values, and nested at-rules:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon)
+const c = new Tabnas().use(jsonic).use(Css)
 
-const manifest = j.parse(`.{
-    .name = "example",
-    .version = "0.0.1",
-    .minimum_zig_version = "0.14.0",
-    .dependencies = .{
-        .foo = .{
-            .url = "https://example.com/foo.tar.gz",
-            .hash = "1220deadbeef",
-        },
-    },
-    .paths = .{
-        "build.zig",
-        "src",
-    },
+const sheet = c.parse(`
+  body {
+    margin: 0;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+  }
+  .nav > li {
+    display: inline-block;
+    padding: 0 10px;
+  }
+  @media (min-width: 768px) {
+    .nav > li { padding: 0 20px; }
+  }
+`)
+
+sheet // => { body: { margin: '0', 'font-family': '"Helvetica Neue", Arial, sans-serif' }, '.nav > li': { display: 'inline-block', padding: '0 10px' }, '@media (min-width: 768px)': { '.nav > li': { padding: '0 20px' } } }
+```
+
+## Read compound declaration values
+
+A declaration value is kept as one raw string, up to the next top-level
+`;` or `}`. Commas, spaces, hashes, `!important`, and `url(...)` are all
+part of that string — they are not parsed further:
+
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css)
+
+c.parse('p { border: 1px solid #fff }')           // => { p: { border: '1px solid #fff' } }
+c.parse('a { color: red !important }')             // => { a: { color: 'red !important' } }
+c.parse('a { background: url(http://x/y.png) }')   // => { a: { background: 'url(http://x/y.png)' } }
+c.parse('a { color: rgb(1, 2, 3); top: 0 }')       // => { a: { color: 'rgb(1, 2, 3)', top: '0' } }
+```
+
+## Keep selectors verbatim
+
+Grouping, combinators, pseudo-classes, pseudo-elements, and attribute
+selectors are all kept exactly as written and used as the rule key:
+
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css)
+
+c.parse('h1, h2 { margin: 0 }')              // => { 'h1, h2': { margin: '0' } }
+c.parse('.foo > .bar { top: 0 }')            // => { '.foo > .bar': { top: '0' } }
+c.parse('a:hover { color: red }')            // => { 'a:hover': { color: 'red' } }
+c.parse('a::before { content: "x" }')        // => { 'a::before': { content: '"x"' } }
+c.parse('input[type=text] { border: 0 }')    // => { 'input[type=text]': { border: '0' } }
+```
+
+Note that `a:hover` is read as one selector, not as a property named
+`a` — a leading `:` in key position is treated as a pseudo-class.
+
+## Handle at-rules
+
+A nested at-rule (one with a block) recurses into a map of rules; a
+statement at-rule (terminated by `;`) becomes a single key/value pair
+whose value is the rest of the statement, quotes included:
+
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css)
+
+c.parse('@media screen { a { color: blue } }')   // => { '@media screen': { a: { color: 'blue' } } }
+c.parse('@import "base.css";')                    // => { '@import': '"base.css"' }
+c.parse('@charset "utf-8"; a { color: red }')     // => { '@charset': '"utf-8"', a: { color: 'red' } }
+```
+
+A statement at-rule **must** end with `;`. Without it the parser reads
+the following content as part of the same statement.
+
+## Normalise property name and value case
+
+CSS property names are case-insensitive. Set `lowercaseProperties` to
+lowercase declaration property names (selectors and values are
+untouched), and `lowercaseValues` to lowercase declaration values:
+
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const props = new Tabnas().use(jsonic).use(Css, { lowercaseProperties: true })
+props.parse('A { COLOR: Red }') // => { A: { color: 'Red' } }
+
+const vals = new Tabnas().use(jsonic).use(Css, { lowercaseValues: true })
+vals.parse('a { color: RED }') // => { a: { color: 'red' } }
+```
+
+`lowercaseValues` is off by default because parts of a value (strings,
+`url()` contents, custom identifiers) are case-sensitive.
+
+## Strip comments
+
+Only `/* ... */` block comments are recognised; they are discarded
+wherever they appear:
+
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css)
+
+const sheet = c.parse(`/* header */ a {
+  color: red; /* the colour */
+  /* a gap */
+  top: 0;
 }`)
 
-manifest // => { name: 'example', version: '0.0.1', minimum_zig_version: '0.14.0', dependencies: { foo: { url: 'https://example.com/foo.tar.gz', hash: '1220deadbeef' } }, paths: ['build.zig', 'src'] }
-```
-
-## Parse numbers in every ZON base
-
-Numbers accept decimal, hex, octal, binary, floats, and `_` digit
-separators:
-
-```js
-import { Tabnas } from '@tabnas/parser'
-import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
-
-const j = new Tabnas().use(jsonic).use(Zon)
-
-j.parse('0x2a')      // => 42
-j.parse('0o52')      // => 42
-j.parse('0b101010')  // => 42
-j.parse('1_000_000') // => 1000000
-j.parse('3.14')      // => 3.14
-```
-
-## Parse character literals as code points
-
-By default Zig char literals (`'A'`, `'\n'`, `'\u{1F600}'`) parse as
-one-character strings. Set `charAsNumber: true` to receive numeric
-code points instead:
-
-```js
-import { Tabnas } from '@tabnas/parser'
-import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
-
-const j = new Tabnas().use(jsonic).use(Zon, { charAsNumber: true })
-
-j.parse("'A'")          // => 65
-j.parse("'\\n'")        // => 10
-j.parse("'\\u{1F600}'") // => 128512
-```
-
-## Tag enum literals to tell them apart from strings
-
-Without options, an enum-literal value like `.red` becomes the plain
-string `'red'` — indistinguishable from `"red"` in the parsed tree.
-Set `enumTag` to wrap each enum value in a one-key object so you can
-tell which was which:
-
-```js
-import { Tabnas } from '@tabnas/parser'
-import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
-
-const j = new Tabnas().use(jsonic).use(Zon, { enumTag: '$enum' })
-
-j.parse('.{ .kind = .red, .label = "red" }') // => { kind: { $enum: 'red' }, label: 'red' }
-```
-
-The tag name is yours to choose — use whatever key your consumers
-expect.
-
-## Read multi-line Zig strings
-
-Consecutive lines prefixed with `\\` become a single string, joined
-with `\n` (the `\\` prefix is stripped from each line):
-
-```js
-import { Tabnas } from '@tabnas/parser'
-import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
-
-const j = new Tabnas().use(jsonic).use(Zon)
-
-const doc = j.parse(`.{
-  .description =
-    \\\\first line
-    \\\\second line
-  ,
-}`)
-
-doc // => { description: 'first line\nsecond line' }
+sheet // => { a: { color: 'red', top: '0' } }
 ```
 
 ## Handle a parse error
 
-ZON deliberately rejects non-ZON input — a bare `{` opener, for
-instance. A failed parse throws the engine's parse error; catch it and
+A malformed stylesheet throws the engine's parse error; catch it and
 read its fields:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon)
+const c = new Tabnas().use(jsonic).use(Css)
 
 let threw = false
 try {
-  j.parse('{ a = 1 }') // not ZON: bare { is rejected
+  c.parse('a { color: red') // unterminated block
 } catch (err) {
   threw = true
   // err.code, err.row, err.col, err.message are available here.
@@ -167,19 +189,19 @@ threw // => true
 
 ## Re-enable strict JSON while the plugin is loaded
 
-Every grammar alternate the plugin adds carries the group tag `zon`.
+Every grammar alternate the plugin adds carries the group tag `css`.
 To switch those alts off — restoring the plain jsonic grammar while
 the plugin stays registered — exclude that tag:
 
 ```typescript
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon).options({
-  rule: { exclude: 'zon' },
+const c = new Tabnas().use(jsonic).use(Css).options({
+  rule: { exclude: 'css' },
 })
 ```
 
 This is rarely useful — you would normally just not load the plugin —
-but it is the supported way to peel the ZON layer back off.
+but it is the supported way to peel the CSS layer back off.

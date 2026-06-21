@@ -1,17 +1,17 @@
 #!/usr/bin/env node
 
-// Embed zon-grammar.jsonic into TypeScript and Go source files.
+// Embed css-grammar.jsonic into TypeScript and Go source files.
 // Run via: npm run embed  (or:  node embed-grammar.js)
 
 const fs = require('fs')
 const path = require('path')
 
-const GRAMMAR_FILE = path.join(__dirname, '..', 'zon-grammar.jsonic')
-const TS_FILE = path.join(__dirname, 'src', 'zon.ts')
-const GO_FILE = path.join(__dirname, '..', 'go', 'zon.go')
+const GRAMMAR_FILE = path.join(__dirname, '..', 'css-grammar.jsonic')
+const TS_FILE = path.join(__dirname, 'src', 'css.ts')
+const GO_FILE = path.join(__dirname, '..', 'go', 'css.go')
 
-const BEGIN = '// --- BEGIN EMBEDDED zon-grammar.jsonic ---'
-const END = '// --- END EMBEDDED zon-grammar.jsonic ---'
+const BEGIN = '// --- BEGIN EMBEDDED css-grammar.jsonic ---'
+const END = '// --- END EMBEDDED css-grammar.jsonic ---'
 
 const grammar = fs.readFileSync(GRAMMAR_FILE, 'utf8')
 

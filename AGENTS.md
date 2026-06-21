@@ -1,131 +1,155 @@
-# Agents Guide — zon
+# Agents Guide — css
 
 ## What this project is
 
-`@tabnas/zon` is a **grammar plugin** that parses
-[Zig Object Notation (ZON)](https://ziglang.org/documentation/master/#ZON)
-— the data format used by Zig `build.zig.zon` manifests, built on Zig
-anonymous struct literals:
+`@tabnas/css` is a **grammar plugin** that parses
+[CSS](https://developer.mozilla.org/en-US/docs/Web/CSS) (Cascading Style
+Sheets) into a plain nested object of `selector → { property → value }`:
 
-```zon
-.{
-    .name = "example",
-    .version = "0.0.1",
-    .dependencies = .{ .foo = .{ .url = "https://..." } },
-    .paths = .{ "build.zig", "src" },
+```css
+a { color: red; font-size: 12px; }
+.foo, .bar { margin: 0 }
+@media screen { a { color: blue } }
+```
+
+parses to:
+
+```js
+{
+  "a": { "color": "red", "font-size": "12px" },
+  ".foo, .bar": { "margin": "0" },
+  "@media screen": { "a": { "color": "blue" } }
 }
 ```
 
-Unlike `@tabnas/json` (a plugin on the bare engine), this is a
-**jsonic plugin**: it layers on `@tabnas/jsonic`'s relaxed-JSON grammar
-and then reshapes it into ZON. Install it on a jsonic-enabled engine —
-`new Tabnas().use(jsonic).use(Zon)` (TS) / `jsonic.Make()` then
-`UseDefaults(Zon, ...)` (Go). It does three things on top of jsonic:
+Like `@tabnas/zon` (the repo this was templated from), this is a **jsonic
+plugin**: it layers on `@tabnas/jsonic`'s relaxed-JSON grammar, reuses its
+fixed punctuation tokens (`{` `}` `:`), and then reshapes everything into
+CSS. Install it on a jsonic-enabled engine — `new Tabnas().use(jsonic).use(Css)`
+(TS) / `jsonic.Make()` then `UseDefaults(Css, ...)` (Go). It does three
+things on top of jsonic:
 
-1. **Disables jsonic extensions** it doesn't want (`rule.exclude:
-   'jsonic,imp'` removes implicit maps/lists, top-level commas, path
-   dives) and remaps fixed tokens — bare `{` `[` `]` are nulled out and
-   `#CL` (the key/value separator) becomes `=` instead of `:`.
-2. **Adds three custom lex matchers** (`zonDot`, `zonMultiString`,
-   `zonChar`) for Zig syntax the jsonic lexer can't express.
-3. **Adds four grammar-rule alts** (`val`/`list`/`elem`/`pair`) so a
-   single `}` (`#CB`) closes both struct and tuple literals.
+1. **Disables jsonic extensions** it doesn't want (`rule.exclude: 'jsonic,imp'`
+   removes implicit maps/lists, top-level commas, path dives), remaps fixed
+   tokens (`;` becomes `#CA`, the member separator; bare `[` `]` are nulled),
+   and turns off the default string/number/text/value matchers so the custom
+   matcher owns all non-punctuation text.
+2. **Adds one custom lex matcher** (`cssToken`) for the context-sensitive
+   tokenisation CSS needs (the jsonic lexer can't express it).
+3. **Supplies its own grammar rules** (`stylesheet`/`block`/`pair`/`val`) so a
+   stylesheet is an implicit top-level map and `{ ... }` blocks nest
+   recursively.
 
-The signature ZON trick: `.{` is **disambiguated at lex time** by the
-`zonDot` matcher. It peeks ahead — `.{ .ident =` → emits `#OB` (struct /
-map); anything else → `#OS` (tuple / list). A bare `.identifier` emits
-`#TX` (leading dot stripped), valid as both a `KEY` (before `=`) and a
-`VAL` (an enum literal). Two options shape values: `charAsNumber`
-(parse `'x'` char literals as code points vs one-char strings) and
-`enumTag` (wrap enum-literal values `.foo` in `{ [enumTag]: 'foo' }`).
+The signature CSS trick: a stylesheet is **context-sensitive** — the same
+identifier is a selector, a property, or a value depending on position. The
+`cssToken` matcher resolves this without backtracking:
+
+- **Key vs value** is decided by the active rule: when the `val` rule is open
+  (right after `:`), or a statement at-keyword was just emitted (a per-parse
+  `ctx.U` flag), the matcher reads a **value** (`#VL`) — the run of text up to
+  the next top-level `;`/`}`. Otherwise it reads a **key** (`#TX`).
+- **Selector vs declaration** is decided by lookahead: scanning past strings,
+  `()`/`[]` and comments, if a top-level `{` is reached first the key is a
+  **selector** (the whole prelude, verbatim); if a `;`/`}` is reached first it
+  is a **property name** (the identifier up to `:`).
+- A leading `@` in the declaration branch marks a **statement at-rule**; the
+  matcher sets the `ctx.U` flag so the params are read as a value on the next
+  call (`@import "x"` → `{ "@import": "\"x\"" }`).
+
+Two options shape output, both applied in the matcher: `lowercaseProperties`
+(lowercase declaration property names) and `lowercaseValues` (lowercase
+declaration values). Selectors are always left verbatim.
 
 ## Repository map
 
 | Path | What it is |
 |---|---|
-| [`ts/`](ts/) | **Canonical** TypeScript implementation — the `@tabnas/zon` package (currently `0.1.2`). Plugin in `src/zon.ts`. Peer-depends on `@tabnas/jsonic` and `@tabnas/parser`. No CLI. |
-| [`go/`](go/) | Go port — `github.com/tabnas/zon/go` (`const Version` in `go/zon.go`, currently `0.1.1`). Plugin `Zon` plus `MakeJsonic` / `Parse` helpers. Depends on `github.com/tabnas/jsonic/go` via a `replace` directive (sibling checkout). |
-| [`ts/zon-grammar.jsonic`](ts/zon-grammar.jsonic) | **Single source of truth** for the grammar-rule alts (the `val`/`list`/`elem`/`pair` overrides), authored in jsonic syntax. |
-| [`ts/embed-grammar.js`](ts/embed-grammar.js) | Embeds `zon-grammar.jsonic` into **both** `src/zon.ts` and `go/zon.go` (between `BEGIN/END EMBEDDED` markers) as a `grammarText` string literal. Runs as the first half of `npm run build`. |
-| [`ts/test/`](ts/test/) | TS tests (`.ts`, compiled to `dist-test/`): `zon.test.ts` (parse cases), `debug-model.test.ts` (the `@tabnas/debug` composition / model introspection), `doc-examples.test.ts` (runs `// =>` assertions in README/doc fences). |
-| [`go/zon_test.go`](go/zon_test.go) | Go test suite — the same parse cases as `zon.test.ts`, hand-mirrored. |
+| [`ts/`](ts/) | **Canonical** TypeScript implementation — the `@tabnas/css` package (currently `0.1.0`). Plugin in `src/css.ts`. Peer-depends on `@tabnas/jsonic` and `@tabnas/parser`. No CLI. |
+| [`go/`](go/) | Go port — `github.com/tabnas/css/go` (`const Version` in `go/css.go`, currently `0.1.0`). Plugin `Css` plus `MakeJsonic` / `Parse` helpers. Depends on `github.com/tabnas/jsonic/go`. |
+| [`css-grammar.jsonic`](css-grammar.jsonic) | **Single source of truth** for the grammar rules (`stylesheet`/`block`/`pair`/`val`), authored in jsonic syntax. |
+| [`ts/embed-grammar.js`](ts/embed-grammar.js) | Embeds `css-grammar.jsonic` into **both** `src/css.ts` and `go/css.go` (between `BEGIN/END EMBEDDED` markers) as a `grammarText` string literal. Runs as the first half of `npm run build`. |
+| [`ts/test/`](ts/test/) | TS tests (`.ts`, compiled to `dist-test/`): `css.test.ts` (parse cases), `debug-model.test.ts` (the `@tabnas/debug` composition / model introspection), `doc-examples.test.ts` (runs `// =>` assertions in README/doc fences), `perf.test.ts` (instance-reuse regression guard). |
+| [`go/css_test.go`](go/css_test.go) | Go test suite — the same parse cases as `css.test.ts`, hand-mirrored. `go/perf_test.go` mirrors the TS perf guard. |
 | [`ts/doc/grammar.svg`](ts/doc/grammar.svg), [`ts/doc/grammar.txt`](ts/doc/grammar.txt) | Railroad / ASCII diagram of the live grammar, generated by `@tabnas/railroad`. |
 | [`ts/doc/`](ts/doc/), [`go/doc/`](go/doc/) | Per-runtime 4-quadrant Diataxis docs: `tutorial.md`, `guide.md`, `reference.md`, `concepts.md` (the Go `concepts.md` also covers differences from TS). |
 
 ## The tabnas engine dependency
 
-Both runtimes depend on the unpublished `@tabnas` siblings via a
-**sibling checkout** (the standard tabnas dev model until the packages
-publish tagged releases). Note this repo sits **above jsonic** in the
-stack, not directly above the bare engine:
+Both runtimes depend on the `@tabnas` siblings. Note this repo sits **above
+jsonic** in the stack, not directly above the bare engine:
 
 - TypeScript: `@tabnas/jsonic` and `@tabnas/parser` are both
   `peerDependencies` (`">=2"`) in `ts/package.json`, each mirrored as a
-  `file:../../<dep>/ts` devDependency for local builds (npm >=7 / Node
-  >=24 auto-installs peers; `engines.node` is `">=24"`). `@tabnas/debug`
-  and `@tabnas/railroad` are **dev-only** `file:` devDependencies —
-  debug for the `debug-model.test.ts` composition test, railroad to
-  regenerate `ts/doc/grammar.{svg,txt}`.
-- Go: `go/go.mod` has the single require/replace pair
-  `github.com/tabnas/jsonic/go => ../../jsonic/go`. (jsonic in turn
-  sibling-replaces parser/json/debug, so those must be cloned too.)
+  `file:../../<dep>/ts` devDependency for local builds (npm >=7 / Node >=24
+  auto-installs peers; `engines.node` is `">=24"`). `@tabnas/debug` and
+  `@tabnas/railroad` are **dev-only** `file:` devDependencies — debug for the
+  `debug-model.test.ts` composition test, railroad to regenerate
+  `ts/doc/grammar.{svg,txt}`.
+- Go: `go/go.mod` requires `github.com/tabnas/jsonic/go` (which in turn pulls
+  parser/json). The CI workflow can either use the published module versions
+  or a `go work` over sibling checkouts.
 
 Clone `https://github.com/tabnas/jsonic` and `https://github.com/tabnas/parser`
 (plus `json`, `debug`, `railroad` for jsonic's deps, the composition test,
 and the diagram) as siblings of this repo, build the TS halves
-(`cd parser/ts && npm install && npm run build`, likewise `jsonic/ts`),
-then work here. CI (`.github/workflows/build.yml`) checks the siblings
-out and builds them first.
+(`cd parser/ts && npm install && npm run build`, likewise `jsonic/ts`), then
+work here. CI (`.github/workflows/build.yml`) checks the siblings out and
+builds them first.
 
 ## Authority and alignment rules
 
-1. **TypeScript is canonical.** When TS and Go disagree on parse
-   behavior, TS wins; change Go to match.
+1. **TypeScript is canonical.** When TS and Go disagree on parse behavior, TS
+   wins; change Go to match.
 2. **The grammar source is single-sourced, not duplicated.**
-   `ts/zon-grammar.jsonic` is authored once; `embed-grammar.js` copies it
-   verbatim into the `grammarText` literal in both `src/zon.ts` and
-   `go/zon.go`. **Never hand-edit the text between the
-   `--- BEGIN/END EMBEDDED zon-grammar.jsonic ---` markers** in either
-   file — edit `zon-grammar.jsonic` and re-run `npm run embed` (or
-   `npm run build`, which embeds first). The Go embed step rejects a
-   grammar containing backticks (incompatible with Go raw strings).
-3. The two ports must produce the same values for the same input. There
-   are **no shared `.tsv` fixtures** here; the parity contract is the
-   shared grammar source plus the hand-mirrored case sets in
-   `ts/test/zon.test.ts` and `go/zon_test.go`. When you add or change a
-   parse case, add it to both.
-4. The jsonic option overrides (`rule.exclude`, `fixed.token`,
-   `tokenSet.KEY`, `string`, `number`, `comment`, `value`, `text.lex`,
-   `lex.match`) and the three lex matchers exist in **both** runtimes and
-   must stay in step — they all live on the grammar object so the plugin
-   applies them atomically alongside its rule alts. Note Go's
-   `number`/`comment` blocks carry extra base/sep settings (`Hex`/`Oct`/
-   `Bin`/`Sep`, hash/multi comment defs) the TS side leaves to jsonic
-   defaults; keep observable behavior aligned even where the option
-   surface differs slightly.
-5. The `Defaults` (`charAsNumber: false`, `enumTag` empty) and `Version`
-   const in `go/zon.go` mirror the TS `Zon.defaults` and the
+   `css-grammar.jsonic` is authored once; `embed-grammar.js` copies it
+   verbatim into the `grammarText` literal in both `src/css.ts` and
+   `go/css.go`. **Never hand-edit the text between the
+   `--- BEGIN/END EMBEDDED css-grammar.jsonic ---` markers** in either file —
+   edit `css-grammar.jsonic` and re-run `npm run embed` (or `npm run build`,
+   which embeds first). The Go embed step rejects a grammar containing
+   backticks (incompatible with Go raw strings), so the grammar comments use
+   plain quotes, never backticks.
+3. The two ports must produce the same values for the same input. There are
+   **no shared fixtures** here; the parity contract is the shared grammar
+   source plus the hand-mirrored case sets in `ts/test/css.test.ts` and
+   `go/css_test.go`. When you add or change a parse case, add it to both.
+4. The jsonic option overrides (`rule.exclude`, `fixed.token`, `tokenSet.KEY`,
+   `string`, `number`, `text`, `value`, `comment`, `lex.match`) and the
+   `cssToken` matcher exist in **both** runtimes and must stay in step — they
+   all live on the grammar object so the plugin applies them atomically
+   alongside its rule alts.
+5. The `Defaults` (`lowercaseProperties: false`, `lowercaseValues: false`) and
+   `Version` const in `go/css.go` mirror the TS `Css.defaults` and the
    `package.json` version; `Version` is bumped by `make publish-go`.
 
 ## Repo-specific gotchas
 
-- **The `enumTag` rewrap hook differs by runtime.** TS wraps the
-  enum-literal node in the `@val-ac` (after-close) phase, because the
-  relaxed-JSON grammar `/replace`s `@val-bc` and the engine then
-  suppresses any `/prepend` on it. Go uses `@val-bc/prepend`. Both
-  guard on `tkn.use.zonEnum` (the marker the `zonDot` matcher sets) and
-  only fire when `enumTag` is set. Don't "unify" these phases without
-  re-checking which one the live jsonic grammar leaves available.
-- **`zonDot` must out-order the fixed-token matcher** so it owns the `.`
-  prefix (TS `order: 1e5`; Go `Order: 100000`). The other two matchers
-  order after it.
-- **The list rules close on `#CB` (`}`), not the default `#CS`** — this
-  is what lets one `}` terminate both `.{ ... }` struct and tuple forms.
-  The empty `.{}` is steered to an empty **list**.
-- **The default jsonic text matcher is disabled** (`text.lex: false`):
-  identifiers only ever appear as `.ident` and are produced by `zonDot`.
-- The Go plugin guards against re-invocation with a `zon-init`
-  decoration (jsonic `SetOptions` re-applies plugins); don't remove it.
+- **The matcher is context-sensitive but uses only `rule.Name`/`rule.State`
+  and a per-parse `ctx.U` flag** — never the grammar's expected-token columns.
+  This is deliberate: the Go port runs in an external package that cannot read
+  the rule spec's token columns or inject lookahead tokens, so both runtimes
+  use the same rule-name signal for exact parity. Don't "optimise" the TS side
+  to read `rule.spec.def.tcol`; it would diverge from Go.
+- **The at-rule flag lives in `ctx.U` (the per-parse context bag), not
+  `rule.u`.** A key's `#TX` may be lexed under the `stylesheet`, `block`, or
+  `pair` rule (because of `b:1` re-feeds), but its value is always read under
+  `pair`/`val` — different `rule.u` objects. `ctx.U` is stable across rules
+  within one parse and isolated per parse, so it is safe for the cached,
+  concurrently-used default instance.
+- **`cssToken` must out-order the fixed-token matcher** so it owns selectors,
+  properties and values before `{` `}` `:` `;` are considered (TS `order: 1e5`;
+  Go `Order: 100000`). It defers (returns undefined) on whitespace, `/* */`
+  comments, and the fixed punctuation.
+- **Declaration values are raw strings**, read verbatim (trimmed) up to the
+  next top-level `;`/`}`. They are not parsed further: `'1px solid #fff'`,
+  `'rgb(1, 2, 3)'`, `'red !important'` are single string values. Selector text
+  is likewise kept verbatim as the map key, grouping commas and all.
+- **Statement at-rules require a terminating `;`** (or end-of-input / `}`); the
+  value reader stops at top-level `;`/`}` only, so an unterminated statement
+  at-rule before a `{` would run into the block.
+- **A zero-length source returns `undefined`/`nil`** — the engine's
+  max-iteration budget scales with source length, so an empty string runs no
+  rules. Any non-empty source (even whitespace or a comment) yields `{}`.
 
 ## Build & test
 
@@ -137,42 +161,39 @@ npm run build          # node embed-grammar.js && tsc --build src test
 npm test               # node --enable-source-maps --test "dist-test/*.test.js"
 ```
 
-`npm run build` **embeds the grammar first** (into `src/zon.ts` and
-`go/zon.go`), then `tsc --build`s both `src` and `test` — the tests are
-written in TypeScript and compiled to `dist-test/`, unlike some sibling
-repos that ship committed `.test.js`. The grammar diagram is regenerated
-with `@tabnas/railroad` off the live config (`ts/doc/grammar.{svg,txt}`).
+`npm run build` **embeds the grammar first** (into `src/css.ts` and
+`go/css.go`), then `tsc --build`s both `src` and `test` — the tests are
+written in TypeScript and compiled to `dist-test/`. The grammar diagram is
+regenerated with `@tabnas/railroad` off the live config
+(`ts/doc/grammar.{svg,txt}`).
 
 Go (from `go/`):
 
 ```bash
 go build ./...
-go test -v ./...       # plugin parse cases (mirrors zon.test.ts)
+go test -v ./...       # plugin parse cases (mirrors css.test.ts)
 ```
 
-The repo-root [`Makefile`](Makefile) (adapted from voxgig/util) wraps
-both halves: `make build|test|clean` run the TS and Go sides, `make reset`
-rebuilds from clean, `make tags-go` lists `go/v*` tags, and
-`make publish-go V=x.y.z` injects `V` into the `const Version` in
-`go/zon.go`, commits, and tags `go/vX.Y.Z`. `make publish-ts` publishes
-the TS package at its `package.json` version. (`ts/Makefile` has most of the
-same targets scoped to the package — `publish-go`/`tags-go`/`tidy-go`/`reset`
-— but no `publish-ts`.)
+The repo-root [`Makefile`](Makefile) wraps both halves: `make build|test|clean`
+run the TS and Go sides, `make reset` rebuilds from clean, `make tags-go` lists
+`go/v*` tags, and `make publish-go V=x.y.z` injects `V` into the `const Version`
+in `go/css.go`, commits, and tags `go/vX.Y.Z`. `make publish-ts` publishes the
+TS package at its `package.json` version.
 
 ## Composition test (@tabnas/debug)
 
 `ts/test/debug-model.test.ts` proves the plugin composes with the
 [`@tabnas/debug`](https://github.com/tabnas/debug) introspection plugin.
-`@tabnas/debug` is a `file:` devDependency, so plain `npm test` runs it;
-it resolves debug dynamically and **skips** when absent (set
-`TABNAS_DEBUG_PATH` to a built sibling checkout to force it). It asserts:
+`@tabnas/debug` is a `file:` devDependency, so plain `npm test` runs it; it
+resolves debug dynamically and **skips** when absent (set `TABNAS_DEBUG_PATH`
+to a built sibling checkout to force it). It asserts:
 
-- the structured rule set is `['elem','list','map','pair','val']`,
-- `m.config.start === 'val'` (note `config.start`, **not** `m.start`),
-- `Zon` is in `m.plugins`,
-- the push edges: `val` open-pushes both `map` **and** `list` (the
-  struct-vs-tuple disambiguation), `map`→`pair`, `list`→`elem`, and
-  `pair`/`elem` close-replace themselves to iterate members,
+- the CSS rules (`stylesheet`, `block`, `pair`, `val`) are present,
+- `m.config.start === 'stylesheet'`,
+- `Css` is in `m.plugins`,
+- the push edges: `stylesheet`/`block` open-push `pair`, `pair` open-pushes
+  `val` and close-replaces itself to iterate members, and `val` can open-push
+  a nested `block`,
 - and that the model is JSON-serialisable and round-trips.
 
 There is no Go equivalent of this test; the Go suite is self-contained.
@@ -182,13 +203,11 @@ There is no Go equivalent of this test; the Go suite is self-contained.
 `.github/workflows/build.yml` has two jobs, neither publishing to npm:
 
 - **build** (Ubuntu/Windows/macOS, Node 24): sets
-  `git config --global core.autocrlf false` (CRLF would corrupt the
-  embedded grammar / line-sensitive sources), git-clones the tabnas
-  closure (`parser debug json abnf railroad jsonic`) as siblings, runs
-  `npm i && npm run build --if-present` for each (then `zon`), and
-  `npm test` here. Because `@tabnas/debug` is a devDependency, the
-  composition test runs as part of `npm test`.
-- **build-go** (Ubuntu/macOS, Go 1.24): clones the same siblings,
-  mirrors `admin/scripts/link.sh` by creating `vendor/` symlinks for any
-  `../vendor/` replaces and a `go work` over every non-vendor-replaced
-  module, then `go build` / `go test -v` here.
+  `git config --global core.autocrlf false` (CRLF would corrupt the embedded
+  grammar / line-sensitive sources), git-clones the tabnas closure
+  (`parser debug json abnf railroad jsonic`) as siblings, runs `npm i && npm
+  run build --if-present` for each (then `css`), and `npm test` here. Because
+  `@tabnas/debug` is a devDependency, the composition test runs as part of
+  `npm test`.
+- **build-go** (Ubuntu/macOS, Go 1.24): clones the same siblings, sets up a
+  `go work` over the modules, then `go build` / `go test -v` here.
