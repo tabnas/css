@@ -76,6 +76,29 @@ c.parse('@media screen { a { color: blue } }')
 // => { type: 'stylesheet', rules: [ { type: 'media', media: 'screen', rules: [ { type: 'rule', selectors: ['a'], declarations: [ { type: 'declaration', property: 'color', value: 'blue' } ] } ] } ] }
 ```
 
+**CSS Nesting** is supported — a style rule or at-rule nested inside a
+declaration block is appended to the parent's `declarations`, in source order:
+
+```js
+c.parse('a { color: red; & b { top: 0 } }')
+// rule 'a' declarations: [ {declaration color:red}, {rule selectors:['& b'] ...} ]
+```
+
+## Options
+
+Pass options as the third `use` argument (TS) or to `Parse`/`MakeJsonic` (Go):
+
+| Option | Default | Effect |
+|---|---|---|
+| `lowercaseProperties` | `false` | Lowercase declaration property names (only). |
+| `position` | `false` | Attach `position: { start, end }` (1-based `{ line, column }`) to every node. |
+
+```js
+new Tabnas().use(jsonic).use(Css, { position: true })
+  .parse('a {\n  color: red;\n}')
+// every node gains e.g. position: { start: { line, column }, end: { line, column } }
+```
+
 ## Documentation
 
 Full documentation follows the [Diátaxis](https://diataxis.fr)

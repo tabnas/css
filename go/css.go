@@ -72,7 +72,7 @@ const grammarText = `
         { a: '@cssSheet' p: items g: 'css,sheet' }
       ]
       close: [
-        { s: '#ZZ' g: 'css,sheet,end' }
+        { s: '#ZZ' a: '@cssEnd' g: 'css,sheet,end' }
       ]
     }
 
@@ -133,7 +133,7 @@ const grammarText = `
         { s: '#OB' p: decls g: 'css,declbody' }
       ]
       close: [
-        { s: '#CB' g: 'css,declbody,end' }
+        { s: '#CB' a: '@cssEnd' g: 'css,declbody,end' }
       ]
     }
 
@@ -151,11 +151,21 @@ const grammarText = `
       ]
     }
 
-    # Builds ONE declaration or comment node.
+    # Builds ONE block member: a declaration, a comment, or — for CSS
+    # Nesting — a nested style rule or at-rule. Disambiguated by the token
+    # after the key: #TX #CL is a declaration; #TX followed by "{"/"," is a
+    # nested rule; #ATR/#ATD/#ATK/#ATS is a nested at-rule.
     decl: {
       open: [
         { s: '#CC' a: '@cssComment' g: 'css,comment' }
         { s: '#TX #CL' a: '@cssDecl' p: declval g: 'css,decl' }
+        # Nested at-rules (CSS Nesting).
+        { s: '#ATR' a: '@cssAtRules' p: rulesbody g: 'css,nest,atrules' }
+        { s: '#ATD' a: '@cssAtDecls' p: declbody g: 'css,nest,atdecls' }
+        { s: '#ATK' a: '@cssKeyframes' p: kfbody g: 'css,nest,keyframes' }
+        { s: '#ATS' a: '@cssAtStmt' g: 'css,nest,atstmt' }
+        # A nested style rule (selector first, no ":").
+        { s: '#TX' b: 1 a: '@cssRule' p: sel g: 'css,nest,rule' }
       ]
       close: [
         { b: 1 g: 'css,decl,end' }
@@ -180,7 +190,7 @@ const grammarText = `
         { s: '#OB' p: items g: 'css,rulesbody' }
       ]
       close: [
-        { s: '#CB' g: 'css,rulesbody,end' }
+        { s: '#CB' a: '@cssEnd' g: 'css,rulesbody,end' }
       ]
     }
 
@@ -191,7 +201,7 @@ const grammarText = `
         { s: '#OB' p: kfitems g: 'css,kfbody' }
       ]
       close: [
-        { s: '#CB' g: 'css,kfbody,end' }
+        { s: '#CB' a: '@cssEnd' g: 'css,kfbody,end' }
       ]
     }
 
@@ -244,6 +254,7 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 	j.Decorate("css-init", true)
 
 	lowercaseProperties := toBool(options["lowercaseProperties"])
+	position := toBool(options["position"])
 
 	// Resolve tins for the custom tokens on this instance, so the matcher
 	// emits the same tins the grammar's alts resolve to.
@@ -258,7 +269,7 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 
 	// The grammar builds the typed AST entirely from these grammar-local
 	// actions (node constructors, field setters, and array pushers).
-	gs, err := parseGrammarText(grammarText, makeActions(lowercaseProperties))
+	gs, err := parseGrammarText(grammarText, makeActions(lowercaseProperties, position))
 	if err != nil {
 		return err
 	}
@@ -312,6 +323,7 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 // Defaults matches the TS Css.defaults. Used with jsonic.UseDefaults.
 var Defaults = map[string]any{
 	"lowercaseProperties": false,
+	"position":            false,
 }
 
 // CssOptions is a typed wrapper for the plugin options.
@@ -320,12 +332,18 @@ type CssOptions struct {
 	// (CSS property names are case-insensitive). Selectors, values and at-rule
 	// preludes are untouched.
 	LowercaseProperties *bool
+	// Position, when true, attaches a position {start{line,column},end{...}}
+	// (1-based) to every node. Off by default.
+	Position *bool
 }
 
 func (o CssOptions) toMap() map[string]any {
 	m := map[string]any{}
 	if o.LowercaseProperties != nil {
 		m["lowercaseProperties"] = *o.LowercaseProperties
+	}
+	if o.Position != nil {
+		m["position"] = *o.Position
 	}
 	return m
 }
@@ -392,32 +410,51 @@ func appendField(r *jsonic.Rule, field string, v any) {
 
 // makeActions returns all grammar-local actions keyed by their @name ref. The
 // node constructors overwrite r.Node; the field setters mutate it; the pushers
-// append a finished child node to a parent array.
-func makeActions(_lowercaseProperties bool) map[jsonic.FuncRef]any {
+// append a finished child node to a parent array. When position is on, the
+// constructors record node["position"]["start"] (and single-token nodes their
+// end); @cssEnd records the closing-brace end.
+func makeActions(_lowercaseProperties bool, position bool) map[jsonic.FuncRef]any {
 	mk := func(f func(*jsonic.Rule)) jsonic.AltAction {
 		return jsonic.AltAction(func(r *jsonic.Rule, _ *jsonic.Context) { f(r) })
+	}
+	// withPos records a node's start (and optionally end) from a token.
+	withPos := func(n map[string]any, tok *jsonic.Token, end bool) map[string]any {
+		if position && tok != nil {
+			p := map[string]any{"start": startPos(tok)}
+			if end {
+				p["end"] = endPos(tok)
+			} else {
+				p["end"] = nil
+			}
+			n["position"] = p
+		}
+		return n
 	}
 	return map[jsonic.FuncRef]any{
 		// Node constructors.
 		"@cssSheet": mk(func(r *jsonic.Rule) {
 			r.Node = map[string]any{"type": "stylesheet", "rules": []any{}}
+			if position {
+				r.Node.(map[string]any)["position"] = map[string]any{
+					"start": map[string]any{"line": 1, "column": 1}, "end": nil}
+			}
 		}),
 		"@cssRule": mk(func(r *jsonic.Rule) {
-			r.Node = map[string]any{"type": "rule", "selectors": []any{}, "declarations": []any{}}
+			r.Node = withPos(map[string]any{"type": "rule", "selectors": []any{}, "declarations": []any{}}, r.O0, false)
 		}),
 		"@cssDecl": mk(func(r *jsonic.Rule) {
-			r.Node = map[string]any{"type": "declaration", "property": tokenVal(r), "value": ""}
+			r.Node = withPos(map[string]any{"type": "declaration", "property": tokenVal(r), "value": ""}, r.O0, false)
 		}),
 		"@cssComment": mk(func(r *jsonic.Rule) {
-			r.Node = map[string]any{"type": "comment", "comment": tokenVal(r)}
+			r.Node = withPos(map[string]any{"type": "comment", "comment": tokenVal(r)}, r.O0, true)
 		}),
 		"@cssKeyframe": mk(func(r *jsonic.Rule) {
-			r.Node = map[string]any{"type": "keyframe", "values": []any{}, "declarations": []any{}}
+			r.Node = withPos(map[string]any{"type": "keyframe", "values": []any{}, "declarations": []any{}}, r.O0, false)
 		}),
-		"@cssAtRules":   mk(func(r *jsonic.Rule) { r.Node = makeAtRules(r.O0) }),
-		"@cssAtDecls":   mk(func(r *jsonic.Rule) { r.Node = makeAtDecls(r.O0) }),
-		"@cssKeyframes": mk(func(r *jsonic.Rule) { r.Node = makeKeyframes(r.O0) }),
-		"@cssAtStmt":    mk(func(r *jsonic.Rule) { r.Node = makeAtStmt(r.O0) }),
+		"@cssAtRules":   mk(func(r *jsonic.Rule) { r.Node = withPos(makeAtRules(r.O0), r.O0, false) }),
+		"@cssAtDecls":   mk(func(r *jsonic.Rule) { r.Node = withPos(makeAtDecls(r.O0), r.O0, false) }),
+		"@cssKeyframes": mk(func(r *jsonic.Rule) { r.Node = withPos(makeKeyframes(r.O0), r.O0, false) }),
+		"@cssAtStmt":    mk(func(r *jsonic.Rule) { r.Node = withPos(makeAtStmt(r.O0), r.O0, true) }),
 
 		// Field setters.
 		"@cssSelector": mk(func(r *jsonic.Rule) { appendField(r, "selectors", tokenVal(r)) }),
@@ -425,6 +462,24 @@ func makeActions(_lowercaseProperties bool) map[jsonic.FuncRef]any {
 		"@cssDeclVal": mk(func(r *jsonic.Rule) {
 			if m := node(r); m != nil {
 				m["value"] = tokenVal(r)
+				if position {
+					if p, ok := m["position"].(map[string]any); ok {
+						p["end"] = endPos(r.O0)
+					}
+				}
+			}
+		}),
+
+		// Record the closing-brace / end-of-input end position. Runs in a
+		// close phase, so the matched }/end token is in r.C0.
+		"@cssEnd": mk(func(r *jsonic.Rule) {
+			if !position {
+				return
+			}
+			if m := node(r); m != nil && r.C0 != nil {
+				if p, ok := m["position"].(map[string]any); ok {
+					p["end"] = endPos(r.C0)
+				}
 			}
 		}),
 
@@ -588,7 +643,7 @@ func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLex
 					end = contentEnd + 2
 				}
 				tkn := lex.Token("#CC", tins.cc, src[sI+2:contentEnd], src[sI:end])
-				advance(pnt, sI, end)
+				advance(pnt, src, sI, end)
 				return tkn
 			}
 
@@ -600,14 +655,14 @@ func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLex
 				endI := scanValueEnd(src, sI)
 				val := strings.TrimSpace(stripComments(src[sI:endI]))
 				tkn := lex.Token("#VL", jsonic.TinVL, val, src[sI:endI])
-				advance(pnt, sI, endI)
+				advance(pnt, src, sI, endI)
 				return tkn
 			}
 
 			// A top-level selector-group comma.
 			if c == ',' {
 				tkn := lex.Token("#GC", tins.gc, ",", ",")
-				advance(pnt, sI, sI+1)
+				advance(pnt, src, sI, sI+1)
 				return tkn
 			}
 
@@ -627,7 +682,7 @@ func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLex
 				end := scanSelectorEnd(src, sI)
 				sel := strings.TrimSpace(stripComments(src[sI:end]))
 				tkn := lex.Token("#TX", jsonic.TinTX, sel, src[sI:end])
-				advance(pnt, sI, end)
+				advance(pnt, src, sI, end)
 				return tkn
 			}
 			eI := sI
@@ -642,7 +697,7 @@ func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLex
 				prop = strings.ToLower(prop)
 			}
 			tkn := lex.Token("#TX", jsonic.TinTX, prop, src[sI:eI])
-			advance(pnt, sI, eI)
+			advance(pnt, src, sI, eI)
 			return tkn
 		}
 	}
@@ -671,7 +726,7 @@ func matchAtRule(lex *jsonic.Lex, src string, sI int, tins cssTins) *jsonic.Toke
 		}
 		tkn := lex.Token(tinName, tin, kw, src[sI:idx])
 		tkn.Use = map[string]any{"prelude": prelude}
-		advance(pnt, sI, idx)
+		advance(pnt, src, sI, idx)
 		return tkn
 	}
 	pEnd := scanValueEnd(src, kEnd)
@@ -682,13 +737,48 @@ func matchAtRule(lex *jsonic.Lex, src string, sI int, tins cssTins) *jsonic.Toke
 	}
 	tkn := lex.Token("#ATS", tins.ats, kw, src[sI:end])
 	tkn.Use = map[string]any{"params": params}
-	advance(pnt, sI, end)
+	advance(pnt, src, sI, end)
 	return tkn
 }
 
-func advance(pnt *jsonic.Point, sI, end int) {
+func advance(pnt *jsonic.Point, src string, sI, end int) {
+	rows := 0
+	lastNL := -1
+	for i := sI; i < end; i++ {
+		if src[i] == '\n' {
+			rows++
+			lastNL = i
+		}
+	}
+	if rows > 0 {
+		pnt.RI += rows
+		pnt.CI = end - lastNL
+	} else {
+		pnt.CI += end - sI
+	}
 	pnt.SI = end
-	pnt.CI += end - sI
+}
+
+// startPos is a token's first-character position (1-based line/column).
+func startPos(tok *jsonic.Token) map[string]any {
+	return map[string]any{"line": tok.RI, "column": tok.CI}
+}
+
+// endPos is the position just after a token's last character.
+func endPos(tok *jsonic.Token) map[string]any {
+	s := tok.Src
+	rows := 0
+	lastNL := -1
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			rows++
+			lastNL = i
+		}
+	}
+	if rows > 0 {
+		return map[string]any{"line": tok.RI + rows, "column": len(s) - lastNL}
+	}
+	return map[string]any{"line": tok.RI, "column": tok.CI + len(s)}
 }
 
 const (

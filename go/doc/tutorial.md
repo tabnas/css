@@ -168,8 +168,21 @@ ast, _ := tabnascss.Parse(
 ```
 
 The field is `*bool` so you can express "leave it at the default"
-(nil) versus "set it". `LowercaseProperties` is the only option; the
-[reference](reference.md#options) covers it in full.
+(nil) versus "set it". A second option, `Position`, attaches a
+1-based `start`/`end` line/column `"position"` to every node when set;
+the [reference](reference.md#options) covers both in full.
+
+You can also nest a rule (or a block at-rule) inside another rule's
+declaration block — the nested node is appended to the parent's
+`declarations` in source order:
+
+```go
+tabnascss.Parse(`a { color: red; & b { top: 0 } }`)
+// rule declarations: [
+//   {type: "declaration", property: "color", value: "red"},
+//   {type: "rule", selectors: ["& b"], declarations: [
+//     {type: "declaration", property: "top", value: "0"} ] } ]
+```
 
 ## 10. The empty cases
 

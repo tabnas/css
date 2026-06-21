@@ -191,6 +191,46 @@ tabnascss.Parse(`@-webkit-keyframes x { to { opacity: 1 } }`)
 //   {type: "keyframe", values: ["to"], declarations: [ {property: "opacity", value: "1"} ]} ] }
 ```
 
+## Read nested rules
+
+A style rule — or a block at-rule — may appear inside another rule's
+declaration block. Nested nodes are appended to the parent's
+`declarations` in source order, interleaved with the declarations
+themselves. An identifier followed by `:` is a declaration; the same
+identifier followed by `{` or `,` is a nested style rule.
+
+```go
+tabnascss.Parse(`a { color: red; & b { top: 0 } }`)
+// rule declarations: [
+//   {type: "declaration", property: "color", value: "red"},
+//   {type: "rule", selectors: ["& b"], declarations: [
+//     {type: "declaration", property: "top", value: "0"} ] } ]
+
+tabnascss.Parse(`a { color: red; @media x { b { y: 1 } } }`)
+// rule declarations: [
+//   {type: "declaration", property: "color", value: "red"},
+//   {type: "media", media: "x", rules: [
+//     {type: "rule", selectors: ["b"], declarations: [
+//       {type: "declaration", property: "y", value: "1"} ] } ] } ]
+```
+
+## Get source positions
+
+Set `Position` to attach a `"position"` to every node. Lines and
+columns are 1-based; `start` is the node's first character and `end` is
+just past its last (the closing `}` for a block, the end of the value
+for a declaration):
+
+```go
+yes := true
+tabnascss.Parse("a {\n  color: red;\n}", tabnascss.CssOptions{Position: &yes})
+// stylesheet position:          {start: {line: 1, column: 1}, end: {line: 3, column: 2}}
+// rule position:                {start: {line: 1, column: 1}, end: {line: 3, column: 2}}
+// declaration[0] position:      {start: {line: 2, column: 3}, end: {line: 2, column: 13}}
+```
+
+With no option set, nodes carry no `"position"` key at all.
+
 ## Lowercase property names
 
 CSS property names are case-insensitive. Set `LowercaseProperties` to

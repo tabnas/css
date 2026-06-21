@@ -34,6 +34,36 @@ c.parse('a { color: red }')
 Build the instance once and reuse it — constructing the grammar is the
 expensive part.
 
+## Options
+
+The plugin takes two options through its second `use()` argument, both
+defaulting to `false`:
+
+- `lowercaseProperties` — lowercase declaration property names.
+- `position` — attach a `position` (1-based `start`/`end` line and
+  column) to every node.
+
+```typescript
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css, { position: true })
+```
+
+## CSS Nesting
+
+A style rule or an at-rule may appear inside another style rule's
+declaration block. The nested node is appended to the parent's
+`declarations` array, interleaved with declarations in source order:
+
+```js
+const c = new Tabnas().use(jsonic).use(Css)
+
+c.parse('a { color: red; & b { top: 0 } }').rules[0].declarations[1]
+// => { type: 'rule', selectors: ['& b'], declarations: [ { type: 'declaration', property: 'top', value: '0' } ] }
+```
+
 ## Documentation
 
 Full documentation follows the [Diátaxis](https://diataxis.fr)

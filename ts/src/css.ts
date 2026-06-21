@@ -19,6 +19,9 @@ type CssOptions = {
   // When true, lowercase declaration property names (CSS property names are
   // case-insensitive). Selectors, values and at-rule preludes are untouched.
   lowercaseProperties: boolean
+  // When true, attach a `position: { start: { line, column }, end: {...} }`
+  // (1-based) to every node. Off by default — positions add noise.
+  position: boolean
 }
 
 // --- BEGIN EMBEDDED css-grammar.jsonic ---
@@ -59,7 +62,7 @@ const grammarText = `
         { a: '@cssSheet' p: items g: 'css,sheet' }
       ]
       close: [
-        { s: '#ZZ' g: 'css,sheet,end' }
+        { s: '#ZZ' a: '@cssEnd' g: 'css,sheet,end' }
       ]
     }
 
@@ -120,7 +123,7 @@ const grammarText = `
         { s: '#OB' p: decls g: 'css,declbody' }
       ]
       close: [
-        { s: '#CB' g: 'css,declbody,end' }
+        { s: '#CB' a: '@cssEnd' g: 'css,declbody,end' }
       ]
     }
 
@@ -138,11 +141,21 @@ const grammarText = `
       ]
     }
 
-    # Builds ONE declaration or comment node.
+    # Builds ONE block member: a declaration, a comment, or — for CSS
+    # Nesting — a nested style rule or at-rule. Disambiguated by the token
+    # after the key: #TX #CL is a declaration; #TX followed by "{"/"," is a
+    # nested rule; #ATR/#ATD/#ATK/#ATS is a nested at-rule.
     decl: {
       open: [
         { s: '#CC' a: '@cssComment' g: 'css,comment' }
         { s: '#TX #CL' a: '@cssDecl' p: declval g: 'css,decl' }
+        # Nested at-rules (CSS Nesting).
+        { s: '#ATR' a: '@cssAtRules' p: rulesbody g: 'css,nest,atrules' }
+        { s: '#ATD' a: '@cssAtDecls' p: declbody g: 'css,nest,atdecls' }
+        { s: '#ATK' a: '@cssKeyframes' p: kfbody g: 'css,nest,keyframes' }
+        { s: '#ATS' a: '@cssAtStmt' g: 'css,nest,atstmt' }
+        # A nested style rule (selector first, no ":").
+        { s: '#TX' b: 1 a: '@cssRule' p: sel g: 'css,nest,rule' }
       ]
       close: [
         { b: 1 g: 'css,decl,end' }
@@ -167,7 +180,7 @@ const grammarText = `
         { s: '#OB' p: items g: 'css,rulesbody' }
       ]
       close: [
-        { s: '#CB' g: 'css,rulesbody,end' }
+        { s: '#CB' a: '@cssEnd' g: 'css,rulesbody,end' }
       ]
     }
 
@@ -178,7 +191,7 @@ const grammarText = `
         { s: '#OB' p: kfitems g: 'css,kfbody' }
       ]
       close: [
-        { s: '#CB' g: 'css,kfbody,end' }
+        { s: '#CB' a: '@cssEnd' g: 'css,kfbody,end' }
       ]
     }
 
@@ -227,6 +240,7 @@ type Node = Record<string, any>
 // Plugin implementation.
 const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
   const lowercaseProperties = !!options.lowercaseProperties
+  const position = !!options.position
 
   // Human descriptions for the CSS tokens, surfaced in railroad diagram
   // legends (read off the live config by @tabnas/railroad).
@@ -256,7 +270,7 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
   const grammarDef = new Tabnas().use(jsonic).parse(grammarText)
   // The grammar builds the typed AST entirely from these grammar-local
   // actions (node constructors, field setters, and array pushers).
-  grammarDef.ref = makeActions(lowercaseProperties)
+  grammarDef.ref = makeActions(lowercaseProperties, position)
 
   // All jsonic option overrides live on the grammar object so the plugin
   // applies them atomically alongside its rule alts.
@@ -317,41 +331,68 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
 
 // --- Grammar actions: build the AST ---------------------------------------
 
-// All grammar-local actions, keyed by their `@name$` reference. The node
+// All grammar-local actions, keyed by their `@name` reference. The node
 // constructors overwrite `r.node`; the field setters mutate it; the pushers
-// append a finished child node to a parent array.
-function makeActions(_lowercaseProperties: boolean): Record<string, Function> {
+// append a finished child node to a parent array. When `position` is on, the
+// constructors record `node.position.start` (and single-token nodes their
+// `end`); `@cssEnd` records the closing-brace `end`.
+function makeActions(
+  _lowercaseProperties: boolean,
+  position: boolean,
+): Record<string, Function> {
   const tokenVal = (r: Rule, i = 0): any => (r as any).o[i]?.val
   const childNode = (r: Rule): any => r.child && r.child.node
+
+  // Record a node's start (and optionally end) position from a token.
+  const withPos = (node: Node, tok: any, end?: boolean): Node => {
+    if (position && tok) {
+      node.position = { start: startPos(tok), end: endPos(tok) }
+      if (false === end) node.position.end = undefined
+    }
+    return node
+  }
 
   return {
     // Node constructors.
     '@cssSheet': (r: Rule) => {
       r.node = { type: 'stylesheet', rules: [] }
+      if (position) r.node.position = { start: { line: 1, column: 1 }, end: undefined }
     },
     '@cssRule': (r: Rule) => {
-      r.node = { type: 'rule', selectors: [], declarations: [] }
+      r.node = withPos(
+        { type: 'rule', selectors: [], declarations: [] },
+        (r as any).o[0],
+        false,
+      )
     },
     '@cssDecl': (r: Rule) => {
-      r.node = { type: 'declaration', property: tokenVal(r), value: '' }
+      r.node = withPos(
+        { type: 'declaration', property: tokenVal(r), value: '' },
+        (r as any).o[0],
+        false,
+      )
     },
     '@cssComment': (r: Rule) => {
-      r.node = { type: 'comment', comment: tokenVal(r) }
+      r.node = withPos({ type: 'comment', comment: tokenVal(r) }, (r as any).o[0])
     },
     '@cssKeyframe': (r: Rule) => {
-      r.node = { type: 'keyframe', values: [], declarations: [] }
+      r.node = withPos(
+        { type: 'keyframe', values: [], declarations: [] },
+        (r as any).o[0],
+        false,
+      )
     },
     '@cssAtRules': (r: Rule) => {
-      r.node = makeAtRules((r as any).o[0])
+      r.node = withPos(makeAtRules((r as any).o[0]), (r as any).o[0], false)
     },
     '@cssAtDecls': (r: Rule) => {
-      r.node = makeAtDecls((r as any).o[0])
+      r.node = withPos(makeAtDecls((r as any).o[0]), (r as any).o[0], false)
     },
     '@cssKeyframes': (r: Rule) => {
-      r.node = makeKeyframes((r as any).o[0])
+      r.node = withPos(makeKeyframes((r as any).o[0]), (r as any).o[0], false)
     },
     '@cssAtStmt': (r: Rule) => {
-      r.node = makeAtStmt((r as any).o[0])
+      r.node = withPos(makeAtStmt((r as any).o[0]), (r as any).o[0])
     },
 
     // Field setters (mutate the current node, which the rule inherited).
@@ -362,7 +403,18 @@ function makeActions(_lowercaseProperties: boolean): Record<string, Function> {
       ;(r.node as Node).values.push(tokenVal(r))
     },
     '@cssDeclVal': (r: Rule) => {
-      ;(r.node as Node).value = tokenVal(r)
+      const n = r.node as Node
+      n.value = tokenVal(r)
+      if (position && n.position) n.position.end = endPos((r as any).o[0])
+    },
+
+    // Record the closing-brace / end-of-input end position on the node the
+    // block belongs to. Runs in a close phase, so the matched `}`/end token is
+    // in r.c[0].
+    '@cssEnd': (r: Rule) => {
+      const n = r.node as Node
+      const tok = (r as any).c[0]
+      if (position && n && n.position && tok) n.position.end = endPos(tok)
     },
 
     // Array pushers (append the built child node to a parent array).
@@ -379,6 +431,26 @@ function makeActions(_lowercaseProperties: boolean): Record<string, Function> {
       if (undefined !== c) (r.node as Node).keyframes.push(c)
     },
   }
+}
+
+// Position of a token's first character (1-based line/column).
+function startPos(tok: any): { line: number; column: number } {
+  return { line: tok.rI, column: tok.cI }
+}
+
+// Position just after a token's last character (1-based line/column).
+function endPos(tok: any): { line: number; column: number } {
+  const s: string = tok.src || ''
+  let rows = 0
+  let lastNL = -1
+  for (let i = 0; i < s.length; i++) {
+    if ('\n' === s[i]) {
+      rows++
+      lastNL = i
+    }
+  }
+  if (rows > 0) return { line: tok.rI + rows, column: s.length - lastNL }
+  return { line: tok.rI, column: tok.cI + s.length }
 }
 
 // Build a block at-rule node whose body is a list of rules (@media, @supports,
@@ -485,7 +557,7 @@ function buildCssTokenMatcher(lowercaseProperties: boolean) {
         const end = e < 0 ? src.length : e + 2
         const tkn = lex.token('#CC', src.substring(sI + 2, contentEnd),
           src.substring(sI, end), pnt)
-        advance(pnt, sI, cI, end)
+        advance(pnt, src, sI, end)
         return tkn
       }
 
@@ -496,14 +568,14 @@ function buildCssTokenMatcher(lowercaseProperties: boolean) {
         const endI = scanValueEnd(src, sI)
         const val = stripComments(src.substring(sI, endI)).trim()
         const tkn = lex.token('#VL', val, src.substring(sI, endI), pnt)
-        advance(pnt, sI, cI, endI)
+        advance(pnt, src, sI, endI)
         return tkn
       }
 
       // A top-level selector-group comma.
       if (',' === c) {
         const tkn = lex.token('#GC', ',', ',', pnt)
-        advance(pnt, sI, cI, sI + 1)
+        advance(pnt, src, sI, sI + 1)
         return tkn
       }
 
@@ -521,7 +593,7 @@ function buildCssTokenMatcher(lowercaseProperties: boolean) {
         const end = scanSelectorEnd(src, sI)
         const sel = stripComments(src.substring(sI, end)).trim()
         const tkn = lex.token('#TX', sel, src.substring(sI, end), pnt)
-        advance(pnt, sI, cI, end)
+        advance(pnt, src, sI, end)
         return tkn
       }
       // A property name: the identifier up to `:`, whitespace, `;` or `}`.
@@ -531,7 +603,7 @@ function buildCssTokenMatcher(lowercaseProperties: boolean) {
       let prop = src.substring(sI, eI)
       if (lowercaseProperties) prop = prop.toLowerCase()
       const tkn = lex.token('#TX', prop, src.substring(sI, eI), pnt)
-      advance(pnt, sI, cI, eI)
+      advance(pnt, src, sI, eI)
       return tkn
     }
   }
@@ -555,7 +627,7 @@ function matchAtRule(lex: Lex, src: string, sI: number, cI: number) {
     const tkn = lex.token(tin, kw, src.substring(sI, brace.index), pnt, {
       prelude,
     })
-    advance(pnt, sI, cI, brace.index)
+    advance(pnt, src, sI, brace.index)
     return tkn
   }
   // Statement at-rule: params run up to the next top-level `;`/`}`. A `;` is
@@ -564,15 +636,29 @@ function matchAtRule(lex: Lex, src: string, sI: number, cI: number) {
   const params = src.substring(kEnd, pEnd).trim()
   const end = ';' === src[pEnd] ? pEnd + 1 : pEnd
   const tkn = lex.token('#ATS', kw, src.substring(sI, end), pnt, { params })
-  advance(pnt, sI, cI, end)
+  advance(pnt, src, sI, end)
   return tkn
 }
 
-// Advance the scan point to `end`, updating column. (Row is left to the
-// space/line matchers; the AST carries no positions.)
-function advance(pnt: any, sI: number, cI: number, end: number) {
+// Advance the scan point to `end`, updating row/column across any newlines in
+// the consumed span [sI, end) (this matcher consumes multi-line runs the
+// space/line matchers never see, so it must track rows itself).
+function advance(pnt: any, src: string, sI: number, end: number) {
+  let rows = 0
+  let lastNL = -1
+  for (let i = sI; i < end; i++) {
+    if (10 === src.charCodeAt(i)) {
+      rows++
+      lastNL = i
+    }
+  }
+  if (rows > 0) {
+    pnt.rI += rows
+    pnt.cI = end - lastNL
+  } else {
+    pnt.cI += end - sI
+  }
   pnt.sI = end
-  pnt.cI = cI + (end - sI)
 }
 
 const KEYFRAMES_RE = /^(-[a-z]+-)?keyframes$/
@@ -745,6 +831,7 @@ function isAtChar(c: number): boolean {
 // Default option values.
 Css.defaults = {
   lowercaseProperties: false,
+  position: false,
 } as CssOptions
 
 export { Css }

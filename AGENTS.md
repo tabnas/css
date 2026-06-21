@@ -120,8 +120,8 @@ array.
 4. The jsonic option overrides and the `cssToken` matcher exist in **both**
    runtimes and must stay in step (they live on the grammar object so the
    plugin applies them atomically with its rule alts).
-5. `Defaults` (`lowercaseProperties: false`) and `Version` in `go/css.go`
-   mirror the TS `Css.defaults` and the `package.json` version.
+5. `Defaults` (`lowercaseProperties: false`, `position: false`) and `Version`
+   in `go/css.go` mirror the TS `Css.defaults` and the `package.json` version.
 
 ## Repo-specific gotchas
 
@@ -151,8 +151,18 @@ array.
 - **A zero-length source returns `undefined`/`nil`** (the engine's max-iteration
   budget scales with source length). Any non-empty source — even whitespace or
   a comment — yields a `stylesheet` node.
-- **CSS Nesting is not supported** — a style rule's block is declarations (and
-  comments) only; at-rules / rules nested inside it are out of scope.
+- **CSS Nesting is supported** structurally in the grammar. The `decl` rule has
+  alts for a nested style rule (`#TX` then `{`/`,` → `@cssRule` → `sel`) and
+  nested at-rules (`#ATR/#ATD/#ATK/#ATS`), alongside the `#TX #CL` declaration
+  alt. Nested nodes land in the parent rule's `declarations`, in source order.
+  The disambiguation lives in the grammar (token after the key), not the lexer.
+- **Source positions are opt-in** via the `position` option (default off). When
+  on, `makeActions` records `node.position.start` from the constructor's open
+  token and `end` from a close action (`@cssEnd` reads the close-phase token
+  `r.c[0]` / Go `r.C0`; `@cssDeclVal` sets a declaration's `end`). The `advance`
+  lexer helper tracks newlines so `Point.rI/cI` and emitted token `rI/cI` stay
+  1-based and correct; `startPos`/`endPos` derive the {line,column} pairs. Keep
+  the TS and Go position logic in lockstep.
 
 ## Build & test
 

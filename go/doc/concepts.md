@@ -182,7 +182,7 @@ internals.
 |---|---|---|
 | Convenience entry | none — install the plugin yourself | `tabnascss.Parse(src, opts...)` and `tabnascss.MakeJsonic(opts...)` |
 | Build a parser | `new Tabnas().use(jsonic).use(Css, opts)` | `tabnascss.MakeJsonic(opts)` or `j.UseDefaults(tabnascss.Css, tabnascss.Defaults, m)` |
-| Options | one object `{ lowercaseProperties }` | `CssOptions{ LowercaseProperties *bool }`, or a `map[string]any` |
+| Options | one object `{ lowercaseProperties, position }` | `CssOptions{ LowercaseProperties, Position *bool }`, or a `map[string]any` (`"lowercaseProperties"`, `"position"`) |
 | "Omit vs set" | option present or absent | `*bool` nil vs set |
 | Parse failure | **throws** | returns `error`; never panics on parse errors |
 
@@ -258,3 +258,10 @@ build. Edit the grammar there, not in the generated source.
   `@-webkit-keyframes` adds `vendor: "-webkit-"`.
 - `/* c */` at a statement position → a `comment` node; mid-construct it
   is skipped. `//` and `#` are not comments in CSS.
+- `a { color: red; & b { top: 0 } }` → nesting is supported: the nested
+  `rule` (or block at-rule) is appended to the parent's `declarations`,
+  interleaved in source order. An identifier before `:` is a
+  declaration; before `{` or `,` it is a nested style rule.
+- Source positions are available: set the `Position` option to attach a
+  1-based `start`/`end` line/column `"position"` to every node (off by
+  default, in which case no `"position"` key is present).

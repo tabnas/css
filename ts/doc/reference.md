@@ -90,11 +90,12 @@ c.parse('/* only a comment */') // => { type: 'stylesheet', rules: [ { type: 'co
 
 ## Options
 
-`CssOptions` has exactly one field:
+`CssOptions` has two fields:
 
 ```typescript
 type CssOptions = {
   lowercaseProperties: boolean
+  position: boolean
 }
 ```
 
@@ -114,6 +115,28 @@ import { Css } from '@tabnas/css'
 const c = new Tabnas().use(jsonic).use(Css, { lowercaseProperties: true })
 c.parse('A { COLOR: Red }').rules[0].declarations[0]
 // => { type: 'declaration', property: 'color', value: 'Red' }
+```
+
+### `position`
+
+- **Type:** `boolean`
+- **Default:** `false`
+- **Effect:** When `true`, attaches a `position` to **every** node:
+
+  ```typescript
+  position: { start: { line, column }, end: { line, column } }
+  ```
+
+  Lines and columns are **1-based**. `start` is the node's first
+  character; `end` is just past its last (the closing `}` for a block,
+  the end of the value for a declaration, the end of the text for a
+  comment). Off by default, since positions add noise to the tree.
+
+```js
+const c = new Tabnas().use(jsonic).use(Css, { position: true })
+c.parse('a {\n  color: red;\n}')
+// stylesheet & rule position: { start:{line:1,column:1}, end:{line:3,column:2} }
+// declaration position:       { start:{line:2,column:3}, end:{line:2,column:13} }
 ```
 
 ## The AST
@@ -209,6 +232,29 @@ d('p { border: 1px solid #fff }')      // => '1px solid #fff'
 d('a { color: red !important }')        // => 'red !important'
 d('a { color: rgb(1, 2, 3) }')          // => 'rgb(1, 2, 3)'
 d('a { src: "base.css" }')              // => '"base.css"'
+```
+
+### CSS Nesting
+
+A style rule or at-rule may appear **inside** another style rule's
+declaration block (CSS Nesting). Nested nodes are appended to the parent
+rule's `declarations` array, interleaved with declarations in source
+order. A `#TX` followed by `:` is a declaration; a `#TX` followed by `{`
+or `,` is a nested style rule.
+
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css)
+
+const ds = c.parse('a { color: red; & b { top: 0 } }').rules[0].declarations
+ds[0]  // => { type: 'declaration', property: 'color', value: 'red' }
+ds[1]  // => { type: 'rule', selectors: ['& b'], declarations: [ { type: 'declaration', property: 'top', value: '0' } ] }
+
+c.parse('a { color: red; @media x { b { y: 1 } } }').rules[0].declarations[1].type
+// => 'media'
 ```
 
 ### Block at-rules (rules body)
@@ -383,5 +429,3 @@ an unterminated block — is an error.
   list).
 - A statement at-rule **must** be terminated with `;`.
 - Only `/* ... */` block comments are recognised.
-- CSS Nesting (an at-rule or style rule nested inside a style rule's
-  declaration block) is not supported.

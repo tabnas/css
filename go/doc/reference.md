@@ -77,13 +77,14 @@ The default option map, paired with `Css` for `UseDefaults`:
 ```go
 var Defaults = map[string]any{
     "lowercaseProperties": false,
+    "position":            false,
 }
 ```
 
 ### `type CssOptions struct`
 
-A typed wrapper over the option map. The field is `*bool` so callers can
-express "omit" (nil) vs "set":
+A typed wrapper over the option map. The fields are `*bool` so callers
+can express "omit" (nil) vs "set":
 
 ```go
 type CssOptions struct {
@@ -91,6 +92,9 @@ type CssOptions struct {
     // property names (CSS property names are case-insensitive). Selectors,
     // values and at-rule preludes are untouched.
     LowercaseProperties *bool
+    // Position, when non-nil and true, attaches a 1-based
+    // position{start{line,column},end{...}} to every node. Off by default.
+    Position *bool
 }
 ```
 
@@ -114,7 +118,30 @@ tabnascss.Parse(`A { COLOR: Red }`, tabnascss.CssOptions{LowercaseProperties: &y
 //   {type: "declaration", property: "color", value: "Red"} ]
 ```
 
-`LowercaseProperties` is the only option.
+### `Position`
+
+- **Type:** `*bool`
+- **Default:** `false` (nil)
+- **Effect:** When `true`, attaches a `"position"` to **every** node:
+
+  ```go
+  map[string]any{
+      "start": map[string]any{"line": 1, "column": 1},
+      "end":   map[string]any{"line": 3, "column": 2},
+  }
+  ```
+
+  Lines and columns are **1-based**. `start` is the node's first
+  character; `end` is just past its last (the closing `}` for a block,
+  the end of the value for a declaration, the end of the text for a
+  comment). Off by default.
+
+```go
+yes := true
+ast, _ := tabnascss.Parse("a {\n  color: red;\n}", tabnascss.CssOptions{Position: &yes})
+// stylesheet & rule position: {start:{line:1,column:1}, end:{line:3,column:2}}
+// declaration position:       {start:{line:2,column:3}, end:{line:2,column:13}}
+```
 
 ## The AST
 
@@ -162,6 +189,22 @@ the raw inner text (the bytes between `/*` and `*/`, untrimmed).
 
 ```go
 map[string]any{"type": "comment", "comment": " note "}
+```
+
+### CSS Nesting
+
+A style rule or at-rule may appear **inside** another style rule's
+declaration block. Nested nodes are appended to the parent rule's
+`declarations` array, interleaved with declarations in source order. A
+`#TX` followed by `:` is a declaration; a `#TX` followed by `{` or `,`
+is a nested style rule.
+
+```go
+ast, _ := tabnascss.Parse("a { color: red; & b { top: 0 } }")
+// the rule node's declarations:
+//   {type:"declaration", property:"color", value:"red"},
+//   {type:"rule", selectors:["& b"], declarations:[
+//     {type:"declaration", property:"top", value:"0"}]}
 ```
 
 ### Block at-rules with a rules body

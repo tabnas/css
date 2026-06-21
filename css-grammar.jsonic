@@ -34,7 +34,7 @@
         { a: '@cssSheet' p: items g: 'css,sheet' }
       ]
       close: [
-        { s: '#ZZ' g: 'css,sheet,end' }
+        { s: '#ZZ' a: '@cssEnd' g: 'css,sheet,end' }
       ]
     }
 
@@ -95,7 +95,7 @@
         { s: '#OB' p: decls g: 'css,declbody' }
       ]
       close: [
-        { s: '#CB' g: 'css,declbody,end' }
+        { s: '#CB' a: '@cssEnd' g: 'css,declbody,end' }
       ]
     }
 
@@ -113,11 +113,21 @@
       ]
     }
 
-    # Builds ONE declaration or comment node.
+    # Builds ONE block member: a declaration, a comment, or — for CSS
+    # Nesting — a nested style rule or at-rule. Disambiguated by the token
+    # after the key: #TX #CL is a declaration; #TX followed by "{"/"," is a
+    # nested rule; #ATR/#ATD/#ATK/#ATS is a nested at-rule.
     decl: {
       open: [
         { s: '#CC' a: '@cssComment' g: 'css,comment' }
         { s: '#TX #CL' a: '@cssDecl' p: declval g: 'css,decl' }
+        # Nested at-rules (CSS Nesting).
+        { s: '#ATR' a: '@cssAtRules' p: rulesbody g: 'css,nest,atrules' }
+        { s: '#ATD' a: '@cssAtDecls' p: declbody g: 'css,nest,atdecls' }
+        { s: '#ATK' a: '@cssKeyframes' p: kfbody g: 'css,nest,keyframes' }
+        { s: '#ATS' a: '@cssAtStmt' g: 'css,nest,atstmt' }
+        # A nested style rule (selector first, no ":").
+        { s: '#TX' b: 1 a: '@cssRule' p: sel g: 'css,nest,rule' }
       ]
       close: [
         { b: 1 g: 'css,decl,end' }
@@ -142,7 +152,7 @@
         { s: '#OB' p: items g: 'css,rulesbody' }
       ]
       close: [
-        { s: '#CB' g: 'css,rulesbody,end' }
+        { s: '#CB' a: '@cssEnd' g: 'css,rulesbody,end' }
       ]
     }
 
@@ -153,7 +163,7 @@
         { s: '#OB' p: kfitems g: 'css,kfbody' }
       ]
       close: [
-        { s: '#CB' g: 'css,kfbody,end' }
+        { s: '#CB' a: '@cssEnd' g: 'css,kfbody,end' }
       ]
     }
 

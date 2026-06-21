@@ -200,6 +200,28 @@ kf.keyframes[1].values   // => ['50%', '100%']
 c.parse('@-webkit-keyframes x { to { opacity: 1 } }').rules[0].vendor // => '-webkit-'
 ```
 
+## Nest rules and at-rules
+
+A style rule **or** an at-rule may appear inside another style rule's
+declaration block (CSS Nesting). The nested node is appended to the
+parent rule's `declarations` array, interleaved with declarations in
+source order. (A `#TX` identifier followed by `:` is a declaration; one
+followed by `{` or `,` is a nested style rule.)
+
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css)
+
+c.parse('a { color: red; & b { top: 0 } }').rules[0].declarations
+// => [ { type: 'declaration', property: 'color', value: 'red' }, { type: 'rule', selectors: ['& b'], declarations: [ { type: 'declaration', property: 'top', value: '0' } ] } ]
+
+c.parse('a { color: red; @media x { b { y: 1 } } }').rules[0].declarations[1]
+// => { type: 'media', media: 'x', rules: [ { type: 'rule', selectors: ['b'], declarations: [ { type: 'declaration', property: 'y', value: '1' } ] } ] }
+```
+
 ## Capture comments
 
 `/* ... */` block comments at a statement or declaration-list position
@@ -241,6 +263,27 @@ import { Css } from '@tabnas/css'
 const props = new Tabnas().use(jsonic).use(Css, { lowercaseProperties: true })
 props.parse('A { COLOR: Red }').rules[0].declarations[0]
 // => { type: 'declaration', property: 'color', value: 'Red' }
+```
+
+## Get source positions
+
+Set `position: true` to attach a `position` to every node. Each carries
+`start` and `end` objects with 1-based `line` and `column`: `start` is
+the node's first character, and `end` is just past its last (the closing
+`}` of a block, the end of a value, the end of a comment's text).
+Without the option, nodes have no `position` field at all.
+
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css, { position: true })
+
+const ast = c.parse('a {\n  color: red;\n}')
+ast.position                            // => { start: { line: 1, column: 1 }, end: { line: 3, column: 2 } }
+ast.rules[0].position                   // => { start: { line: 1, column: 1 }, end: { line: 3, column: 2 } }
+ast.rules[0].declarations[0].position   // => { start: { line: 2, column: 3 }, end: { line: 2, column: 13 } }
 ```
 
 ## Handle a parse error

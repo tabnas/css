@@ -212,8 +212,9 @@ for every input.
   the value keeps its quotes. A statement at-rule must end with `;`.
 - `/* ... */` → a `comment` node at a list position, skipped
   mid-construct; `#` and `//` are **not** comments in CSS.
-- CSS Nesting (at-rules/rules nested inside a declaration block) is not
-  supported.
+- `a { color: red; & b { top: 0 } }` → CSS Nesting: a style rule (or
+  at-rule) nested in a declaration block is appended to the parent's
+  `declarations`, in source order, alongside the declarations.
 
 ## Relationship to the Go port
 

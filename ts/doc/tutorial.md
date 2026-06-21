@@ -126,6 +126,12 @@ const c = new Tabnas().use(jsonic).use(Css)
 c.parse('@import "base.css";').rules[0] // => { type: 'import', import: '"base.css"' }
 ```
 
+CSS Nesting works too: a style rule (or at-rule) written inside another
+rule's block is appended to that rule's `declarations`, interleaved with
+declarations in source order — so `a { color: red; & b { top: 0 } }`
+gives the `a` rule a `color` declaration followed by a nested `rule`
+node for `& b`.
+
 ## 6. Turn on an option
 
 The plugin is configured through its second `use()` argument. CSS
@@ -145,8 +151,10 @@ ast.rules[0].selectors        // => ['A']
 ast.rules[0].declarations[0]  // => { type: 'declaration', property: 'color', value: 'Red' }
 ```
 
-`lowercaseProperties` is the plugin's one option; the
-[reference](reference.md#options) lists it with its default.
+The plugin's other option is `position: true`, which attaches a
+`position` (1-based `start`/`end` line and column) to every node; both
+options default to `false` and are listed with their defaults in the
+[reference](reference.md#options).
 
 ## 7. Catch an error
 

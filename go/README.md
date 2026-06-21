@@ -34,6 +34,35 @@ reuses a cached instance internally and is safe for concurrent use; for hot
 loops with options, build one instance with `tabnascss.MakeJsonic` and reuse
 it.
 
+## Options
+
+`tabnascss.CssOptions` has two `*bool` fields, both defaulting to `false`:
+
+- `LowercaseProperties` — normalise property names to lower case
+  (selectors and values are left untouched).
+- `Position` — attach a `"position"` (1-based `start`/`end` line/column)
+  to every node.
+
+```go
+yes := true
+tabnascss.Parse(`a { color: red }`, tabnascss.CssOptions{Position: &yes})
+// every node gains "position": {start: {line, column}, end: {line, column}}
+```
+
+## CSS Nesting
+
+A style rule or an at-rule may appear inside another style rule's
+declaration block; nested nodes are appended to the parent's
+`declarations` in source order, interleaved with declarations:
+
+```go
+tabnascss.Parse(`a { color: red; & b { top: 0 } }`)
+// rule declarations: [
+//   {type: "declaration", property: "color", value: "red"},
+//   {type: "rule", selectors: ["& b"], declarations: [
+//     {type: "declaration", property: "top", value: "0"} ] } ]
+```
+
 ## Documentation
 
 Full documentation follows the [Diátaxis](https://diataxis.fr)

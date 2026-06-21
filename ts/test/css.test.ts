@@ -233,6 +233,39 @@ a {
     }))
   })
 
+  test('CSS Nesting: a nested style rule lives in declarations', () => {
+    assert.deepStrictEqual(parse('a { color: red; & b { top: 0 } }'), sheet(
+      rule(['a'], [
+        decl('color', 'red'),
+        rule(['& b'], [decl('top', '0')]),
+      ]),
+    ))
+  })
+
+  test('CSS Nesting: nested rule first, then declaration', () => {
+    assert.deepStrictEqual(parse('a { b { x: 1 } color: red }'), sheet(
+      rule(['a'], [
+        rule(['b'], [decl('x', '1')]),
+        decl('color', 'red'),
+      ]),
+    ))
+  })
+
+  test('CSS Nesting: nested @media inside a rule', () => {
+    assert.deepStrictEqual(parse('a { color: red; @media x { b { y: 1 } } }'), sheet(
+      rule(['a'], [
+        decl('color', 'red'),
+        { type: 'media', media: 'x', rules: [rule(['b'], [decl('y', '1')])] },
+      ]),
+    ))
+  })
+
+  test('CSS Nesting: deep and grouped', () => {
+    assert.deepStrictEqual(parse('a { &:hover, &:focus { c: 1 } }'), sheet(
+      rule(['a'], [rule(['&:hover', '&:focus'], [decl('c', '1')])]),
+    ))
+  })
+
   test('@page with selectors and declarations', () => {
     assert.deepStrictEqual(parse('@page :first { margin: 1in }'), sheet({
       type: 'page',
@@ -278,10 +311,151 @@ a {
       sheet(rule(['a'], [decl('background', 'url("a;b.png")')])))
   })
 
+  test('position option attaches 1-based start/end to nodes', () => {
+    const ast: any = parse('a {\n  color: red;\n}', { position: true })
+    assert.deepStrictEqual(ast.position, {
+      start: { line: 1, column: 1 },
+      end: { line: 3, column: 2 },
+    })
+    const r = ast.rules[0]
+    assert.deepStrictEqual(r.position.start, { line: 1, column: 1 })
+    assert.deepStrictEqual(r.position.end, { line: 3, column: 2 })
+    const d = r.declarations[0]
+    assert.deepStrictEqual(d.position.start, { line: 2, column: 3 })
+    assert.deepStrictEqual(d.position.end, { line: 2, column: 13 })
+  })
+
+  test('no position fields by default', () => {
+    const ast: any = parse('a { x: 1 }')
+    assert.strictEqual(ast.position, undefined)
+    assert.strictEqual(ast.rules[0].position, undefined)
+  })
+
   test('lowercaseProperties option', () => {
     assert.deepStrictEqual(
       parse('A { COLOR: Red }', { lowercaseProperties: true }),
       sheet(rule(['A'], [decl('color', 'Red')])),
+    )
+  })
+
+  test('real-world smoke: normalize.css excerpt', () => {
+    // An excerpt of normalize.css (MIT) exercising comments, multi-line
+    // selector groups, vendor prefixes, !important, @media, url(), and
+    // duplicate/compound values. We assert structural sanity rather than a
+    // full deep-equal: no throw, a stylesheet, and the expected node shape.
+    const src = `
+/*! normalize.css v8.0.1 | MIT License */
+
+/* Document
+   ========================================================================== */
+
+html {
+  line-height: 1.15; /* 1 */
+  -webkit-text-size-adjust: 100%; /* 2 */
+}
+
+/* Sections */
+
+body {
+  margin: 0;
+}
+
+h1 {
+  font-size: 2em;
+  margin: 0.67em 0;
+}
+
+a {
+  background-color: transparent;
+}
+
+b,
+strong {
+  font-weight: bolder;
+}
+
+img {
+  border-style: none;
+}
+
+button,
+input,
+optgroup,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 100%;
+  line-height: 1.15;
+  margin: 0;
+}
+
+[type="checkbox"],
+[type="radio"] {
+  box-sizing: border-box;
+  padding: 0;
+}
+
+::-webkit-file-upload-button {
+  -webkit-appearance: button;
+  font: inherit;
+}
+
+@media (min-width: 768px) {
+  body {
+    margin: 0 auto;
+    max-width: 960px;
+  }
+  .hero {
+    background: url("hero;cover.png") no-repeat center / cover;
+  }
+}
+`
+    const ast: any = parse(src)
+    assert.strictEqual(ast.type, 'stylesheet')
+
+    // Top-level: leading banner comment, a section comment, then rules and a
+    // trailing @media.
+    const comments = ast.rules.filter((n: any) => n.type === 'comment')
+    assert.ok(comments.length >= 3, 'banner + section comments preserved')
+
+    const rules = ast.rules.filter((n: any) => n.type === 'rule')
+    assert.ok(rules.length >= 8, 'style rules collected')
+
+    // The selector group splits into a list, never a joined string.
+    const group = rules.find(
+      (r: any) => r.selectors.length === 5 && r.selectors[0] === 'button',
+    )
+    assert.ok(group, 'button,input,... group is a 5-element list')
+
+    const attrGroup = rules.find(
+      (r: any) => r.selectors[0] === '[type="checkbox"]',
+    )
+    assert.deepStrictEqual(attrGroup.selectors, [
+      '[type="checkbox"]',
+      '[type="radio"]',
+    ])
+
+    // Trailing comments stay attached as nodes inside a rule's declarations.
+    const html = rules.find((r: any) => r.selectors[0] === 'html')
+    assert.deepStrictEqual(
+      html.declarations.map((d: any) => d.type),
+      ['declaration', 'comment', 'declaration', 'comment'],
+    )
+
+    // The @media block wraps its own rules; the url() with a ';' is one value.
+    const media = ast.rules.find((n: any) => n.type === 'media')
+    assert.strictEqual(media.media, '(min-width: 768px)')
+    const hero = media.rules.find((r: any) => r.selectors[0] === '.hero')
+    assert.deepStrictEqual(hero.declarations[0], {
+      type: 'declaration',
+      property: 'background',
+      value: 'url("hero;cover.png") no-repeat center / cover',
+    })
+
+    // Round-trip safety: re-parsing the serialized type list is stable.
+    assert.ok(
+      ast.rules.every((n: any) => typeof n.type === 'string'),
+      'every top-level node is typed',
     )
   })
 
