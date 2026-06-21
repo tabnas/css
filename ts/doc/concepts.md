@@ -78,19 +78,19 @@ punctuation (`{` `}` `:` `;`), letting the builtin matchers handle
 those.
 
 What it emits depends on whether it is at a **key** or a **value**
-position, which it decides from the active rule and a per-parse flag:
+position, which it decides from the active rule alone — it is stateless:
 
-- **Value mode** — selected when the `val` rule is open (just after a
-  `:`) or right after a statement at-keyword. It reads the run of text
-  up to the next top-level `;` or `}` and emits one `#VL` token. So
-  `1px solid #fff` becomes a single value.
+- **Value mode** — selected when the `val` rule is open. The grammar
+  pushes `val` exactly at a value position (just after a `:`, or after a
+  statement at-keyword), so the matcher needs no flag or lookbehind: it
+  reads the run of text up to the next top-level `;` or `}` and emits one
+  `#VL` token. So `1px solid #fff` becomes a single value.
 
 - **Key mode** — otherwise. It peeks ahead: if a top-level `{` is
   reached before any `;`/`}`, the text is a **selector** (the whole
   prelude, trimmed, as `#TX`); if a `;`/`}`/end-of-input is reached
-  first, it is a **property name** or statement at-keyword (the
-  identifier, as `#TX`). A leading `@` marks a statement at-rule, whose
-  params are then read as a value on the next call.
+  first, it is a **property name** (the identifier, as `#TX`). A leading
+  `@` instead emits a distinct `#AT` at-keyword token.
 
 Both scans skip over quoted strings, `/* */` comments, and balanced
 `()` / `[]`, so a `;` inside `url(...)` or a `{` inside an attribute
@@ -98,14 +98,14 @@ selector does not fool the classifier.
 
 ## Selector vs property vs at-rule
 
-The matcher's lookahead is what lets one text token, `#TX`, stand for
-three different things, disambiguated in the grammar by the **next**
-token:
+The matcher's lookahead is what lets the text tokens stand for three
+different things, disambiguated in the grammar by the key token and the
+**next** token:
 
 - `#TX #CL` (`property :`) → a **declaration**; the value follows.
 - `#TX #OB` (`selector {`) → a **nested ruleset**; the block follows.
-- `#TX #VL` (`@keyword params`) → a **statement at-rule**; the params
-  are the value.
+- `#AT` (`@keyword`) → a **statement at-rule**; the grammar pushes `val`
+  straight away, so the params are read as the value.
 
 Because the classifier ran in the lexer, the grammar only ever sees an
 already-disambiguated shape and a two-token-lookahead rule set is

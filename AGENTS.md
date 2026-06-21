@@ -42,19 +42,22 @@ things on top of jsonic:
 
 The signature CSS trick: a stylesheet is **context-sensitive** — the same
 identifier is a selector, a property, or a value depending on position. The
-`cssToken` matcher resolves this without backtracking:
+`cssToken` matcher resolves this without backtracking, and stays stateless by
+letting the grammar carry the structure:
 
 - **Key vs value** is decided by the active rule: when the `val` rule is open
-  (right after `:`), or a statement at-keyword was just emitted (a per-parse
-  `ctx.U` flag), the matcher reads a **value** (`#VL`) — the run of text up to
-  the next top-level `;`/`}`. Otherwise it reads a **key** (`#TX`).
+  the matcher reads a **value** (`#VL`) — the run of text up to the next
+  top-level `;`/`}`. The grammar pushes `val` exactly at a value position
+  (after a `:`, or after an `#AT` at-keyword), so no flag or lookbehind is
+  needed. Otherwise the matcher reads a **key**.
 - **Selector vs declaration** is decided by lookahead: scanning past strings,
   `()`/`[]` and comments, if a top-level `{` is reached first the key is a
-  **selector** (the whole prelude, verbatim); if a `;`/`}` is reached first it
-  is a **property name** (the identifier up to `:`).
-- A leading `@` in the declaration branch marks a **statement at-rule**; the
-  matcher sets the `ctx.U` flag so the params are read as a value on the next
-  call (`@import "x"` → `{ "@import": "\"x\"" }`).
+  **selector** (`#TX`, the whole prelude verbatim); if a `;`/`}` is reached
+  first it is a **property name** (`#TX`, the identifier up to `:`).
+- A leading `@` in the declaration branch marks a **statement at-rule**: the
+  matcher emits a distinct `#AT` key token, and the grammar's `#AT` alt pushes
+  `val` directly so the params are read as a value (`@import "x"` →
+  `{ "@import": "\"x\"" }`).
 
 Two options shape output, both applied in the matcher: `lowercaseProperties`
 (lowercase declaration property names) and `lowercaseValues` (lowercase
@@ -124,18 +127,23 @@ builds them first.
 
 ## Repo-specific gotchas
 
-- **The matcher is context-sensitive but uses only `rule.Name`/`rule.State`
-  and a per-parse `ctx.U` flag** — never the grammar's expected-token columns.
+- **The matcher is stateless** — it reads value-vs-key position straight off
+  `rule.Name`/`rule.State` (the `val` rule is open exactly at a value
+  position), never the grammar's expected-token columns and never a flag.
   This is deliberate: the Go port runs in an external package that cannot read
   the rule spec's token columns or inject lookahead tokens, so both runtimes
   use the same rule-name signal for exact parity. Don't "optimise" the TS side
   to read `rule.spec.def.tcol`; it would diverge from Go.
-- **The at-rule flag lives in `ctx.U` (the per-parse context bag), not
-  `rule.u`.** A key's `#TX` may be lexed under the `stylesheet`, `block`, or
-  `pair` rule (because of `b:1` re-feeds), but its value is always read under
-  `pair`/`val` — different `rule.u` objects. `ctx.U` is stable across rules
-  within one parse and isolated per parse, so it is safe for the cached,
-  concurrently-used default instance.
+- **Statement at-rules use a distinct `#AT` token, not a flag.** A `@import`
+  keyword has no `:` separator, so the matcher emits `#AT` (in the
+  declaration branch when the prelude starts with `@`); the grammar's
+  `{ s: '#AT' p: val }` alt then pushes `val` immediately, so the params are
+  read as a value under `val` like any declaration. This keeps the matcher
+  stateless — an earlier design carried a cross-rule `ctx.U` flag, which the
+  `#AT` token replaced. The `#AT` tin is resolved once via `j.Token("#AT")`
+  (Go) and auto-tokenised by `lex.token('#AT', ...)` (TS); `#AT` is added to
+  the `KEY` token set alongside `#TX`, and `#KEY` is used in the stylesheet
+  and implicit-continuation alts so either key token starts a rule.
 - **`cssToken` must out-order the fixed-token matcher** so it owns selectors,
   properties and values before `{` `}` `:` `;` are considered (TS `order: 1e5`;
   Go `Order: 100000`). It defers (returns undefined) on whitespace, `/* */`

@@ -47,13 +47,15 @@ const grammarText = `
 #     "@media screen": { "a": { "color": "blue" } }
 #   }
 #
-# The custom cssToken lex matcher is context-sensitive: it inspects the
-# active rule's expected-token columns to decide what to emit.
-#   - At a key position it emits #TX, peeking ahead to choose between a
-#     selector (a "{" is reached first -> the whole prelude, trimmed) and a
-#     property name (a ";"/"}" is reached first -> the identifier up to ":").
-#   - At a value position it emits #VL: the run of text up to the next
-#     top-level ";" or "}" (trimmed), so '1px solid #fff' is one value.
+# The custom cssToken lex matcher emits three text tokens by position:
+#   - #TX : a key in key position — a selector (whole prelude up to "{",
+#           when a "{" is reached before any ";"/"}") or a property name
+#           (the identifier up to ":", otherwise).
+#   - #AT : a statement at-keyword (e.g. "@import") — a key whose value
+#           follows without a ":" separator.
+#   - #VL : a value, in value position (when the val rule is open): the run
+#           of text up to the next top-level ";" or "}" (trimmed), so
+#           '1px solid #fff' is one value.
 # The fixed tokens "{" "}" ":" lex as #OB #CB #CL; ";" is remapped to #CA
 # (the member separator). Bare "[" "]" are disabled.
 #
@@ -68,9 +70,9 @@ const grammarText = `
       open: [
         # Empty input -> empty stylesheet.
         { s: '#ZZ' b: 1 a: '@object$' g: 'css,sheet,empty' }
-        # Otherwise the first key (#TX) starts the rule list. b:1 re-feeds
-        # the key to the pair rule.
-        { s: '#TX' b: 1 a: '@object$' p: pair g: 'css,sheet' }
+        # Otherwise the first key (#KEY = #TX or #AT) starts the rule list.
+        # b:1 re-feeds the key to the pair rule.
+        { s: '#KEY' b: 1 a: '@object$' p: pair g: 'css,sheet' }
       ]
       close: [
         { s: '#ZZ' g: 'css,sheet,end' }
@@ -89,19 +91,20 @@ const grammarText = `
       ]
     }
 
-    # A member of a map. Three shapes, disambiguated by the token after the
-    # key: ":" -> declaration, "{" -> nested ruleset, value -> statement
-    # at-rule. @key$ captures the key for the matching @setval$.
+    # A member of a map. Three shapes, disambiguated by the key token and
+    # what follows it: #TX ":" -> declaration, #TX "{" -> nested ruleset,
+    # #AT -> statement at-rule. In every case the value side is the val rule,
+    # so the matcher reads a value purely because val is open (no flag).
+    # @key$ captures the key for the matching @setval$.
     pair: {
       open: [
         # Declaration:  property : value
         { s: '#TX #CL' a: '@key$' p: val g: 'css,decl' }
         # Ruleset:  selector { ... }   (b:1 re-feeds "{" to the val/block).
         { s: '#TX #OB' b: 1 a: '@key$' p: val g: 'css,rule' }
-        # Statement at-rule:  @import "x"   The cssToken matcher emits the
-        # at-keyword (#TX) then, via a rule flag, the params as a value
-        # (#VL); b:1 re-feeds the value to the val rule.
-        { s: '#TX #VL' b: 1 a: '@key$' p: val g: 'css,atrule' }
+        # Statement at-rule:  @import "x"   The at-keyword (#AT) pushes val
+        # directly; val then reads the params as a value (#VL).
+        { s: '#AT' a: '@key$' p: val g: 'css,atrule' }
       ]
       close: [
         # Trailing ";" before "}" -> end of block (re-fed to block close).
@@ -114,8 +117,9 @@ const grammarText = `
         { s: '#CB' b: 1 a: '@setval$' g: 'css,pair,endblock' }
         # End of input -> end of the stylesheet.
         { s: '#ZZ' b: 1 a: '@setval$' g: 'css,pair,endsheet' }
-        # A new key with no separator -> next ruleset (implicit continuation).
-        { s: '#TX' b: 1 a: '@setval$' r: pair g: 'css,rule,next' }
+        # A new key (#TX or #AT) with no separator -> next rule (implicit
+        # continuation, e.g. between adjacent rulesets).
+        { s: '#KEY' b: 1 a: '@setval$' r: pair g: 'css,rule,next' }
       ]
     }
 
@@ -150,6 +154,11 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 	lowercaseProperties := toBool(options["lowercaseProperties"])
 	lowercaseValues := toBool(options["lowercaseValues"])
 
+	// Resolve the tin for the custom statement-at-keyword token (#AT) on this
+	// instance, so the matcher emits the same tin the grammar's `#AT` alts
+	// resolve to.
+	atTin := j.Token("#AT")
+
 	// No grammar-local closures are needed; the rule alts use only builtin
 	// ($) actions.
 	gs, err := parseGrammarText(grammarText, map[jsonic.FuncRef]any{})
@@ -180,7 +189,9 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 		},
 		TokenSet: map[string][]string{
 			// Keys are the text token produced by the cssToken matcher.
-			"KEY": {"#TX"},
+			// Keys are the text tokens produced by the cssToken matcher: a
+			// selector / property name (#TX) or a statement at-keyword (#AT).
+			"KEY": {"#TX", "#AT"},
 		},
 		// The cssToken matcher owns all non-fixed text (selectors, property
 		// names, values), so the default string/number/text matchers are off.
@@ -210,7 +221,7 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 				// Runs ahead of the fixed-token matcher so it owns selectors,
 				// property names and values; it defers on the fixed
 				// punctuation and on whitespace/comments.
-				"cssToken": {Order: 100000, Make: buildCssTokenMatcher(lowercaseProperties, lowercaseValues)},
+				"cssToken": {Order: 100000, Make: buildCssTokenMatcher(lowercaseProperties, lowercaseValues, atTin)},
 			},
 		},
 	}
@@ -292,20 +303,22 @@ func Parse(src string, opts ...CssOptions) (any, error) {
 	return MakeJsonic(opts...).Parse(src)
 }
 
-// The single context-sensitive lex matcher. It uses the active rule to
-// decide what to emit at the current source position:
+// The single lex matcher. It emits one of three text tokens by position; all
+// the structural decisions live in the grammar:
 //
-//   - value mode -> read a declaration value up to `;`/`}` and emit #VL.
-//     Selected when the val rule is open, or when the previous key was a
-//     statement at-keyword (flagged in the per-parse context bag, ctx.U).
-//   - key mode   -> read a selector (up to `{`) or a property / at-keyword
-//     (up to `:`/whitespace), chosen by lookahead, and emit #TX.
+//   - value mode (the val rule is open) -> read a declaration value up to
+//     `;`/`}` and emit #VL.
+//   - key mode (otherwise) -> a selector / block-at-rule prelude up to `{`
+//     (#TX), a property name up to `:` (#TX), or a statement at-keyword
+//     (#AT), chosen by a single lookahead.
 //
 // Anything else (fixed punctuation, whitespace, comments) is deferred to the
-// later builtin matchers. Using only rule.Name/rule.State and a ctx.U flag
-// keeps this logic identical to the TS plugin: an external package can read
-// neither the grammar's expected-token columns nor inject lookahead tokens.
-func buildCssTokenMatcher(lowercaseProperties, lowercaseValues bool) jsonic.MakeLexMatcher {
+// later builtin matchers. The matcher is stateless: value position is read
+// straight off rule.Name/rule.State because the grammar always pushes val at
+// a value position (after `:`, or after an #AT key). This keeps the logic
+// identical to the TS plugin, which likewise cannot read the grammar's
+// expected-token columns or inject lookahead tokens.
+func buildCssTokenMatcher(lowercaseProperties, lowercaseValues bool, atTin jsonic.Tin) jsonic.MakeLexMatcher {
 	return func(_ *jsonic.LexConfig, _ *jsonic.Options) jsonic.LexMatcher {
 		return func(lex *jsonic.Lex, rule *jsonic.Rule) *jsonic.Token {
 			pnt := lex.Cursor()
@@ -324,24 +337,13 @@ func buildCssTokenMatcher(lowercaseProperties, lowercaseValues bool) jsonic.Make
 				return nil
 			}
 
-			// The at-rule flag lives in the per-parse context bag (ctx.U),
-			// which is stable across the stylesheet/pair/val rules (the key
-			// #TX may be lexed under any of them) and isolated per parse.
-			ctx := lex.Ctx
-			if ctx.U == nil {
-				ctx.U = map[string]any{}
-			}
-			atValue, _ := ctx.U["cssAtValue"].(bool)
-			valueMode := atValue || (rule.Name == "val" && rule.State == jsonic.OPEN)
-
-			// Value position: a value is read right after `:` (a declaration,
-			// where the val rule is open) or after a statement at-keyword.
-			if valueMode {
+			// Value mode is driven entirely by the grammar: the val rule is
+			// open exactly at a value position (after a `:` declaration
+			// separator, or after a statement at-keyword pushes it). No flag
+			// or lookbehind is needed.
+			if rule.Name == "val" && rule.State == jsonic.OPEN {
 				if c == '{' || c == '}' || c == ';' || c == ':' {
 					return nil
-				}
-				if atValue {
-					ctx.U["cssAtValue"] = false
 				}
 				endI := scanValueEnd(src, sI)
 				raw := src[sI:endI]
@@ -355,14 +357,14 @@ func buildCssTokenMatcher(lowercaseProperties, lowercaseValues bool) jsonic.Make
 				return tkn
 			}
 
-			// Key position (selector or property name). A selector may begin
-			// with `:` (a pseudo-class), so `:` is not block punctuation here.
+			// Key position. A selector may begin with `:` (a pseudo-class), so
+			// `:` is not block punctuation here.
 			if c == '{' || c == '}' || c == ';' {
 				return nil
 			}
 			kind, idx := scanToBraceOrEnd(src, sI)
 			if kind == selectorKind {
-				ctx.U["cssAtValue"] = false
+				// A selector or block at-rule prelude: the whole run up to `{`.
 				raw := src[sI:idx]
 				sel := strings.TrimRight(raw, " \t\r\n")
 				tkn := lex.Token("#TX", jsonic.TinTX, sel, raw)
@@ -370,9 +372,9 @@ func buildCssTokenMatcher(lowercaseProperties, lowercaseValues bool) jsonic.Make
 				pnt.CI += idx - sI
 				return tkn
 			}
-			// Declaration property or statement at-keyword: read the identifier
-			// up to `:`, whitespace, `;` or `}`. A leading `@` marks a statement
-			// at-rule, whose params are read as a value on the next call.
+			// A property name or a statement at-keyword: the identifier up to
+			// `:`, whitespace, `;` or `}`. A leading `@` makes it an at-keyword
+			// (#AT), which the grammar follows directly with a value; else #TX.
 			eI := sI
 			isAt := src[eI] == '@'
 			if isAt {
@@ -384,10 +386,15 @@ func buildCssTokenMatcher(lowercaseProperties, lowercaseValues bool) jsonic.Make
 			if eI == sI {
 				return nil
 			}
-			ctx.U["cssAtValue"] = isAt
 			name := src[sI:eI]
 			if lowercaseProperties {
 				name = strings.ToLower(name)
+			}
+			if isAt {
+				tkn := lex.Token("#AT", atTin, name, name)
+				pnt.SI = eI
+				pnt.CI += eI - sI
+				return tkn
 			}
 			tkn := lex.Token("#TX", jsonic.TinTX, name, name)
 			pnt.SI = eI

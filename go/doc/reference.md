@@ -269,7 +269,8 @@ punctuation lexes as a small set of tokens:
 | `#CB` | `}` | end of a block |
 | `#CL` | `:` | declaration separator |
 | `#CA` | `;` | declaration terminator (remapped from jsonic's comma) |
-| `#TX` | selector / property / at-keyword | a key |
+| `#TX` | selector / property | a key |
+| `#AT` | statement at-keyword (e.g. `@import`) | a key |
 | `#VL` | raw text run | a declaration or at-rule value |
 
 Bare `[` and `]` are **not** structural tokens — they only appear

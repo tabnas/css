@@ -42,13 +42,15 @@ const grammarText = `
 #     "@media screen": { "a": { "color": "blue" } }
 #   }
 #
-# The custom cssToken lex matcher is context-sensitive: it inspects the
-# active rule's expected-token columns to decide what to emit.
-#   - At a key position it emits #TX, peeking ahead to choose between a
-#     selector (a "{" is reached first -> the whole prelude, trimmed) and a
-#     property name (a ";"/"}" is reached first -> the identifier up to ":").
-#   - At a value position it emits #VL: the run of text up to the next
-#     top-level ";" or "}" (trimmed), so '1px solid #fff' is one value.
+# The custom cssToken lex matcher emits three text tokens by position:
+#   - #TX : a key in key position — a selector (whole prelude up to "{",
+#           when a "{" is reached before any ";"/"}") or a property name
+#           (the identifier up to ":", otherwise).
+#   - #AT : a statement at-keyword (e.g. "@import") — a key whose value
+#           follows without a ":" separator.
+#   - #VL : a value, in value position (when the val rule is open): the run
+#           of text up to the next top-level ";" or "}" (trimmed), so
+#           '1px solid #fff' is one value.
 # The fixed tokens "{" "}" ":" lex as #OB #CB #CL; ";" is remapped to #CA
 # (the member separator). Bare "[" "]" are disabled.
 #
@@ -63,9 +65,9 @@ const grammarText = `
       open: [
         # Empty input -> empty stylesheet.
         { s: '#ZZ' b: 1 a: '@object$' g: 'css,sheet,empty' }
-        # Otherwise the first key (#TX) starts the rule list. b:1 re-feeds
-        # the key to the pair rule.
-        { s: '#TX' b: 1 a: '@object$' p: pair g: 'css,sheet' }
+        # Otherwise the first key (#KEY = #TX or #AT) starts the rule list.
+        # b:1 re-feeds the key to the pair rule.
+        { s: '#KEY' b: 1 a: '@object$' p: pair g: 'css,sheet' }
       ]
       close: [
         { s: '#ZZ' g: 'css,sheet,end' }
@@ -84,19 +86,20 @@ const grammarText = `
       ]
     }
 
-    # A member of a map. Three shapes, disambiguated by the token after the
-    # key: ":" -> declaration, "{" -> nested ruleset, value -> statement
-    # at-rule. @key$ captures the key for the matching @setval$.
+    # A member of a map. Three shapes, disambiguated by the key token and
+    # what follows it: #TX ":" -> declaration, #TX "{" -> nested ruleset,
+    # #AT -> statement at-rule. In every case the value side is the val rule,
+    # so the matcher reads a value purely because val is open (no flag).
+    # @key$ captures the key for the matching @setval$.
     pair: {
       open: [
         # Declaration:  property : value
         { s: '#TX #CL' a: '@key$' p: val g: 'css,decl' }
         # Ruleset:  selector { ... }   (b:1 re-feeds "{" to the val/block).
         { s: '#TX #OB' b: 1 a: '@key$' p: val g: 'css,rule' }
-        # Statement at-rule:  @import "x"   The cssToken matcher emits the
-        # at-keyword (#TX) then, via a rule flag, the params as a value
-        # (#VL); b:1 re-feeds the value to the val rule.
-        { s: '#TX #VL' b: 1 a: '@key$' p: val g: 'css,atrule' }
+        # Statement at-rule:  @import "x"   The at-keyword (#AT) pushes val
+        # directly; val then reads the params as a value (#VL).
+        { s: '#AT' a: '@key$' p: val g: 'css,atrule' }
       ]
       close: [
         # Trailing ";" before "}" -> end of block (re-fed to block close).
@@ -109,8 +112,9 @@ const grammarText = `
         { s: '#CB' b: 1 a: '@setval$' g: 'css,pair,endblock' }
         # End of input -> end of the stylesheet.
         { s: '#ZZ' b: 1 a: '@setval$' g: 'css,pair,endsheet' }
-        # A new key with no separator -> next ruleset (implicit continuation).
-        { s: '#TX' b: 1 a: '@setval$' r: pair g: 'css,rule,next' }
+        # A new key (#TX or #AT) with no separator -> next rule (implicit
+        # continuation, e.g. between adjacent rulesets).
+        { s: '#KEY' b: 1 a: '@setval$' r: pair g: 'css,rule,next' }
       ]
     }
 
@@ -150,6 +154,7 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
             '#CL': ': — declaration separator',
             '#CA': '; — declaration terminator',
             '#TX': 'key: a selector or property name',
+            '#AT': 'key: a statement at-keyword (e.g. @import)',
             '#VL': 'value: a declaration value (raw text)',
           })
         },
@@ -183,8 +188,9 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
       },
     },
     tokenSet: {
-      // Keys are the text token produced by the cssToken matcher.
-      KEY: ['#TX'],
+      // Keys are the text tokens produced by the cssToken matcher: a
+      // selector / property name (#TX) or a statement at-keyword (#AT).
+      KEY: ['#TX', '#AT'],
     },
     // The cssToken matcher owns all non-fixed text (selectors, property
     // names, values), so the default string/number/text matchers are off.
@@ -227,17 +233,19 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
   tn.grammar(grammarDef, { rule: { alt: { g: 'css' } } })
 }
 
-// The single context-sensitive lex matcher. It uses the active rule to
-// decide what to emit at the current source position:
-//   - value mode  -> read a declaration value up to `;`/`}` and emit #VL.
-//     Selected when the `val` rule is open, or when the previous key was a
-//     statement at-keyword (flagged on `rule.u`).
-//   - key mode    -> read a selector (up to `{`) or a property / at-keyword
-//     (up to `:`/whitespace), chosen by lookahead, and emit #TX.
-// Anything else (fixed punctuation, whitespace, comments) is deferred to
-// the later builtin matchers. Using only `rule.name`/`rule.state` and a
-// `rule.u` flag keeps this logic identical to the Go port, which cannot
-// read the grammar's expected-token columns.
+// The single lex matcher. It emits one of three text tokens by position;
+// all the structural decisions live in the grammar:
+//   - value mode (the `val` rule is open) -> read a declaration value up to
+//     `;`/`}` and emit #VL.
+//   - key mode (otherwise) -> a selector / block-at-rule prelude up to `{`
+//     (#TX), a property name up to `:` (#TX), or a statement at-keyword
+//     (#AT), chosen by a single lookahead.
+// Anything else (fixed punctuation, whitespace, comments) is deferred to the
+// later builtin matchers. The matcher is stateless: value position is read
+// straight off `rule.name`/`rule.state` because the grammar always pushes
+// `val` at a value position (after `:`, or after an #AT key). This keeps the
+// logic identical to the Go port, which cannot read the grammar's
+// expected-token columns or inject lookahead tokens.
 function buildCssTokenMatcher(
   lowercaseProperties: boolean,
   lowercaseValues: boolean,
@@ -254,21 +262,13 @@ function buildCssTokenMatcher(
       if (' ' === c || '\t' === c || '\r' === c || '\n' === c) return undefined
       if ('/' === c && '*' === src[sI + 1]) return undefined
 
-      // The at-rule flag lives in the per-parse context bag (ctx.u), which is
-      // stable across the stylesheet/pair/val rules (the key #TX may be lexed
-      // under any of them) and isolated per parse — unlike rule.u.
-      const ctx: any = (lex as any).ctx
-      const bag: any = ctx.u || (ctx.u = {})
-      const atValue = !!bag.cssAtValue
-      const valueMode =
-        atValue || ('val' === (rule as any).name && 'o' === (rule as any).state)
-
-      // Value position: a value is read right after `:` (a declaration, where
-      // the val rule is open) or after a statement at-keyword (the flag).
-      if (valueMode) {
+      // Value mode is driven entirely by the grammar: the val rule is open
+      // exactly at a value position (after a `:` declaration separator, or
+      // after a statement at-keyword pushes it). No flag or lookbehind is
+      // needed — every value is read under val.
+      if ('val' === (rule as any).name && 'o' === (rule as any).state) {
         // Fixed punctuation here belongs to the grammar, not a value.
         if ('{' === c || '}' === c || ';' === c || ':' === c) return undefined
-        if (atValue) bag.cssAtValue = false
         const endI = scanValueEnd(src, sI)
         let val = src.substring(sI, endI).replace(/\s+$/, '')
         if (lowercaseValues) val = val.toLowerCase()
@@ -278,30 +278,29 @@ function buildCssTokenMatcher(
         return tkn
       }
 
-      // Key position (selector or property name). A selector may begin with
-      // `:` (a pseudo-class), so `:` is NOT block punctuation here.
+      // Key position. A selector may begin with `:` (a pseudo-class), so `:`
+      // is NOT block punctuation here.
       if ('{' === c || '}' === c || ';' === c) return undefined
       const brace = scanToBraceOrEnd(src, sI)
       if (brace.kind === 'selector') {
-        bag.cssAtValue = false
+        // A selector or block at-rule prelude: the whole run up to `{`.
         const sel = src.substring(sI, brace.index).replace(/\s+$/, '')
         const tkn = lex.token('#TX', sel, src.substring(sI, brace.index), pnt)
         pnt.sI = brace.index
         pnt.cI = cI + (brace.index - sI)
         return tkn
       }
-      // Declaration property or statement at-keyword: read the identifier up
-      // to `:`, whitespace, `;` or `}`. A leading `@` marks a statement
-      // at-rule, whose params are read as a value on the next call.
+      // A property name or a statement at-keyword: the identifier up to `:`,
+      // whitespace, `;` or `}`. A leading `@` makes it an at-keyword (#AT),
+      // which the grammar follows directly with a value; otherwise #TX.
       let eI = sI
       const isAt = '@' === src[eI]
       if (isAt) eI++
       while (eI < src.length && isPropChar(src.charCodeAt(eI))) eI++
       if (eI === sI) return undefined
-      bag.cssAtValue = isAt
       let name = src.substring(sI, eI)
       if (lowercaseProperties) name = name.toLowerCase()
-      const tkn = lex.token('#TX', name, src.substring(sI, eI), pnt)
+      const tkn = lex.token(isAt ? '#AT' : '#TX', name, name, pnt)
       pnt.sI = eI
       pnt.cI = cI + (eI - sI)
       return tkn

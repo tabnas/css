@@ -290,13 +290,14 @@ diagram legend):
 | `#CL` | `:` | declaration separator |
 | `#CA` | `;` | declaration terminator |
 | `#TX` | text | a key: a selector or property name |
+| `#AT` | text | a key: a statement at-keyword (e.g. `@import`) |
 | `#VL` | text | a value: a declaration value (raw text) |
 
-`#TX` and `#VL` are produced by the custom `cssToken` matcher, which
-owns all non-punctuation text. The fixed `{`, `}`, `:` lex as `#OB`,
-`#CB`, `#CL`; `;` is remapped to `#CA`. Bare `[` and `]` are disabled
-as structure — they only ever appear inside selectors and values, which
-the matcher consumes as text.
+`#TX`, `#AT` and `#VL` are produced by the custom `cssToken` matcher,
+which owns all non-punctuation text. The fixed `{`, `}`, `:` lex as
+`#OB`, `#CB`, `#CL`; `;` is remapped to `#CA`. Bare `[` and `]` are
+disabled as structure — they only ever appear inside selectors and
+values, which the matcher consumes as text.
 
 ## Grammar group tag
 

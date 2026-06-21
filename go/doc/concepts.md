@@ -85,14 +85,16 @@ applied together through one `GrammarSpec`:
    text, and value matchers are turned off, since `cssToken` owns all
    text.
 
-3. **Key-set restriction.** The `KEY` token set is narrowed to `#TX`
-   alone — the text token `cssToken` produces for a key.
+3. **Key-set restriction.** The `KEY` token set is narrowed to the two
+   text tokens `cssToken` produces for a key: `#TX` (selector / property)
+   and `#AT` (statement at-keyword).
 
 4. **Grammar overlay.** Four rules — `stylesheet`, `block`, `pair`,
    `val` — drive the structure. `pair` has three open shapes,
-   disambiguated by the token after the key: `#TX #CL` (declaration),
-   `#TX #OB` (nested ruleset), `#TX #VL` (statement at-rule). Its close
-   alts handle `;`-separated declarations, trailing `;`, block/sheet end,
+   disambiguated by the key token and what follows: `#TX #CL`
+   (declaration), `#TX #OB` (nested ruleset), `#AT` (statement at-rule).
+   Its close alts handle `;`-separated declarations, trailing `;`,
+   block/sheet end,
    and an implicit next ruleset.
 
 ## One context-sensitive matcher
@@ -100,31 +102,35 @@ applied together through one `GrammarSpec`:
 CSS has no sigil that distinguishes a selector from a property name from
 a value — the same characters can begin any of them. The engine allows
 only limited lookahead, not enough to tell them apart by grammar alone.
-So the decision is pushed into the lexer. `cssToken` looks at the active
-rule and a per-parse flag to choose what to emit:
+So the decision is pushed into the lexer. `cssToken` is stateless — it
+looks only at the active rule to choose what to emit:
 
 - **Value mode** — read a declaration value up to the next top-level
-  `;`/`}` and emit `#VL`. Selected when the `val` rule is open (right
-  after a `:`), or when the previous key was a statement at-keyword.
-- **Key mode** — emit `#TX`, peeking ahead to choose between a
-  **selector** (a top-level `{` is reached first → the whole prelude,
-  trimmed) and a **property name / at-keyword** (a top-level `;`/`}` is
-  reached first → the identifier up to `:` or whitespace).
+  `;`/`}` and emit `#VL`. Selected when the `val` rule is open. The
+  grammar pushes `val` exactly at a value position (after a `:`, or after
+  an `#AT` at-keyword), so no flag or lookbehind is needed.
+- **Key mode** — peek ahead to choose between a **selector** (a top-level
+  `{` is reached first → the whole prelude, trimmed, as `#TX`) and a
+  **property name** (a top-level `;`/`}` is reached first → the
+  identifier up to `:`, as `#TX`). A leading `@` instead emits a distinct
+  `#AT` at-keyword token.
 
 While scanning, the matcher skips over strings, `( )`, `[ ]`, and
 comments, so the punctuation inside `rgb(1, 2, 3)`, `url(http://…)`, or
 `[type=text]` never ends a key or value prematurely.
 
-## The statement-at-rule flag
+## The statement-at-rule token
 
-A statement at-rule (`@import "x";`) needs the matcher to emit the
-at-keyword (`#TX`) and *then*, on the next call, the params as a value
-(`#VL`) — even though the `val` rule is not yet open. The matcher
-records "the next token is a value" in a flag. That flag lives in the
-**per-parse context bag** (`ctx.U`, a `map[string]any`), not on the
-rule, because the key `#TX` may be lexed under any of the
-`stylesheet`/`pair`/`val` rules, and the bag is both stable across them
-and isolated per parse (so concurrent parses don't interfere).
+A statement at-rule (`@import "x";`) has no `:` separator between its
+keyword and its params. Rather than carry lexer state to bridge that gap,
+the matcher emits a distinct **`#AT`** token for the at-keyword. The
+grammar's `{ s: '#AT' p: val }` alt then pushes the `val` rule straight
+away, so the params are read as an ordinary value (`#VL`) under `val` —
+exactly like a declaration's value. The `#AT` tin is resolved once on the
+instance with `j.Token("#AT")` and passed to the matcher, and `#AT` joins
+`#TX` in the `KEY` token set (the `stylesheet` and implicit-continuation
+alts match `#KEY`, so either key token can start a rule). This keeps the
+matcher a pure function of position and rule — no per-parse flag.
 
 ## Why reuse one instance
 
@@ -175,12 +181,14 @@ Because values are never parsed into numbers, there is no `float64`-vs-
 
 ### Internals: context-sensitive lexing
 
-The context-sensitive `cssToken` matcher uses `rule.Name` / `rule.State`
-plus the per-parse `ctx.U` flag to decide what to emit. The Go port
-**cannot** read the grammar's expected-token columns from an external
-package, so it relies on the rule name and that flag — and the
-TypeScript plugin deliberately uses the *same* rule-name approach (rather
-than reading token columns) to keep the two implementations in parity.
+The `cssToken` matcher decides value-vs-key from `rule.Name` /
+`rule.State` alone — it is stateless. The Go port **cannot** read the
+grammar's expected-token columns from an external package, nor inject
+lookahead tokens, so the value position is taken straight from the rule
+name (the grammar guarantees `val` is open at every value position), and
+statement at-rules are handled by the dedicated `#AT` token rather than
+lexer state. The TypeScript plugin deliberately uses the *same*
+rule-name approach to keep the two implementations in parity.
 
 ### The re-invocation guard
 
