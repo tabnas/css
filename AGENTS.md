@@ -17,10 +17,14 @@ parses to:
 ```js
 {
   "a": { "color": "red", "font-size": "12px" },
-  ".foo, .bar": { "margin": "0" },
+  ".foo": { "margin": "0" },
+  ".bar": { "margin": "0" },
   "@media screen": { "a": { "color": "blue" } }
 }
 ```
+
+(A comma-grouped selector like `.foo, .bar` is expanded into one entry per
+selector.)
 
 Like `@tabnas/zon` (the repo this was templated from), this is a **jsonic
 plugin**: it layers on `@tabnas/jsonic`'s relaxed-JSON grammar, reuses its
@@ -59,9 +63,14 @@ letting the grammar carry the structure:
   `val` directly so the params are read as a value (`@import "x"` →
   `{ "@import": "\"x\"" }`).
 
+A comma-grouped selector key (e.g. `h1, h2`) is **expanded** at assignment
+time by the one grammar-local action, `@cssSetval`, into a separate map entry
+per selector (each with its own deep copy of the block). At-rule preludes and
+commas nested in `:not(...)`/strings/`()`/`[]` are not split.
+
 Two options shape output, both applied in the matcher: `lowercaseProperties`
 (lowercase declaration property names) and `lowercaseValues` (lowercase
-declaration values). Selectors are always left verbatim.
+declaration values). Single selectors are left verbatim.
 
 ## Repository map
 
@@ -150,8 +159,16 @@ builds them first.
   comments, and the fixed punctuation.
 - **Declaration values are raw strings**, read verbatim (trimmed) up to the
   next top-level `;`/`}`. They are not parsed further: `'1px solid #fff'`,
-  `'rgb(1, 2, 3)'`, `'red !important'` are single string values. Selector text
-  is likewise kept verbatim as the map key, grouping commas and all.
+  `'rgb(1, 2, 3)'`, `'red !important'` are single string values. A single
+  selector is likewise kept verbatim as the map key.
+- **Comma-grouped selectors are expanded by `@cssSetval`**, the only
+  grammar-local action (a `ref` on the grammar object, mirrored in both
+  runtimes). It replaces the builtin `@setval$` on every `pair`-close alt and,
+  when the captured key is a non-`@` string with a top-level comma, splits it
+  (via `splitSelectors`, which skips strings/`()`/`[]`/comments) and assigns a
+  deep `cloneNode` copy of the value to each selector. At-rule preludes (keys
+  starting with `@`, e.g. `@media screen, print`) are never split. Keep the
+  TS and Go `@cssSetval`/`splitSelectors`/`cloneNode` in step.
 - **Statement at-rules require a terminating `;`** (or end-of-input / `}`); the
   value reader stops at top-level `;`/`}` only, so an unterminated statement
   at-rule before a `{` would run into the block.

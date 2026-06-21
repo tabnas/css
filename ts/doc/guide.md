@@ -92,7 +92,6 @@ import { Css } from '@tabnas/css'
 
 const c = new Tabnas().use(jsonic).use(Css)
 
-c.parse('h1, h2 { margin: 0 }')              // => { 'h1, h2': { margin: '0' } }
 c.parse('.foo > .bar { top: 0 }')            // => { '.foo > .bar': { top: '0' } }
 c.parse('a:hover { color: red }')            // => { 'a:hover': { color: 'red' } }
 c.parse('a::before { content: "x" }')        // => { 'a::before': { content: '"x"' } }
@@ -101,6 +100,17 @@ c.parse('input[type=text] { border: 0 }')    // => { 'input[type=text]': { borde
 
 Note that `a:hover` is read as one selector, not as a property named
 `a` — a leading `:` in key position is treated as a pseudo-class.
+
+A comma-grouped selector is expanded into one key per selector, each
+with its own copy of the block (so the entries are independent). Commas
+inside `:not(...)` and the like are not split:
+
+```js
+c.parse('h1, h2 { margin: 0 }')
+// => { h1: { margin: '0' }, h2: { margin: '0' } }
+c.parse('a:not(.x, .y), b { top: 0 }')
+// => { 'a:not(.x, .y)': { top: '0' }, b: { top: '0' } }
+```
 
 ## Handle at-rules
 

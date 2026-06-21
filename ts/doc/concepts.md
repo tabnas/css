@@ -157,8 +157,10 @@ to build the engine once and reuse it for every input.
 - `''` → `undefined`; `'   '` and `/* c */` → `{}`. A zero-length
   source runs no rules; any non-empty source yields a stylesheet.
 - `a {}` → `{ a: {} }`. An empty block is an empty map.
-- `h1, h2 { ... }` → key `'h1, h2'`. Selector grouping is kept
-  verbatim.
+- `h1, h2 { ... }` → `{ h1: {...}, h2: {...} }`. A comma-grouped
+  selector is expanded into one key per selector (each with its own copy
+  of the block); commas inside `:not(...)`, strings, `()`/`[]` are not
+  split.
 - `a:hover { ... }` → key `'a:hover'`, not a property `a`. A `:` is
   allowed inside a selector prelude.
 - `1px solid #fff` → one value string. Values are not parsed further.

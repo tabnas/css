@@ -63,7 +63,24 @@ func TestCompoundValue(t *testing.T) {
 }
 
 func TestSelectorGrouping(t *testing.T) {
-	eq(t, parse(t, "h1, h2 { margin: 0 }"), m{"h1, h2": m{"margin": "0"}})
+	eq(t, parse(t, "h1, h2 { margin: 0 }"),
+		m{"h1": m{"margin": "0"}, "h2": m{"margin": "0"}})
+}
+
+func TestGroupedSelectorsAreIndependent(t *testing.T) {
+	out := parse(t, "h1, h2 { margin: 0 }").(map[string]any)
+	out["h1"].(map[string]any)["margin"] = "changed"
+	eq(t, out["h2"], m{"margin": "0"})
+}
+
+func TestCommaInsideNotNotSplit(t *testing.T) {
+	eq(t, parse(t, "a:not(.x, .y), b { top: 0 }"),
+		m{"a:not(.x, .y)": m{"top": "0"}, "b": m{"top": "0"}})
+}
+
+func TestAtRulePreludeCommaListNotSplit(t *testing.T) {
+	eq(t, parse(t, "@media screen, print { a { color: red } }"),
+		m{"@media screen, print": m{"a": m{"color": "red"}}})
 }
 
 func TestCombinatorAndClassSelectors(t *testing.T) {

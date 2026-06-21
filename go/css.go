@@ -13,9 +13,12 @@
 //
 //	{
 //	  "a": { "color": "red", "font-size": "12px" },
-//	  ".foo, .bar": { "margin": "0" },
+//	  ".foo": { "margin": "0" },
+//	  ".bar": { "margin": "0" },
 //	  "@media screen": { "a": { "color": "blue" } }
 //	}
+//
+// A comma-grouped selector is expanded into one entry per selector.
 package tabnascss
 
 import (
@@ -35,6 +38,7 @@ const grammarText = `
 #   selector -> { property -> value }
 # Nested at-rules (e.g. @media) recurse: their block is itself a map of
 # rules. Statement at-rules (e.g. @import) become property -> value pairs.
+# A comma-grouped selector is expanded into one entry per selector.
 #
 # Example:
 #   a { color: red; font-size: 12px; }
@@ -43,7 +47,8 @@ const grammarText = `
 # parses to:
 #   {
 #     "a": { "color": "red", "font-size": "12px" },
-#     ".foo, .bar": { "margin": "0" },
+#     ".foo": { "margin": "0" },
+#     ".bar": { "margin": "0" },
 #     "@media screen": { "a": { "color": "blue" } }
 #   }
 #
@@ -95,7 +100,8 @@ const grammarText = `
     # what follows it: #TX ":" -> declaration, #TX "{" -> nested ruleset,
     # #AT -> statement at-rule. In every case the value side is the val rule,
     # so the matcher reads a value purely because val is open (no flag).
-    # @key$ captures the key for the matching @setval$.
+    # @key$ captures the key; @cssSetval assigns the built value, expanding a
+    # comma-grouped selector key (e.g. "h1, h2") into one entry per selector.
     pair: {
       open: [
         # Declaration:  property : value
@@ -108,18 +114,18 @@ const grammarText = `
       ]
       close: [
         # Trailing ";" before "}" -> end of block (re-fed to block close).
-        { s: '#CA #CB' b: 1 a: '@setval$' g: 'css,decl,trailing' }
+        { s: '#CA #CB' b: 1 a: '@cssSetval' g: 'css,decl,trailing' }
         # Trailing ";" before end-of-input -> end of stylesheet.
-        { s: '#CA #ZZ' b: 1 a: '@setval$' g: 'css,decl,trailing,end' }
+        { s: '#CA #ZZ' b: 1 a: '@cssSetval' g: 'css,decl,trailing,end' }
         # ";" -> next declaration in the same block.
-        { s: '#CA' a: '@setval$' r: pair g: 'css,decl,next' }
+        { s: '#CA' a: '@cssSetval' r: pair g: 'css,decl,next' }
         # "}" -> end of the enclosing block (re-fed to block close).
-        { s: '#CB' b: 1 a: '@setval$' g: 'css,pair,endblock' }
+        { s: '#CB' b: 1 a: '@cssSetval' g: 'css,pair,endblock' }
         # End of input -> end of the stylesheet.
-        { s: '#ZZ' b: 1 a: '@setval$' g: 'css,pair,endsheet' }
+        { s: '#ZZ' b: 1 a: '@cssSetval' g: 'css,pair,endsheet' }
         # A new key (#TX or #AT) with no separator -> next rule (implicit
         # continuation, e.g. between adjacent rulesets).
-        { s: '#KEY' b: 1 a: '@setval$' r: pair g: 'css,rule,next' }
+        { s: '#KEY' b: 1 a: '@cssSetval' r: pair g: 'css,rule,next' }
       ]
     }
 
@@ -159,9 +165,13 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 	// resolve to.
 	atTin := j.Token("#AT")
 
-	// No grammar-local closures are needed; the rule alts use only builtin
-	// ($) actions.
-	gs, err := parseGrammarText(grammarText, map[jsonic.FuncRef]any{})
+	// @cssSetval is the one grammar-local action: it assigns a pair's built
+	// value into the enclosing map, expanding a comma-grouped selector key
+	// (e.g. "h1, h2") into a separate entry per selector. Everything else uses
+	// builtin ($) actions.
+	gs, err := parseGrammarText(grammarText, map[jsonic.FuncRef]any{
+		"@cssSetval": jsonic.AltAction(cssSetval),
+	})
 	if err != nil {
 		return err
 	}
@@ -188,7 +198,6 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 			},
 		},
 		TokenSet: map[string][]string{
-			// Keys are the text token produced by the cssToken matcher.
 			// Keys are the text tokens produced by the cssToken matcher: a
 			// selector / property name (#TX) or a statement at-keyword (#AT).
 			"KEY": {"#TX", "#AT"},
@@ -506,6 +515,98 @@ func isPropChar(c byte) bool {
 		(c >= 'A' && c <= 'Z') ||
 		(c >= 'a' && c <= 'z') ||
 		c == '-' || c == '_'
+}
+
+// cssSetval assigns the pair's built value (r.Child.Node) into the enclosing
+// map under the captured key. A comma-grouped selector key like "h1, h2" is
+// expanded into one entry per selector, each with its own copy of the value
+// (so the entries are independent). At-rule preludes (e.g.
+// "@media screen, print") are left intact — their commas are a media-query
+// list, not a selector group — as are keys with no top-level comma.
+func cssSetval(r *jsonic.Rule, _ *jsonic.Context) {
+	if r.Child == nil {
+		return
+	}
+	m, ok := r.Node.(map[string]any)
+	if !ok {
+		return
+	}
+	key, _ := r.U["key"].(string)
+	val := r.Child.Node
+	if len(key) > 0 && key[0] != '@' && strings.IndexByte(key, ',') >= 0 {
+		if sels := splitSelectors(key); len(sels) > 1 {
+			for i, sel := range sels {
+				if i == 0 {
+					m[sel] = val
+				} else {
+					m[sel] = cloneNode(val)
+				}
+			}
+			return
+		}
+	}
+	m[key] = val
+}
+
+// splitSelectors splits a selector group on top-level commas, skipping commas
+// inside strings, `()`/`[]` and comments (so `:not(.a, .b)` stays one
+// selector). Each part is trimmed; empty parts are dropped.
+func splitSelectors(s string) []string {
+	var out []string
+	depth := 0
+	start := 0
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c == '"' || c == '\'' {
+			i = skipString(s, i)
+			continue
+		}
+		if c == '/' && i+1 < len(s) && s[i+1] == '*' {
+			i = skipComment(s, i)
+			continue
+		}
+		if c == '(' || c == '[' {
+			depth++
+		} else if c == ')' || c == ']' {
+			if depth > 0 {
+				depth--
+			}
+		} else if depth == 0 && c == ',' {
+			out = append(out, strings.TrimSpace(s[start:i]))
+			start = i + 1
+		}
+		i++
+	}
+	out = append(out, strings.TrimSpace(s[start:]))
+	res := out[:0]
+	for _, p := range out {
+		if p != "" {
+			res = append(res, p)
+		}
+	}
+	return res
+}
+
+// cloneNode deep-copies a parsed value (map / slice / scalar) so grouped
+// selectors don't share a mutable value.
+func cloneNode(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, vv := range t {
+			out[k] = cloneNode(vv)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, vv := range t {
+			out[i] = cloneNode(vv)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // parseGrammarText parses grammar text into a GrammarSpec with refs attached.

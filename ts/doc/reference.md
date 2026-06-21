@@ -162,10 +162,15 @@ c.parse('a {}')                              // => { a: {} }
 ### Selectors
 
 The selector text is kept **verbatim** as the key — it is not parsed
-into components. Grouping (`,`), combinators (`>`, `+`, `~`),
-descendant whitespace, pseudo-classes (`:hover`), pseudo-elements
-(`::before`), and attribute selectors (`[type=text]`) are all kept
-exactly as written (with surrounding whitespace trimmed).
+into components. Combinators (`>`, `+`, `~`), descendant whitespace,
+pseudo-classes (`:hover`), pseudo-elements (`::before`), and attribute
+selectors (`[type=text]`) are all kept exactly as written (with
+surrounding whitespace trimmed).
+
+A comma-**grouped** selector is the exception: it is expanded into one
+key per selector, each mapping to its own copy of the block. Commas
+nested inside `:not(...)`/`:is(...)` (or strings, `()`, `[]`) are not
+split.
 
 ```js
 import { Tabnas } from '@tabnas/parser'
@@ -174,9 +179,9 @@ import { Css } from '@tabnas/css'
 
 const c = new Tabnas().use(jsonic).use(Css)
 
-c.parse('h1, h2 { margin: 0 }')           // => { 'h1, h2': { margin: '0' } }
+c.parse('h1, h2 { margin: 0 }')           // => { h1: { margin: '0' }, h2: { margin: '0' } }
 c.parse('.foo > .bar { top: 0 }')         // => { '.foo > .bar': { top: '0' } }
-c.parse('input[type=text] { border: 0 }') // => { 'input[type=text]': { border: '0' } }
+c.parse('a:not(.x, .y), b { top: 0 }')    // => { 'a:not(.x, .y)': { top: '0' }, b: { top: '0' } }
 ```
 
 ### Declaration values

@@ -44,20 +44,24 @@ interpret colours, lengths, or numbers. A trailing `;` is optional, so
 
 ## 3. Group and combine selectors
 
-A selector is kept verbatim as the map key, including selector lists
-(grouping with a comma), combinators, pseudo-classes, and attribute
-selectors:
+A single selector is kept verbatim as the map key, including
+combinators, pseudo-classes, and attribute selectors. A comma-**grouped**
+selector is expanded into one key per selector, each with its own copy
+of the block:
 
 ```go
 result, err := tabnascss.Parse(`h1, h2 { margin: 0 }`)
-// result: map[string]any{"h1, h2": map[string]any{"margin": "0"}}
+// result: map[string]any{"h1": map[string]any{"margin": "0"},
+//                        "h2": map[string]any{"margin": "0"}}
 
 result, err = tabnascss.Parse(`.nav > li:hover { color: red }`)
 // result: map[string]any{".nav > li:hover": map[string]any{"color": "red"}}
 ```
 
-The whole prelude up to the opening `{` is the key, trimmed of trailing
-whitespace, so you never quote or escape it — just write the selector.
+Apart from splitting a top-level group, the whole prelude up to the
+opening `{` is the key, trimmed of trailing whitespace, so you never
+quote or escape it — just write the selector. Commas nested inside
+`:not(...)`, strings, `()` or `[]` are not split.
 
 ## 4. Nest an at-rule
 

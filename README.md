@@ -44,7 +44,7 @@ c.parse('a { color: red; font-size: 12px }')
 // => { a: { color: 'red', 'font-size': '12px' } }
 
 c.parse('h1, h2 { margin: 0 }')
-// => { 'h1, h2': { margin: '0' } }
+// => { h1: { margin: '0' }, h2: { margin: '0' } }
 ```
 
 **Go** — `tabnascss.Parse` is the one-call entry point:
@@ -61,7 +61,8 @@ result, _ := tabnascss.Parse(`a { color: red; font-size: 12px }`)
 A stylesheet parses to a nested map:
 
 - each **rule** is a key (the selector text, verbatim) mapping to a map of
-  its declarations;
+  its declarations; a comma-grouped selector (`h1, h2`) is expanded into one
+  key per selector;
 - each **declaration** is a key (the property name) mapping to its value as
   a raw string (e.g. `'1px solid #fff'`);
 - **nested at-rules** (e.g. `@media`) recurse — the prelude is the key and

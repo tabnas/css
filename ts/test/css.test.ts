@@ -65,9 +65,29 @@ describe('css', () => {
     })
   })
 
-  test('selector grouping kept verbatim', () => {
+  test('selector grouping expands to one key per selector', () => {
     assert.deepStrictEqual(parse('h1, h2 { margin: 0 }'), {
-      'h1, h2': { margin: '0' },
+      h1: { margin: '0' },
+      h2: { margin: '0' },
+    })
+  })
+
+  test('grouped selectors get independent value copies', () => {
+    const r: any = parse('h1, h2 { margin: 0 }')
+    r.h1.margin = 'changed'
+    assert.deepStrictEqual(r.h2, { margin: '0' })
+  })
+
+  test('commas inside :not() do not split the selector', () => {
+    assert.deepStrictEqual(parse('a:not(.x, .y), b { top: 0 }'), {
+      'a:not(.x, .y)': { top: '0' },
+      b: { top: '0' },
+    })
+  })
+
+  test('at-rule prelude comma list is not split', () => {
+    assert.deepStrictEqual(parse('@media screen, print { a { color: red } }'), {
+      '@media screen, print': { a: { color: 'red' } },
     })
   })
 

@@ -41,10 +41,12 @@ A stylesheet is parsed into a nested `map[string]any`:
 | Block at-rule (`@media …`) | prelude key → recursively-parsed block map |
 | Statement at-rule (`@import …`) | at-keyword key → raw-string value |
 
-Selectors and at-rule preludes are kept verbatim as map keys (including
-grouping such as `"h1, h2"`). Values are never decoded: `12px`,
-`"base.css"` (quotes kept), and `1px solid #fff` are all returned as
-the literal text between `:`/at-keyword and the next top-level `;`/`}`.
+Single selectors and at-rule preludes are kept verbatim as map keys; a
+comma-grouped selector (`h1, h2`) is expanded into one key per selector,
+each with its own copy of the block (commas inside `:not(...)`, strings,
+`()`/`[]` are not split). Values are never decoded: `12px`, `"base.css"`
+(quotes kept), and `1px solid #fff` are all returned as the literal text
+between `:`/at-keyword and the next top-level `;`/`}`.
 
 ## CSS structure is supplied, not inherited
 

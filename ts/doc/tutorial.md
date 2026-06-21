@@ -45,8 +45,9 @@ object. That is the point: the plugin teaches the engine to read CSS.
 
 ## 3. Group and nest selectors
 
-Selectors are kept verbatim as keys, including grouping (`h1, h2`) and
-combinators (`.foo > .bar`):
+A single selector is kept verbatim as the key, including combinators
+(`.foo > .bar`). A comma-**grouped** selector is expanded into one key
+per selector, each with its own copy of the block:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
@@ -55,12 +56,13 @@ import { Css } from '@tabnas/css'
 
 const c = new Tabnas().use(jsonic).use(Css)
 
-c.parse('h1, h2 { margin: 0 }')     // => { 'h1, h2': { margin: '0' } }
+c.parse('h1, h2 { margin: 0 }')     // => { h1: { margin: '0' }, h2: { margin: '0' } }
 c.parse('.foo > .bar { top: 0 }')   // => { '.foo > .bar': { top: '0' } }
 ```
 
-The plugin never breaks a selector into components — the whole prelude,
-trimmed, is the key. That keeps the output faithful to the source.
+Apart from splitting a top-level group, the plugin never breaks a
+selector into components — the whole prelude, trimmed, is the key. That
+keeps the output faithful to the source.
 
 ## 4. Nest an at-rule
 

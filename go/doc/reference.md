@@ -166,17 +166,22 @@ a {}                        => {"a": {}}
 a { color: red } b { ... }  => {"a": {...}, "b": {...}}
 ```
 
-Selectors are kept exactly as written, including:
+A single selector is kept exactly as written, including:
 
 | Selector kind | Example key |
 |---|---|
 | Type | `a` |
 | Class / id | `.foo`, `#bar` |
-| Grouping (list) | `h1, h2` |
 | Combinator | `.foo > .bar` |
 | Pseudo-class | `a:hover` |
 | Pseudo-element | `a::before` |
 | Attribute | `input[type=text]` |
+
+A comma-**grouped** selector (`h1, h2`) is expanded into one key per
+selector, each mapping to its own copy of the block — so
+`h1, h2 { margin: 0 }` parses to `map[string]any{"h1": {…}, "h2": {…}}`.
+Commas nested inside `:not(...)`/`:is(...)`, strings, `()` or `[]` are
+not split.
 
 ### Declarations
 
