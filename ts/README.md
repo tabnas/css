@@ -1,8 +1,10 @@
 # @tabnas/css
 
 A [Tabnas](https://github.com/tabnas/parser) grammar plugin that parses
-[CSS](https://developer.mozilla.org/en-US/docs/Web/CSS) (Cascading Style
-Sheets) into a plain nested object of `selector → { property → value }`.
+[CSS](https://developer.mozilla.org/en-US/docs/Web/CSS) into a faithful
+abstract syntax tree (the [`reworkcss/css`](https://github.com/reworkcss/css)
+model): ordered, typed nodes that preserve declaration order, duplicate
+properties, rule types, and comments.
 
 ## Install
 
@@ -25,14 +27,42 @@ import { Css } from '@tabnas/css'
 
 const c = new Tabnas().use(jsonic).use(Css)
 
-c.parse('a { color: red; font-size: 12px }')
-// => { a: { color: 'red', 'font-size': '12px' } }
-c.parse('@media screen { a { color: blue } }')
-// => { '@media screen': { a: { color: 'blue' } } }
+c.parse('a { color: red }')
+// => { type: 'stylesheet', rules: [ { type: 'rule', selectors: ['a'], declarations: [ { type: 'declaration', property: 'color', value: 'red' } ] } ] }
 ```
 
 Build the instance once and reuse it — constructing the grammar is the
 expensive part.
+
+## Options
+
+The plugin takes two options through its second `use()` argument, both
+defaulting to `false`:
+
+- `lowercaseProperties` — lowercase declaration property names.
+- `position` — attach a `position` (1-based `start`/`end` line and
+  column) to every node.
+
+```typescript
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css, { position: true })
+```
+
+## CSS Nesting
+
+A style rule or an at-rule may appear inside another style rule's
+declaration block. The nested node is appended to the parent's
+`declarations` array, interleaved with declarations in source order:
+
+```js
+const c = new Tabnas().use(jsonic).use(Css)
+
+c.parse('a { color: red; & b { top: 0 } }').rules[0].declarations[1]
+// => { type: 'rule', selectors: ['& b'], declarations: [ { type: 'declaration', property: 'top', value: '0' } ] }
+```
 
 ## Documentation
 
@@ -42,7 +72,7 @@ framework:
 - [Tutorial](doc/tutorial.md) — a guided first parse, start to finish.
 - [How-to guide](doc/guide.md) — short recipes for individual tasks.
 - [Reference](doc/reference.md) — the public API, every option, and the
-  complete CSS syntax accepted.
+  complete AST node reference.
 - [Concepts](doc/concepts.md) — how the plugin reshapes the engine, and
   why.
 

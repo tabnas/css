@@ -42,8 +42,18 @@ describe('compose: css + @tabnas/debug', () => {
   test('parses normally with the debug plugin installed', { skip }, () => {
     const tn = build()
     assert.deepStrictEqual(
-      JSON.parse(JSON.stringify(tn.parse('a { color: red; b: 1 } c {}'))),
-      { a: { color: 'red', b: '1' }, c: {} },
+      JSON.parse(JSON.stringify(tn.parse('a { x: 1 } /* c */'))),
+      {
+        type: 'stylesheet',
+        rules: [
+          {
+            type: 'rule',
+            selectors: ['a'],
+            declarations: [{ type: 'declaration', property: 'x', value: '1' }],
+          },
+          { type: 'comment', comment: ' c ' },
+        ],
+      },
     )
   })
 
@@ -51,10 +61,18 @@ describe('compose: css + @tabnas/debug', () => {
     const tn = build()
     const m = tn.debug.model()
 
-    // The CSS-specific rules are present, and the entry rule is the
+    // The AST-building rules are present, and the entry rule is the
     // implicit top-level stylesheet.
     const ruleNames = m.rules.map((r: any) => r.name)
-    for (const name of ['stylesheet', 'block', 'pair', 'val']) {
+    for (const name of [
+      'stylesheet',
+      'items',
+      'statement',
+      'sel',
+      'declbody',
+      'decls',
+      'decl',
+    ]) {
       assert.ok(ruleNames.includes(name), `rules should include ${name}`)
     }
     assert.equal(m.config.start, 'stylesheet')
@@ -63,16 +81,20 @@ describe('compose: css + @tabnas/debug', () => {
       'plugins should list Css',
     )
 
-    // The rule-reference graph captures the recursive structure: the
-    // stylesheet and every block push pair members; each pair pushes a val
-    // (the declaration value or nested block) and close-replaces itself to
-    // iterate over additional members; a val can open a nested block.
+    // The rule-reference graph captures the recursive AST structure: the
+    // stylesheet pushes an items list; each items pushes a statement and
+    // close-replaces itself to iterate; a statement opens one of the bodies
+    // (rules / declarations / keyframes) or a selector list; declarations
+    // iterate via decls -> decl.
     const edge = (name: string) => m.graph.find((e: any) => e.name === name)
-    assert.deepStrictEqual(edge('stylesheet').openPush, ['pair'])
-    assert.deepStrictEqual(edge('block').openPush, ['pair'])
-    assert.deepStrictEqual(edge('pair').openPush, ['val'])
-    assert.deepStrictEqual(edge('pair').closeReplace, ['pair'])
-    assert.ok(edge('val').openPush.includes('block'), 'val should push block')
+    assert.deepStrictEqual(edge('stylesheet').openPush, ['items'])
+    assert.deepStrictEqual(edge('items').openPush, ['statement'])
+    assert.deepStrictEqual(edge('items').closeReplace, ['items'])
+    assert.ok(
+      edge('statement').openPush.includes('sel'),
+      'statement should push sel (a style rule)',
+    )
+    assert.deepStrictEqual(edge('decls').closeReplace, ['decls'])
 
     // The grammar portion is JSON-serialisable and round-trips.
     const grammar = {

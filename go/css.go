@@ -1,25 +1,31 @@
 /* Copyright (c) 2025 Richard Rodger, MIT License */
 
 // Package css is a jsonic plugin that parses CSS (Cascading Style Sheets)
-// into a nested map of selector -> { property -> value }.
+// into a reworkcss-style abstract syntax tree: ordered, typed nodes that
+// preserve declaration order, duplicate properties, rule types and comments.
+//
+//	{ "type": "stylesheet", "rules": [ ...nodes ] }
+//
+// where each node is a map[string]any with a "type" discriminator: "rule"
+// (selectors []any, declarations []any), "declaration" (property, value),
+// "comment" (comment), at-rule nodes (media/supports/import/keyframes/...).
 //
 // Example:
 //
-//	a { color: red; font-size: 12px; }
-//	.foo, .bar { margin: 0 }
-//	@media screen { a { color: blue } }
+//	a { color: red; color: blue } /* note */
 //
 // parses to:
 //
-//	{
-//	  "a": { "color": "red", "font-size": "12px" },
-//	  ".foo, .bar": { "margin": "0" },
-//	  "@media screen": { "a": { "color": "blue" } }
-//	}
+//	map[string]any{"type": "stylesheet", "rules": []any{
+//	  map[string]any{"type": "rule", "selectors": []any{"a"}, "declarations": []any{
+//	    map[string]any{"type": "declaration", "property": "color", "value": "red"},
+//	    map[string]any{"type": "declaration", "property": "color", "value": "blue"}}},
+//	  map[string]any{"type": "comment", "comment": " note "}}}
 package tabnascss
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -30,111 +36,207 @@ const Version = "0.1.0"
 
 // --- BEGIN EMBEDDED css-grammar.jsonic ---
 const grammarText = `
-# CSS Grammar Definition
-# Parses CSS (Cascading Style Sheets) into a nested map of
-#   selector -> { property -> value }
-# Nested at-rules (e.g. @media) recurse: their block is itself a map of
-# rules. Statement at-rules (e.g. @import) become property -> value pairs.
+# CSS Grammar Definition (AST)
+# Parses CSS into a reworkcss-style abstract syntax tree: ordered, typed
+# nodes that preserve declaration order, duplicate properties, rule types
+# and comments.
+#
+#   { type: 'stylesheet', rules: [ Node, ... ] }
+#   rule        { type:'rule',        selectors:[string], declarations:[Node] }
+#   declaration { type:'declaration', property:string, value:string }
+#   comment     { type:'comment',     comment:string }
+#   at-rules (media/supports/import/keyframes/font-face/...) — see below
 #
 # Example:
-#   a { color: red; font-size: 12px; }
-#   .foo, .bar { margin: 0 }
-#   @media screen { a { color: blue } }
+#   a { color: red; color: blue } /* note */
 # parses to:
-#   {
-#     "a": { "color": "red", "font-size": "12px" },
-#     ".foo, .bar": { "margin": "0" },
-#     "@media screen": { "a": { "color": "blue" } }
-#   }
+#   { type:'stylesheet', rules: [
+#     { type:'rule', selectors:['a'], declarations:[
+#       { type:'declaration', property:'color', value:'red' },
+#       { type:'declaration', property:'color', value:'blue' } ] },
+#     { type:'comment', comment:' note ' } ] }
 #
-# The custom cssToken lex matcher emits three text tokens by position:
-#   - #TX : a key in key position — a selector (whole prelude up to "{",
-#           when a "{" is reached before any ";"/"}") or a property name
-#           (the identifier up to ":", otherwise).
-#   - #AT : a statement at-keyword (e.g. "@import") — a key whose value
-#           follows without a ":" separator.
-#   - #VL : a value, in value position (when the val rule is open): the run
-#           of text up to the next top-level ";" or "}" (trimmed), so
-#           '1px solid #fff' is one value.
-# The fixed tokens "{" "}" ":" lex as #OB #CB #CL; ";" is remapped to #CA
-# (the member separator). Bare "[" "]" are disabled.
+# The cssToken lex matcher emits: #TX (one selector or a property name),
+# #GC (a top-level selector-group comma), #VL (a declaration value),
+# #CC (a comment, at a statement position), and the at-rule tokens
+# #ATR/#ATD/#ATK/#ATS (carrying the keyword in val and the prelude in
+# use). Fixed "{" "}" ":" lex as #OB #CB #CL; ";" is remapped to #CA.
 #
-# The grammar is applied with { rule: { alt: { g: 'css' } } } so every alt
-# below is automatically tagged with the 'css' group.
+# Every alt is tagged with the 'css' group via { rule: { alt: { g: 'css' } } }.
 
 {
   rule: {
-    # Start rule: a stylesheet is an implicit top-level map of rules, with
-    # no surrounding braces. It is closed by end-of-input (#ZZ).
+    # The top-level stylesheet node. "items" fills its rules[].
     stylesheet: {
       open: [
-        # Empty input -> empty stylesheet.
-        { s: '#ZZ' b: 1 a: '@object$' g: 'css,sheet,empty' }
-        # Otherwise the first key (#KEY = #TX or #AT) starts the rule list.
-        # b:1 re-feeds the key to the pair rule.
-        { s: '#KEY' b: 1 a: '@object$' p: pair g: 'css,sheet' }
+        { a: '@cssSheet' p: items g: 'css,sheet' }
       ]
       close: [
-        { s: '#ZZ' g: 'css,sheet,end' }
+        { s: '#ZZ' a: '@cssEnd' g: 'css,sheet,end' }
       ]
     }
 
-    # An explicit "{ ... }" block: a declaration block or a nested ruleset.
-    block: {
+    # A statement list (the stylesheet body or an at-rule's rules body). Reads
+    # rule / at-rule / comment nodes into the enclosing node's rules[]. Each
+    # iteration pushes one "statement" child, then @cssPushRule appends it.
+    items: {
       open: [
-        # Empty block: {}.
-        { s: '#OB #CB' b: 1 a: '@object$' g: 'css,block,empty' }
-        { s: '#OB' a: '@object$' p: pair g: 'css,block' }
+        { s: '#ZZ' b: 1 g: 'css,items,end' }
+        { s: '#CB' b: 1 g: 'css,items,endblock' }
+        { p: statement g: 'css,items' }
       ]
       close: [
-        { s: '#CB' g: 'css,block,end' }
+        { s: '#ZZ' b: 1 a: '@cssPushRule' g: 'css,items,end' }
+        { s: '#CB' b: 1 a: '@cssPushRule' g: 'css,items,endblock' }
+        { a: '@cssPushRule' r: items g: 'css,items,next' }
       ]
     }
 
-    # A member of a map. Three shapes, disambiguated by the key token and
-    # what follows it: #TX ":" -> declaration, #TX "{" -> nested ruleset,
-    # #AT -> statement at-rule. In every case the value side is the val rule,
-    # so the matcher reads a value purely because val is open (no flag).
-    # @key$ captures the key for the matching @setval$.
-    pair: {
+    # Builds ONE statement node (resetting from the inherited list node).
+    statement: {
       open: [
-        # Declaration:  property : value
-        { s: '#TX #CL' a: '@key$' p: val g: 'css,decl' }
-        # Ruleset:  selector { ... }   (b:1 re-feeds "{" to the val/block).
-        { s: '#TX #OB' b: 1 a: '@key$' p: val g: 'css,rule' }
-        # Statement at-rule:  @import "x"   The at-keyword (#AT) pushes val
-        # directly; val then reads the params as a value (#VL).
-        { s: '#AT' a: '@key$' p: val g: 'css,atrule' }
+        # A comment node.
+        { s: '#CC' a: '@cssComment' g: 'css,comment' }
+        # A block at-rule whose body is rules (e.g. @media): push items.
+        { s: '#ATR' a: '@cssAtRules' p: rulesbody g: 'css,atrules' }
+        # A block at-rule whose body is declarations (e.g. @font-face).
+        { s: '#ATD' a: '@cssAtDecls' p: declbody g: 'css,atdecls' }
+        # @keyframes: a body of keyframe blocks.
+        { s: '#ATK' a: '@cssKeyframes' p: kfbody g: 'css,keyframes' }
+        # A statement at-rule (e.g. @import "x"): a leaf node.
+        { s: '#ATS' a: '@cssAtStmt' g: 'css,atstmt' }
+        # A style rule: selectors + declarations.
+        { s: '#TX' b: 1 a: '@cssRule' p: sel g: 'css,rule' }
       ]
       close: [
-        # Trailing ";" before "}" -> end of block (re-fed to block close).
-        { s: '#CA #CB' b: 1 a: '@setval$' g: 'css,decl,trailing' }
-        # Trailing ";" before end-of-input -> end of stylesheet.
-        { s: '#CA #ZZ' b: 1 a: '@setval$' g: 'css,decl,trailing,end' }
-        # ";" -> next declaration in the same block.
-        { s: '#CA' a: '@setval$' r: pair g: 'css,decl,next' }
-        # "}" -> end of the enclosing block (re-fed to block close).
-        { s: '#CB' b: 1 a: '@setval$' g: 'css,pair,endblock' }
-        # End of input -> end of the stylesheet.
-        { s: '#ZZ' b: 1 a: '@setval$' g: 'css,pair,endsheet' }
-        # A new key (#TX or #AT) with no separator -> next rule (implicit
-        # continuation, e.g. between adjacent rulesets).
-        { s: '#KEY' b: 1 a: '@setval$' r: pair g: 'css,rule,next' }
+        { b: 1 g: 'css,statement,end' }
       ]
     }
 
-    # The value side of a pair: either a nested block (map) or a value token.
-    # @reset$ clears the parent-seeded node so the value does not inherit the
-    # enclosing object; @value$ resolves it (a built block wins, else the
-    # #VL scalar).
-    val: {
+    # Reads a selector group into the (rule/page) node's selectors[], then the
+    # declaration block. Each selector is one #TX; #GC separates a group.
+    sel: {
       open: [
-        { s: '#OB' b: 1 a: '@reset$' p: block g: 'css,val,block' }
-        { s: '#VL' a: '@reset$' g: 'css,val,text' }
+        { s: '#TX #GC' a: '@cssSelector' r: sel g: 'css,sel,group' }
+        { s: '#TX #OB' b: 1 a: '@cssSelector' p: declbody g: 'css,sel,last' }
       ]
       close: [
-        { s: '#ZZ' b: 1 a: '@value$' g: 'css,val,endsheet' }
-        { b: 1 a: '@value$' g: 'css,val,more' }
+        { b: 1 g: 'css,sel,end' }
+      ]
+    }
+
+    # The "{ ... }" wrapper around a declaration list; fills the parent node's
+    # declarations[].
+    declbody: {
+      open: [
+        { s: '#OB #CB' b: 1 g: 'css,declbody,empty' }
+        { s: '#OB' p: decls g: 'css,declbody' }
+      ]
+      close: [
+        { s: '#CB' a: '@cssEnd' g: 'css,declbody,end' }
+      ]
+    }
+
+    # A declaration list: declaration / comment nodes, ";"-separated.
+    decls: {
+      open: [
+        { s: '#CB' b: 1 g: 'css,decls,empty' }
+        { p: decl g: 'css,decls' }
+      ]
+      close: [
+        { s: '#CA #CB' b: 1 a: '@cssPushDecl' g: 'css,decls,trailing' }
+        { s: '#CB' b: 1 a: '@cssPushDecl' g: 'css,decls,end' }
+        { s: '#CA' a: '@cssPushDecl' r: decls g: 'css,decls,next' }
+        { a: '@cssPushDecl' r: decls g: 'css,decls,comment' }
+      ]
+    }
+
+    # Builds ONE block member: a declaration, a comment, or — for CSS
+    # Nesting — a nested style rule or at-rule. Disambiguated by the token
+    # after the key: #TX #CL is a declaration; #TX followed by "{"/"," is a
+    # nested rule; #ATR/#ATD/#ATK/#ATS is a nested at-rule.
+    decl: {
+      open: [
+        { s: '#CC' a: '@cssComment' g: 'css,comment' }
+        { s: '#TX #CL' a: '@cssDecl' p: declval g: 'css,decl' }
+        # Nested at-rules (CSS Nesting).
+        { s: '#ATR' a: '@cssAtRules' p: rulesbody g: 'css,nest,atrules' }
+        { s: '#ATD' a: '@cssAtDecls' p: declbody g: 'css,nest,atdecls' }
+        { s: '#ATK' a: '@cssKeyframes' p: kfbody g: 'css,nest,keyframes' }
+        { s: '#ATS' a: '@cssAtStmt' g: 'css,nest,atstmt' }
+        # A nested style rule (selector first, no ":").
+        { s: '#TX' b: 1 a: '@cssRule' p: sel g: 'css,nest,rule' }
+      ]
+      close: [
+        { b: 1 g: 'css,decl,end' }
+      ]
+    }
+
+    # The value of a declaration (a single #VL run).
+    declval: {
+      open: [
+        { s: '#VL' a: '@cssDeclVal' g: 'css,declval' }
+        { b: 1 g: 'css,declval,empty' }
+      ]
+      close: [
+        { b: 1 g: 'css,declval,end' }
+      ]
+    }
+
+    # The "{ ... }" rules body of a block at-rule (@media/@supports/...).
+    rulesbody: {
+      open: [
+        { s: '#OB #CB' b: 1 g: 'css,rulesbody,empty' }
+        { s: '#OB' p: items g: 'css,rulesbody' }
+      ]
+      close: [
+        { s: '#CB' a: '@cssEnd' g: 'css,rulesbody,end' }
+      ]
+    }
+
+    # The "{ ... }" body of @keyframes: a list of keyframe blocks.
+    kfbody: {
+      open: [
+        { s: '#OB #CB' b: 1 g: 'css,kfbody,empty' }
+        { s: '#OB' p: kfitems g: 'css,kfbody' }
+      ]
+      close: [
+        { s: '#CB' a: '@cssEnd' g: 'css,kfbody,end' }
+      ]
+    }
+
+    # A list of keyframe blocks (and comments) -> the keyframes node's
+    # keyframes[].
+    kfitems: {
+      open: [
+        { s: '#CB' b: 1 g: 'css,kfitems,empty' }
+        { p: keyframe g: 'css,kfitems' }
+      ]
+      close: [
+        { s: '#CB' b: 1 a: '@cssPushKf' g: 'css,kfitems,end' }
+        { a: '@cssPushKf' r: kfitems g: 'css,kfitems,next' }
+      ]
+    }
+
+    # One keyframe block: values (0%, 50%, from, to) + declarations. Mirrors
+    # "statement"+"sel" but builds a 'keyframe' node with values[].
+    keyframe: {
+      open: [
+        { s: '#CC' a: '@cssComment' g: 'css,comment' }
+        { s: '#TX' b: 1 a: '@cssKeyframe' p: kfsel g: 'css,keyframe' }
+      ]
+      close: [
+        { b: 1 g: 'css,keyframe,end' }
+      ]
+    }
+
+    kfsel: {
+      open: [
+        { s: '#TX #GC' a: '@cssKfValue' r: kfsel g: 'css,kfsel,group' }
+        { s: '#TX #OB' b: 1 a: '@cssKfValue' p: declbody g: 'css,kfsel,last' }
+      ]
+      close: [
+        { b: 1 g: 'css,kfsel,end' }
       ]
     }
   }
@@ -152,16 +254,22 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 	j.Decorate("css-init", true)
 
 	lowercaseProperties := toBool(options["lowercaseProperties"])
-	lowercaseValues := toBool(options["lowercaseValues"])
+	position := toBool(options["position"])
 
-	// Resolve the tin for the custom statement-at-keyword token (#AT) on this
-	// instance, so the matcher emits the same tin the grammar's `#AT` alts
-	// resolve to.
-	atTin := j.Token("#AT")
+	// Resolve tins for the custom tokens on this instance, so the matcher
+	// emits the same tins the grammar's alts resolve to.
+	tins := cssTins{
+		cc:  j.Token("#CC"),
+		gc:  j.Token("#GC"),
+		atr: j.Token("#ATR"),
+		atd: j.Token("#ATD"),
+		atk: j.Token("#ATK"),
+		ats: j.Token("#ATS"),
+	}
 
-	// No grammar-local closures are needed; the rule alts use only builtin
-	// ($) actions.
-	gs, err := parseGrammarText(grammarText, map[jsonic.FuncRef]any{})
+	// The grammar builds the typed AST entirely from these grammar-local
+	// actions (node constructors, field setters, and array pushers).
+	gs, err := parseGrammarText(grammarText, makeActions(lowercaseProperties, position))
 	if err != nil {
 		return err
 	}
@@ -171,43 +279,23 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 	semi := ";"
 	gs.Options = &jsonic.Options{
 		Rule: &jsonic.RuleOptions{
-			// Remove jsonic extensions (implicit maps/lists, top-level commas,
-			// path dives). CSS structure is supplied entirely by the rules.
 			Exclude: "jsonic,imp",
 			Start:   "stylesheet",
 		},
 		Fixed: &jsonic.FixedOptions{
 			Token: map[string]*string{
-				// `;` is the declaration terminator — remap the member
-				// separator (#CA, jsonic's comma) onto it. `:` stays #CL.
 				"#CA": &semi,
-				// Bare `[` `]` are not CSS structure; they only ever appear
-				// inside selectors/values, consumed by cssToken as text.
 				"#OS": nil,
 				"#CS": nil,
 			},
 		},
 		TokenSet: map[string][]string{
-			// Keys are the text token produced by the cssToken matcher.
-			// Keys are the text tokens produced by the cssToken matcher: a
-			// selector / property name (#TX) or a statement at-keyword (#AT).
-			"KEY": {"#TX", "#AT"},
+			"KEY": {"#TX"},
 		},
-		// The cssToken matcher owns all non-fixed text (selectors, property
-		// names, values), so the default string/number/text matchers are off.
-		String: &jsonic.StringOptions{
-			Chars: "",
-		},
-		Number: &jsonic.NumberOptions{
-			Lex: boolPtr(false),
-		},
-		Text: &jsonic.TextOptions{
-			Lex: boolPtr(false),
-		},
-		Value: &jsonic.ValueOptions{
-			Lex: boolPtr(false),
-		},
-		// Only `/* ... */` block comments in CSS.
+		String: &jsonic.StringOptions{Chars: ""},
+		Number: &jsonic.NumberOptions{Lex: boolPtr(false)},
+		Text:   &jsonic.TextOptions{Lex: boolPtr(false)},
+		Value:  &jsonic.ValueOptions{Lex: boolPtr(false)},
 		Comment: &jsonic.CommentOptions{
 			Lex: boolPtr(true),
 			Def: map[string]*jsonic.CommentDef{
@@ -218,43 +306,35 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 		},
 		Lex: &jsonic.LexOptions{
 			Match: map[string]*jsonic.MatchSpec{
-				// Runs ahead of the fixed-token matcher so it owns selectors,
-				// property names and values; it defers on the fixed
-				// punctuation and on whitespace/comments.
-				"cssToken": {Order: 100000, Make: buildCssTokenMatcher(lowercaseProperties, lowercaseValues, atTin)},
+				"cssToken": {Order: 100000, Make: buildCssTokenMatcher(lowercaseProperties, tins)},
 			},
 		},
 	}
 
-	// Tag every alt in this grammar with the 'css' group so callers can
-	// selectively exclude css alts via rule.exclude.
 	setting := &jsonic.GrammarSetting{
-		Rule: &jsonic.GrammarSettingRule{
-			Alt: &jsonic.GrammarSettingAlt{G: "css"},
-		},
+		Rule: &jsonic.GrammarSettingRule{Alt: &jsonic.GrammarSettingAlt{G: "css"}},
 	}
 	if err := j.Grammar(gs, setting); err != nil {
 		return fmt.Errorf("css: failed to apply grammar: %w", err)
 	}
-
 	return nil
 }
 
 // Defaults matches the TS Css.defaults. Used with jsonic.UseDefaults.
 var Defaults = map[string]any{
 	"lowercaseProperties": false,
-	"lowercaseValues":     false,
+	"position":            false,
 }
 
 // CssOptions is a typed wrapper for the plugin options.
-// Fields are pointers so callers can express "omit" (nil) vs "set".
 type CssOptions struct {
 	// LowercaseProperties, when true, lowercases declaration property names
-	// (CSS property names are case-insensitive). Selectors are untouched.
+	// (CSS property names are case-insensitive). Selectors, values and at-rule
+	// preludes are untouched.
 	LowercaseProperties *bool
-	// LowercaseValues, when true, lowercases declaration values. Off by
-	// default because parts of a value are case-sensitive.
-	LowercaseValues *bool
+	// Position, when true, attaches a position {start{line,column},end{...}}
+	// (1-based) to every node. Off by default.
+	Position *bool
 }
 
 func (o CssOptions) toMap() map[string]any {
@@ -262,14 +342,13 @@ func (o CssOptions) toMap() map[string]any {
 	if o.LowercaseProperties != nil {
 		m["lowercaseProperties"] = *o.LowercaseProperties
 	}
-	if o.LowercaseValues != nil {
-		m["lowercaseValues"] = *o.LowercaseValues
+	if o.Position != nil {
+		m["position"] = *o.Position
 	}
 	return m
 }
 
 // MakeJsonic returns a reusable Jsonic instance configured for CSS parsing.
-// Use this when parsing multiple CSS strings with the same options.
 func MakeJsonic(opts ...CssOptions) *jsonic.Jsonic {
 	j := jsonic.Make()
 	var m map[string]any
@@ -277,24 +356,19 @@ func MakeJsonic(opts ...CssOptions) *jsonic.Jsonic {
 		m = opts[0].toMap()
 	}
 	if err := j.UseDefaults(Css, Defaults, m); err != nil {
-		// Plugin registration errors are programming errors with static
-		// inputs; surface them via panic rather than silent misbehavior.
 		panic(fmt.Sprintf("css: plugin initialisation failed: %v", err))
 	}
 	return j
 }
 
-// defaultParser is a lazily-created instance reused by the default (no-option)
-// Parse path, so repeated calls don't rebuild the engine and grammar each
-// time. Parsing builds a fresh context per call and only reads instance
-// state, so the shared instance is safe for concurrent use.
 var (
 	defaultOnce   sync.Once
 	defaultParser *jsonic.Jsonic
 )
 
-// Parse parses a CSS string and returns the resulting value. Convenience
-// wrapper around MakeJsonic(opts...).Parse(src).
+// Parse parses a CSS string and returns its AST. The no-options path reuses a
+// cached instance (safe for concurrent use); option-taking calls build a
+// dedicated instance.
 func Parse(src string, opts ...CssOptions) (any, error) {
 	if len(opts) == 0 {
 		defaultOnce.Do(func() { defaultParser = MakeJsonic() })
@@ -303,22 +377,243 @@ func Parse(src string, opts ...CssOptions) (any, error) {
 	return MakeJsonic(opts...).Parse(src)
 }
 
-// The single lex matcher. It emits one of three text tokens by position; all
-// the structural decisions live in the grammar:
-//
-//   - value mode (the val rule is open) -> read a declaration value up to
-//     `;`/`}` and emit #VL.
-//   - key mode (otherwise) -> a selector / block-at-rule prelude up to `{`
-//     (#TX), a property name up to `:` (#TX), or a statement at-keyword
-//     (#AT), chosen by a single lookahead.
-//
-// Anything else (fixed punctuation, whitespace, comments) is deferred to the
-// later builtin matchers. The matcher is stateless: value position is read
-// straight off rule.Name/rule.State because the grammar always pushes val at
-// a value position (after `:`, or after an #AT key). This keeps the logic
-// identical to the TS plugin, which likewise cannot read the grammar's
-// expected-token columns or inject lookahead tokens.
-func buildCssTokenMatcher(lowercaseProperties, lowercaseValues bool, atTin jsonic.Tin) jsonic.MakeLexMatcher {
+// --- Grammar actions: build the AST ---------------------------------------
+
+func node(r *jsonic.Rule) map[string]any {
+	m, _ := r.Node.(map[string]any)
+	return m
+}
+
+func tokenVal(r *jsonic.Rule) any {
+	if r.O0 == nil {
+		return nil
+	}
+	return r.O0.Val
+}
+
+func childMap(r *jsonic.Rule) (map[string]any, bool) {
+	if r.Child == nil {
+		return nil, false
+	}
+	m, ok := r.Child.Node.(map[string]any)
+	return m, ok
+}
+
+func appendField(r *jsonic.Rule, field string, v any) {
+	m := node(r)
+	if m == nil {
+		return
+	}
+	arr, _ := m[field].([]any)
+	m[field] = append(arr, v)
+}
+
+// makeActions returns all grammar-local actions keyed by their @name ref. The
+// node constructors overwrite r.Node; the field setters mutate it; the pushers
+// append a finished child node to a parent array. When position is on, the
+// constructors record node["position"]["start"] (and single-token nodes their
+// end); @cssEnd records the closing-brace end.
+func makeActions(_lowercaseProperties bool, position bool) map[jsonic.FuncRef]any {
+	mk := func(f func(*jsonic.Rule)) jsonic.AltAction {
+		return jsonic.AltAction(func(r *jsonic.Rule, _ *jsonic.Context) { f(r) })
+	}
+	// withPos records a node's start (and optionally end) from a token.
+	withPos := func(n map[string]any, tok *jsonic.Token, end bool) map[string]any {
+		if position && tok != nil {
+			p := map[string]any{"start": startPos(tok)}
+			if end {
+				p["end"] = endPos(tok)
+			} else {
+				p["end"] = nil
+			}
+			n["position"] = p
+		}
+		return n
+	}
+	return map[jsonic.FuncRef]any{
+		// Node constructors.
+		"@cssSheet": mk(func(r *jsonic.Rule) {
+			r.Node = map[string]any{"type": "stylesheet", "rules": []any{}}
+			if position {
+				r.Node.(map[string]any)["position"] = map[string]any{
+					"start": map[string]any{"line": 1, "column": 1}, "end": nil}
+			}
+		}),
+		"@cssRule": mk(func(r *jsonic.Rule) {
+			r.Node = withPos(map[string]any{"type": "rule", "selectors": []any{}, "declarations": []any{}}, r.O0, false)
+		}),
+		"@cssDecl": mk(func(r *jsonic.Rule) {
+			r.Node = withPos(map[string]any{"type": "declaration", "property": tokenVal(r), "value": ""}, r.O0, false)
+		}),
+		"@cssComment": mk(func(r *jsonic.Rule) {
+			r.Node = withPos(map[string]any{"type": "comment", "comment": tokenVal(r)}, r.O0, true)
+		}),
+		"@cssKeyframe": mk(func(r *jsonic.Rule) {
+			r.Node = withPos(map[string]any{"type": "keyframe", "values": []any{}, "declarations": []any{}}, r.O0, false)
+		}),
+		"@cssAtRules":   mk(func(r *jsonic.Rule) { r.Node = withPos(makeAtRules(r.O0), r.O0, false) }),
+		"@cssAtDecls":   mk(func(r *jsonic.Rule) { r.Node = withPos(makeAtDecls(r.O0), r.O0, false) }),
+		"@cssKeyframes": mk(func(r *jsonic.Rule) { r.Node = withPos(makeKeyframes(r.O0), r.O0, false) }),
+		"@cssAtStmt":    mk(func(r *jsonic.Rule) { r.Node = withPos(makeAtStmt(r.O0), r.O0, true) }),
+
+		// Field setters.
+		"@cssSelector": mk(func(r *jsonic.Rule) { appendField(r, "selectors", tokenVal(r)) }),
+		"@cssKfValue":  mk(func(r *jsonic.Rule) { appendField(r, "values", tokenVal(r)) }),
+		"@cssDeclVal": mk(func(r *jsonic.Rule) {
+			if m := node(r); m != nil {
+				m["value"] = tokenVal(r)
+				if position {
+					if p, ok := m["position"].(map[string]any); ok {
+						p["end"] = endPos(r.O0)
+					}
+				}
+			}
+		}),
+
+		// Record the closing-brace / end-of-input end position. Runs in a
+		// close phase, so the matched }/end token is in r.C0.
+		"@cssEnd": mk(func(r *jsonic.Rule) {
+			if !position {
+				return
+			}
+			if m := node(r); m != nil && r.C0 != nil {
+				if p, ok := m["position"].(map[string]any); ok {
+					p["end"] = endPos(r.C0)
+				}
+			}
+		}),
+
+		// Array pushers.
+		"@cssPushRule": mk(func(r *jsonic.Rule) {
+			if c, ok := childMap(r); ok {
+				appendField(r, "rules", c)
+			}
+		}),
+		"@cssPushDecl": mk(func(r *jsonic.Rule) {
+			if c, ok := childMap(r); ok {
+				appendField(r, "declarations", c)
+			}
+		}),
+		"@cssPushKf": mk(func(r *jsonic.Rule) {
+			if c, ok := childMap(r); ok {
+				appendField(r, "keyframes", c)
+			}
+		}),
+	}
+}
+
+func atRuleVal(tok *jsonic.Token) (kw, prelude string) {
+	if tok == nil {
+		return "", ""
+	}
+	kw, _ = tok.Val.(string)
+	if tok.Use != nil {
+		if p, ok := tok.Use["prelude"].(string); ok {
+			prelude = p
+		}
+	}
+	return kw, prelude
+}
+
+func makeAtRules(tok *jsonic.Token) map[string]any {
+	kw, prelude := atRuleVal(tok)
+	switch {
+	case kw == "media":
+		return map[string]any{"type": "media", "media": prelude, "rules": []any{}}
+	case kw == "supports":
+		return map[string]any{"type": "supports", "supports": prelude, "rules": []any{}}
+	case kw == "host":
+		return map[string]any{"type": "host", "rules": []any{}}
+	case kw == "document" || strings.HasSuffix(kw, "-document"):
+		n := map[string]any{"type": "document", "document": prelude, "rules": []any{}}
+		if v := vendorPrefix(kw); v != "" {
+			n["vendor"] = v
+		}
+		return n
+	default:
+		return map[string]any{"type": kw, kw: prelude, "rules": []any{}}
+	}
+}
+
+func makeAtDecls(tok *jsonic.Token) map[string]any {
+	kw, prelude := atRuleVal(tok)
+	switch kw {
+	case "font-face":
+		return map[string]any{"type": "font-face", "declarations": []any{}}
+	case "page":
+		sels := []any{}
+		if prelude != "" {
+			sels = []any{prelude}
+		}
+		return map[string]any{"type": "page", "selectors": sels, "declarations": []any{}}
+	default:
+		return map[string]any{"type": kw, "declarations": []any{}}
+	}
+}
+
+func makeKeyframes(tok *jsonic.Token) map[string]any {
+	kw, name := atRuleVal(tok)
+	n := map[string]any{"type": "keyframes", "name": name}
+	if v := vendorPrefix(kw); v != "" {
+		n["vendor"] = v
+	}
+	n["keyframes"] = []any{}
+	return n
+}
+
+func makeAtStmt(tok *jsonic.Token) map[string]any {
+	kw := ""
+	params := ""
+	if tok != nil {
+		kw, _ = tok.Val.(string)
+		if tok.Use != nil {
+			if p, ok := tok.Use["params"].(string); ok {
+				params = p
+			}
+		}
+	}
+	return map[string]any{"type": kw, kw: params}
+}
+
+var vendorRe = regexp.MustCompile(`^(-[a-z]+-)`)
+
+func vendorPrefix(kw string) string {
+	return vendorRe.FindString(kw)
+}
+
+// --- Lexer ----------------------------------------------------------------
+
+type cssTins struct {
+	cc, gc, atr, atd, atk, ats jsonic.Tin
+}
+
+// commentNodeRules: rule names at which a comment is captured as a node (the
+// statement / declaration / keyframe LIST readers and block wrappers, which
+// lex the first body token). Elsewhere comments are skipped.
+var commentNodeRules = map[string]bool{
+	"items":     true,
+	"decls":     true,
+	"kfitems":   true,
+	"declbody":  true,
+	"rulesbody": true,
+	"kfbody":    true,
+}
+
+var keyframesRe = regexp.MustCompile(`^(-[a-z]+-)?keyframes$`)
+
+var declsKw = map[string]bool{
+	"font-face":           true,
+	"page":                true,
+	"viewport":            true,
+	"-ms-viewport":        true,
+	"counter-style":       true,
+	"property":            true,
+	"font-palette-values": true,
+}
+
+// buildCssTokenMatcher builds the single lex matcher. See the TypeScript
+// plugin (src/css.ts) for the canonical commentary; the two are kept in step.
+func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLexMatcher {
 	return func(_ *jsonic.LexConfig, _ *jsonic.Options) jsonic.LexMatcher {
 		return func(lex *jsonic.Lex, rule *jsonic.Rule) *jsonic.Token {
 			pnt := lex.Cursor()
@@ -328,80 +623,162 @@ func buildCssTokenMatcher(lowercaseProperties, lowercaseValues bool, atTin jsoni
 				return nil
 			}
 			c := src[sI]
+			name := rule.Name
 
-			// Defer whitespace and `/* */` comments to the builtin matchers.
+			// Defer whitespace.
 			if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
 				return nil
 			}
+
+			// Comments: a node at a list position, otherwise deferred (skipped).
 			if c == '/' && sI+1 < len(src) && src[sI+1] == '*' {
-				return nil
+				if !commentNodeRules[name] {
+					return nil
+				}
+				e := strings.Index(src[sI+2:], "*/")
+				contentEnd := len(src)
+				end := len(src)
+				if e >= 0 {
+					contentEnd = sI + 2 + e
+					end = contentEnd + 2
+				}
+				tkn := lex.Token("#CC", tins.cc, src[sI+2:contentEnd], src[sI:end])
+				advance(pnt, src, sI, end)
+				return tkn
 			}
 
-			// Value mode is driven entirely by the grammar: the val rule is
-			// open exactly at a value position (after a `:` declaration
-			// separator, or after a statement at-keyword pushes it). No flag
-			// or lookbehind is needed.
-			if rule.Name == "val" && rule.State == jsonic.OPEN {
+			// Value position.
+			if name == "declval" {
 				if c == '{' || c == '}' || c == ';' || c == ':' {
 					return nil
 				}
 				endI := scanValueEnd(src, sI)
-				raw := src[sI:endI]
-				val := strings.TrimRight(raw, " \t\r\n")
-				if lowercaseValues {
-					val = strings.ToLower(val)
-				}
-				tkn := lex.Token("#VL", jsonic.TinVL, val, raw)
-				pnt.SI = endI
-				pnt.CI += endI - sI
+				val := strings.TrimSpace(stripComments(src[sI:endI]))
+				tkn := lex.Token("#VL", jsonic.TinVL, val, src[sI:endI])
+				advance(pnt, src, sI, endI)
 				return tkn
 			}
 
-			// Key position. A selector may begin with `:` (a pseudo-class), so
-			// `:` is not block punctuation here.
+			// A top-level selector-group comma.
+			if c == ',' {
+				tkn := lex.Token("#GC", tins.gc, ",", ",")
+				advance(pnt, src, sI, sI+1)
+				return tkn
+			}
+
+			// An at-rule.
+			if c == '@' {
+				return matchAtRule(lex, src, sI, tins)
+			}
+
+			// Other fixed punctuation belongs to the grammar.
 			if c == '{' || c == '}' || c == ';' {
 				return nil
 			}
-			kind, idx := scanToBraceOrEnd(src, sI)
+
+			// A selector or a property name.
+			kind, _ := scanToBraceOrEnd(src, sI)
 			if kind == selectorKind {
-				// A selector or block at-rule prelude: the whole run up to `{`.
-				raw := src[sI:idx]
-				sel := strings.TrimRight(raw, " \t\r\n")
-				tkn := lex.Token("#TX", jsonic.TinTX, sel, raw)
-				pnt.SI = idx
-				pnt.CI += idx - sI
+				end := scanSelectorEnd(src, sI)
+				sel := strings.TrimSpace(stripComments(src[sI:end]))
+				tkn := lex.Token("#TX", jsonic.TinTX, sel, src[sI:end])
+				advance(pnt, src, sI, end)
 				return tkn
 			}
-			// A property name or a statement at-keyword: the identifier up to
-			// `:`, whitespace, `;` or `}`. A leading `@` makes it an at-keyword
-			// (#AT), which the grammar follows directly with a value; else #TX.
 			eI := sI
-			isAt := src[eI] == '@'
-			if isAt {
-				eI++
-			}
 			for eI < len(src) && isPropChar(src[eI]) {
 				eI++
 			}
 			if eI == sI {
 				return nil
 			}
-			name := src[sI:eI]
+			prop := src[sI:eI]
 			if lowercaseProperties {
-				name = strings.ToLower(name)
+				prop = strings.ToLower(prop)
 			}
-			if isAt {
-				tkn := lex.Token("#AT", atTin, name, name)
-				pnt.SI = eI
-				pnt.CI += eI - sI
-				return tkn
-			}
-			tkn := lex.Token("#TX", jsonic.TinTX, name, name)
-			pnt.SI = eI
-			pnt.CI += eI - sI
+			tkn := lex.Token("#TX", jsonic.TinTX, prop, src[sI:eI])
+			advance(pnt, src, sI, eI)
 			return tkn
 		}
 	}
+}
+
+func matchAtRule(lex *jsonic.Lex, src string, sI int, tins cssTins) *jsonic.Token {
+	pnt := lex.Cursor()
+	kEnd := sI + 1
+	for kEnd < len(src) && isAtChar(src[kEnd]) {
+		kEnd++
+	}
+	kw := src[sI+1 : kEnd]
+
+	kind, idx := scanToBraceOrEnd(src, sI)
+	if kind == selectorKind {
+		prelude := strings.TrimSpace(stripComments(src[kEnd:idx]))
+		var tinName string
+		var tin jsonic.Tin
+		switch {
+		case keyframesRe.MatchString(kw):
+			tinName, tin = "#ATK", tins.atk
+		case declsKw[kw]:
+			tinName, tin = "#ATD", tins.atd
+		default:
+			tinName, tin = "#ATR", tins.atr
+		}
+		tkn := lex.Token(tinName, tin, kw, src[sI:idx])
+		tkn.Use = map[string]any{"prelude": prelude}
+		advance(pnt, src, sI, idx)
+		return tkn
+	}
+	pEnd := scanValueEnd(src, kEnd)
+	params := strings.TrimSpace(stripComments(src[kEnd:pEnd]))
+	end := pEnd
+	if pEnd < len(src) && src[pEnd] == ';' {
+		end = pEnd + 1
+	}
+	tkn := lex.Token("#ATS", tins.ats, kw, src[sI:end])
+	tkn.Use = map[string]any{"params": params}
+	advance(pnt, src, sI, end)
+	return tkn
+}
+
+func advance(pnt *jsonic.Point, src string, sI, end int) {
+	rows := 0
+	lastNL := -1
+	for i := sI; i < end; i++ {
+		if src[i] == '\n' {
+			rows++
+			lastNL = i
+		}
+	}
+	if rows > 0 {
+		pnt.RI += rows
+		pnt.CI = end - lastNL
+	} else {
+		pnt.CI += end - sI
+	}
+	pnt.SI = end
+}
+
+// startPos is a token's first-character position (1-based line/column).
+func startPos(tok *jsonic.Token) map[string]any {
+	return map[string]any{"line": tok.RI, "column": tok.CI}
+}
+
+// endPos is the position just after a token's last character.
+func endPos(tok *jsonic.Token) map[string]any {
+	s := tok.Src
+	rows := 0
+	lastNL := -1
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			rows++
+			lastNL = i
+		}
+	}
+	if rows > 0 {
+		return map[string]any{"line": tok.RI + rows, "column": len(s) - lastNL}
+	}
+	return map[string]any{"line": tok.RI, "column": tok.CI + len(s)}
 }
 
 const (
@@ -409,10 +786,6 @@ const (
 	declKind     = 1
 )
 
-// scanToBraceOrEnd scans a key prelude: it returns where it ends and whether
-// it is a selector (a top-level `{` was reached first) or a declaration (a
-// top-level `;`/`}` or end-of-input was reached first). Strings, (), [] and
-// comments are skipped.
 func scanToBraceOrEnd(src string, i int) (int, int) {
 	depth := 0
 	for i < len(src) {
@@ -444,8 +817,32 @@ func scanToBraceOrEnd(src string, i int) (int, int) {
 	return declKind, i
 }
 
-// scanValueEnd returns the index of the next top-level `;` or `}` (or
-// end-of-input). Strings, (), [] and comments are skipped.
+func scanSelectorEnd(src string, i int) int {
+	depth := 0
+	for i < len(src) {
+		c := src[i]
+		if c == '"' || c == '\'' {
+			i = skipString(src, i)
+			continue
+		}
+		if c == '/' && i+1 < len(src) && src[i+1] == '*' {
+			i = skipComment(src, i)
+			continue
+		}
+		if c == '(' || c == '[' {
+			depth++
+		} else if c == ')' || c == ']' {
+			if depth > 0 {
+				depth--
+			}
+		} else if depth == 0 && (c == ',' || c == '{') {
+			return i
+		}
+		i++
+	}
+	return i
+}
+
 func scanValueEnd(src string, i int) int {
 	depth := 0
 	for i < len(src) {
@@ -472,8 +869,6 @@ func scanValueEnd(src string, i int) int {
 	return i
 }
 
-// skipString skips a quoted string starting at the quote char; returns the
-// index after the closing quote (honouring backslash escapes).
 func skipString(src string, i int) int {
 	q := src[i]
 	i++
@@ -490,17 +885,40 @@ func skipString(src string, i int) int {
 	return i
 }
 
-// skipComment skips a `/* ... */` comment starting at `/`; returns the index
-// after `*/`.
 func skipComment(src string, i int) int {
 	i += 2
-	for i < len(src) && !(src[i] == '*' && i+1 < len(src) && src[i+1] == '/') {
+	for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
 		i++
 	}
 	return i + 2
 }
 
-// isPropChar reports whether c is a CSS property / at-keyword name character.
+// stripComments removes `/* ... */` comments from a selector / value run,
+// leaving quoted strings untouched.
+func stripComments(s string) string {
+	if !strings.Contains(s, "/*") {
+		return s
+	}
+	var b strings.Builder
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c == '"' || c == '\'' {
+			j := skipString(s, i)
+			b.WriteString(s[i:j])
+			i = j
+			continue
+		}
+		if c == '/' && i+1 < len(s) && s[i+1] == '*' {
+			i = skipComment(s, i)
+			continue
+		}
+		b.WriteByte(c)
+		i++
+	}
+	return b.String()
+}
+
 func isPropChar(c byte) bool {
 	return (c >= '0' && c <= '9') ||
 		(c >= 'A' && c <= 'Z') ||
@@ -508,7 +926,15 @@ func isPropChar(c byte) bool {
 		c == '-' || c == '_'
 }
 
-// parseGrammarText parses grammar text into a GrammarSpec with refs attached.
+func isAtChar(c byte) bool {
+	return (c >= '0' && c <= '9') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= 'a' && c <= 'z') ||
+		c == '-'
+}
+
+// --- Grammar text -> GrammarSpec ------------------------------------------
+
 func parseGrammarText(text string, refs map[jsonic.FuncRef]any) (*jsonic.GrammarSpec, error) {
 	parsed, err := jsonic.Make().Parse(text)
 	if err != nil {
@@ -541,7 +967,6 @@ func parseGrammarText(text string, refs map[jsonic.FuncRef]any) (*jsonic.Grammar
 	return gs, nil
 }
 
-// buildGrammarAlts converts a parsed-jsonic alt array into []*GrammarAltSpec.
 func buildGrammarAlts(def any) []*jsonic.GrammarAltSpec {
 	arr, ok := def.([]any)
 	if !ok {
@@ -581,19 +1006,21 @@ func buildGrammarAlts(def any) []*jsonic.GrammarAltSpec {
 		if r, ok := m["r"].(string); ok {
 			ga.R = r
 		}
-		if a, ok := m["a"].(string); ok {
-			ga.A = jsonic.FuncRef(a)
-		}
-		if c, ok := m["c"]; ok {
-			switch cv := c.(type) {
+		if a, ok := m["a"]; ok {
+			switch av := a.(type) {
 			case string:
-				ga.C = cv
-			case map[string]any:
-				ga.C = cv
+				ga.A = jsonic.FuncRef(av)
+			case []any:
+				refs := make([]any, len(av))
+				for i, v := range av {
+					if s, ok := v.(string); ok {
+						refs[i] = jsonic.FuncRef(s)
+					} else {
+						refs[i] = v
+					}
+				}
+				ga.A = refs
 			}
-		}
-		if u, ok := m["u"].(map[string]any); ok {
-			ga.U = u
 		}
 		if g, ok := m["g"].(string); ok {
 			ga.G = g
