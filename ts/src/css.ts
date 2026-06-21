@@ -1,8 +1,8 @@
 /* Copyright (c) 2025 Richard Rodger, MIT License */
 
-// The engine is the tabnas parser; jsonic supplies the relaxed-JSON
-// grammar whose fixed tokens (`{` `}` `:`) and machinery this plugin
-// reuses, then reshapes into CSS.
+// The engine is the tabnas parser; jsonic supplies the relaxed-JSON grammar
+// whose fixed tokens (`{` `}` `:`) and machinery this plugin reuses, then
+// reshapes into a CSS abstract syntax tree.
 import {
   Tabnas,
   Rule,
@@ -17,135 +17,203 @@ import { jsonic } from '@tabnas/jsonic'
 // Plugin options.
 type CssOptions = {
   // When true, lowercase declaration property names (CSS property names are
-  // case-insensitive). Selectors are left untouched.
+  // case-insensitive). Selectors, values and at-rule preludes are untouched.
   lowercaseProperties: boolean
-  // When true, lowercase declaration values. Off by default because parts of
-  // a value (strings, url() contents, custom idents) are case-sensitive.
-  lowercaseValues: boolean
 }
 
 // --- BEGIN EMBEDDED css-grammar.jsonic ---
 const grammarText = `
-# CSS Grammar Definition
-# Parses CSS (Cascading Style Sheets) into a nested map of
-#   selector -> { property -> value }
-# Nested at-rules (e.g. @media) recurse: their block is itself a map of
-# rules. Statement at-rules (e.g. @import) become property -> value pairs.
-# A comma-grouped selector is expanded into one entry per selector.
+# CSS Grammar Definition (AST)
+# Parses CSS into a reworkcss-style abstract syntax tree: ordered, typed
+# nodes that preserve declaration order, duplicate properties, rule types
+# and comments.
+#
+#   { type: 'stylesheet', rules: [ Node, ... ] }
+#   rule        { type:'rule',        selectors:[string], declarations:[Node] }
+#   declaration { type:'declaration', property:string, value:string }
+#   comment     { type:'comment',     comment:string }
+#   at-rules (media/supports/import/keyframes/font-face/...) — see below
 #
 # Example:
-#   a { color: red; font-size: 12px; }
-#   .foo, .bar { margin: 0 }
-#   @media screen { a { color: blue } }
+#   a { color: red; color: blue } /* note */
 # parses to:
-#   {
-#     "a": { "color": "red", "font-size": "12px" },
-#     ".foo": { "margin": "0" },
-#     ".bar": { "margin": "0" },
-#     "@media screen": { "a": { "color": "blue" } }
-#   }
+#   { type:'stylesheet', rules: [
+#     { type:'rule', selectors:['a'], declarations:[
+#       { type:'declaration', property:'color', value:'red' },
+#       { type:'declaration', property:'color', value:'blue' } ] },
+#     { type:'comment', comment:' note ' } ] }
 #
-# The custom cssToken lex matcher emits the text tokens by position:
-#   - #TX : a key in key position — one selector (up to a top-level "," or
-#           "{") or a property name (the identifier up to ":").
-#   - #AT : a statement at-keyword (e.g. "@import") — a key whose value
-#           follows without a ":" separator.
-#   - #GC : a top-level comma separating the selectors of a group (so each
-#           selector arrives as its own #TX key, never a split string).
-#   - #VL : a value, in value position (when the val rule is open): the run
-#           of text up to the next top-level ";" or "}" (trimmed), so
-#           '1px solid #fff' is one value.
-# The fixed tokens "{" "}" ":" lex as #OB #CB #CL; ";" is remapped to #CA
-# (the member separator). Bare "[" "]" are disabled.
+# The cssToken lex matcher emits: #TX (one selector or a property name),
+# #GC (a top-level selector-group comma), #VL (a declaration value),
+# #CC (a comment, at a statement position), and the at-rule tokens
+# #ATR/#ATD/#ATK/#ATS (carrying the keyword in val and the prelude in
+# use). Fixed "{" "}" ":" lex as #OB #CB #CL; ";" is remapped to #CA.
 #
-# The grammar is applied with { rule: { alt: { g: 'css' } } } so every alt
-# below is automatically tagged with the 'css' group.
+# Every alt is tagged with the 'css' group via { rule: { alt: { g: 'css' } } }.
 
 {
   rule: {
-    # Start rule: a stylesheet is an implicit top-level map of rules, with
-    # no surrounding braces. It is closed by end-of-input (#ZZ).
+    # The top-level stylesheet node. "items" fills its rules[].
     stylesheet: {
       open: [
-        # Empty input -> empty stylesheet.
-        { s: '#ZZ' b: 1 a: '@object$' g: 'css,sheet,empty' }
-        # Otherwise the first key (#KEY = #TX or #AT) starts the rule list.
-        # b:1 re-feeds the key to the pair rule.
-        { s: '#KEY' b: 1 a: '@object$' p: pair g: 'css,sheet' }
+        { a: '@cssSheet' p: items g: 'css,sheet' }
       ]
       close: [
         { s: '#ZZ' g: 'css,sheet,end' }
       ]
     }
 
-    # An explicit "{ ... }" block: a declaration block or a nested ruleset.
-    # @cssClearPend gives the block a fresh (empty) pending-key list so the
-    # enclosing ruleset's selectors don't leak into this block's members.
-    block: {
+    # A statement list (the stylesheet body or an at-rule's rules body). Reads
+    # rule / at-rule / comment nodes into the enclosing node's rules[]. Each
+    # iteration pushes one "statement" child, then @cssPushRule appends it.
+    items: {
       open: [
-        # Empty block: {}.
-        { s: '#OB #CB' b: 1 a: '@object$' g: 'css,block,empty' }
-        { s: '#OB' a: ['@object$' '@cssClearPend'] p: pair g: 'css,block' }
+        { s: '#ZZ' b: 1 g: 'css,items,end' }
+        { s: '#CB' b: 1 g: 'css,items,endblock' }
+        { p: statement g: 'css,items' }
       ]
       close: [
-        { s: '#CB' g: 'css,block,end' }
+        { s: '#ZZ' b: 1 a: '@cssPushRule' g: 'css,items,end' }
+        { s: '#CB' b: 1 a: '@cssPushRule' g: 'css,items,endblock' }
+        { a: '@cssPushRule' r: items g: 'css,items,next' }
       ]
     }
 
-    # A member of a map. Four open shapes, disambiguated by the key token and
-    # what follows it:
-    #   #TX ":"  -> declaration       (single key, captured with @key$)
-    #   #AT      -> statement at-rule  (single key, captured with @key$)
-    #   #TX ","  -> grouped selector   (pend this key, loop for the next)
-    #   #TX "{"  -> ruleset (last/only selector: pend the key, push the block)
-    # A selector group accumulates its keys on the kept "pend" list via
-    # @cssPendKey across the open-phase "r: pair" loop; @cssSetval then assigns
-    # the built value to every pending key (or to the single @key$ key for a
-    # declaration / at-rule). No selector text is split — each selector arrives
-    # as its own #TX token, with #GC commas between them.
-    pair: {
+    # Builds ONE statement node (resetting from the inherited list node).
+    statement: {
       open: [
-        # Declaration:  property : value
-        { s: '#TX #CL' a: '@key$' p: val g: 'css,decl' }
-        # Statement at-rule:  @import "x"   The at-keyword (#AT) pushes val
-        # directly; val then reads the params as a value (#VL).
-        { s: '#AT' a: '@key$' p: val g: 'css,atrule' }
-        # Grouped selector:  selector ,   Pend the key and loop for the next
-        # selector (k.pend propagates across the replace).
-        { s: '#TX #GC' a: '@cssPendKey' r: pair g: 'css,rule,group' }
-        # Ruleset (last/only selector):  selector { ... }   Pend the key, then
-        # push val (b:1 re-feeds "{" to the val/block).
-        { s: '#TX #OB' b: 1 a: '@cssPendKey' p: val g: 'css,rule' }
+        # A comment node.
+        { s: '#CC' a: '@cssComment' g: 'css,comment' }
+        # A block at-rule whose body is rules (e.g. @media): push items.
+        { s: '#ATR' a: '@cssAtRules' p: rulesbody g: 'css,atrules' }
+        # A block at-rule whose body is declarations (e.g. @font-face).
+        { s: '#ATD' a: '@cssAtDecls' p: declbody g: 'css,atdecls' }
+        # @keyframes: a body of keyframe blocks.
+        { s: '#ATK' a: '@cssKeyframes' p: kfbody g: 'css,keyframes' }
+        # A statement at-rule (e.g. @import "x"): a leaf node.
+        { s: '#ATS' a: '@cssAtStmt' g: 'css,atstmt' }
+        # A style rule: selectors + declarations.
+        { s: '#TX' b: 1 a: '@cssRule' p: sel g: 'css,rule' }
       ]
       close: [
-        # Trailing ";" before "}" -> end of block (re-fed to block close).
-        { s: '#CA #CB' b: 1 a: '@cssSetval' g: 'css,decl,trailing' }
-        # Trailing ";" before end-of-input -> end of stylesheet.
-        { s: '#CA #ZZ' b: 1 a: '@cssSetval' g: 'css,decl,trailing,end' }
-        # ";" -> next declaration in the same block.
-        { s: '#CA' a: '@cssSetval' r: pair g: 'css,decl,next' }
-        # "}" -> end of the enclosing block (re-fed to block close).
-        { s: '#CB' b: 1 a: '@cssSetval' g: 'css,pair,endblock' }
-        # End of input -> end of the stylesheet.
-        { s: '#ZZ' b: 1 a: '@cssSetval' g: 'css,pair,endsheet' }
-        # A new key (#TX or #AT) with no separator -> next rule (implicit
-        # continuation, e.g. between adjacent rulesets).
-        { s: '#KEY' b: 1 a: '@cssSetval' r: pair g: 'css,rule,next' }
+        { b: 1 g: 'css,statement,end' }
       ]
     }
 
-    # The value side of a pair: either a nested block (map) or a value token.
-    # @reset$ clears the parent-seeded node so the value does not inherit the
-    # enclosing object; @value$ resolves it (a built block wins, else the
-    # #VL scalar).
-    val: {
+    # Reads a selector group into the (rule/page) node's selectors[], then the
+    # declaration block. Each selector is one #TX; #GC separates a group.
+    sel: {
       open: [
-        { s: '#OB' b: 1 a: '@reset$' p: block g: 'css,val,block' }
-        { s: '#VL' a: '@reset$' g: 'css,val,text' }
+        { s: '#TX #GC' a: '@cssSelector' r: sel g: 'css,sel,group' }
+        { s: '#TX #OB' b: 1 a: '@cssSelector' p: declbody g: 'css,sel,last' }
       ]
       close: [
-        { s: '#ZZ' b: 1 a: '@value$' g: 'css,val,endsheet' }
-        { b: 1 a: '@value$' g: 'css,val,more' }
+        { b: 1 g: 'css,sel,end' }
+      ]
+    }
+
+    # The "{ ... }" wrapper around a declaration list; fills the parent node's
+    # declarations[].
+    declbody: {
+      open: [
+        { s: '#OB #CB' b: 1 g: 'css,declbody,empty' }
+        { s: '#OB' p: decls g: 'css,declbody' }
+      ]
+      close: [
+        { s: '#CB' g: 'css,declbody,end' }
+      ]
+    }
+
+    # A declaration list: declaration / comment nodes, ";"-separated.
+    decls: {
+      open: [
+        { s: '#CB' b: 1 g: 'css,decls,empty' }
+        { p: decl g: 'css,decls' }
+      ]
+      close: [
+        { s: '#CA #CB' b: 1 a: '@cssPushDecl' g: 'css,decls,trailing' }
+        { s: '#CB' b: 1 a: '@cssPushDecl' g: 'css,decls,end' }
+        { s: '#CA' a: '@cssPushDecl' r: decls g: 'css,decls,next' }
+        { a: '@cssPushDecl' r: decls g: 'css,decls,comment' }
+      ]
+    }
+
+    # Builds ONE declaration or comment node.
+    decl: {
+      open: [
+        { s: '#CC' a: '@cssComment' g: 'css,comment' }
+        { s: '#TX #CL' a: '@cssDecl' p: declval g: 'css,decl' }
+      ]
+      close: [
+        { b: 1 g: 'css,decl,end' }
+      ]
+    }
+
+    # The value of a declaration (a single #VL run).
+    declval: {
+      open: [
+        { s: '#VL' a: '@cssDeclVal' g: 'css,declval' }
+        { b: 1 g: 'css,declval,empty' }
+      ]
+      close: [
+        { b: 1 g: 'css,declval,end' }
+      ]
+    }
+
+    # The "{ ... }" rules body of a block at-rule (@media/@supports/...).
+    rulesbody: {
+      open: [
+        { s: '#OB #CB' b: 1 g: 'css,rulesbody,empty' }
+        { s: '#OB' p: items g: 'css,rulesbody' }
+      ]
+      close: [
+        { s: '#CB' g: 'css,rulesbody,end' }
+      ]
+    }
+
+    # The "{ ... }" body of @keyframes: a list of keyframe blocks.
+    kfbody: {
+      open: [
+        { s: '#OB #CB' b: 1 g: 'css,kfbody,empty' }
+        { s: '#OB' p: kfitems g: 'css,kfbody' }
+      ]
+      close: [
+        { s: '#CB' g: 'css,kfbody,end' }
+      ]
+    }
+
+    # A list of keyframe blocks (and comments) -> the keyframes node's
+    # keyframes[].
+    kfitems: {
+      open: [
+        { s: '#CB' b: 1 g: 'css,kfitems,empty' }
+        { p: keyframe g: 'css,kfitems' }
+      ]
+      close: [
+        { s: '#CB' b: 1 a: '@cssPushKf' g: 'css,kfitems,end' }
+        { a: '@cssPushKf' r: kfitems g: 'css,kfitems,next' }
+      ]
+    }
+
+    # One keyframe block: values (0%, 50%, from, to) + declarations. Mirrors
+    # "statement"+"sel" but builds a 'keyframe' node with values[].
+    keyframe: {
+      open: [
+        { s: '#CC' a: '@cssComment' g: 'css,comment' }
+        { s: '#TX' b: 1 a: '@cssKeyframe' p: kfsel g: 'css,keyframe' }
+      ]
+      close: [
+        { b: 1 g: 'css,keyframe,end' }
+      ]
+    }
+
+    kfsel: {
+      open: [
+        { s: '#TX #GC' a: '@cssKfValue' r: kfsel g: 'css,kfsel,group' }
+        { s: '#TX #OB' b: 1 a: '@cssKfValue' p: declbody g: 'css,kfsel,last' }
+      ]
+      close: [
+        { b: 1 g: 'css,kfsel,end' }
       ]
     }
   }
@@ -153,10 +221,12 @@ const grammarText = `
 `
 // --- END EMBEDDED css-grammar.jsonic ---
 
+// An AST node (plain object with a `type` discriminator).
+type Node = Record<string, any>
+
 // Plugin implementation.
 const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
   const lowercaseProperties = !!options.lowercaseProperties
-  const lowercaseValues = !!options.lowercaseValues
 
   // Human descriptions for the CSS tokens, surfaced in railroad diagram
   // legends (read off the live config by @tabnas/railroad).
@@ -169,10 +239,14 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
             '#CB': '} — end of a block',
             '#CL': ': — declaration separator',
             '#CA': '; — declaration terminator',
-            '#TX': 'key: a selector or property name',
-            '#AT': 'key: a statement at-keyword (e.g. @import)',
+            '#TX': 'a selector, keyframe value, or property name',
             '#GC': ', — selector-group separator',
-            '#VL': 'value: a declaration value (raw text)',
+            '#VL': 'a declaration value (raw text)',
+            '#CC': 'a comment',
+            '#ATR': 'an at-rule with a rules body (@media, @supports, …)',
+            '#ATD': 'an at-rule with a declarations body (@font-face, @page)',
+            '#ATK': '@keyframes',
+            '#ATS': 'a statement at-rule (@import, @charset, …)',
           })
         },
       },
@@ -180,24 +254,16 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
   })
 
   const grammarDef = new Tabnas().use(jsonic).parse(grammarText)
-  // Three grammar-local actions handle selector grouping structurally (no
-  // string splitting): @cssPendKey accumulates each grouped selector token as
-  // a pending key, @cssSetval assigns the built value to every pending key,
-  // and @cssClearPend resets the pending list when entering a block so an
-  // enclosing ruleset's selectors don't leak in. Everything else uses builtin
-  // ($) actions.
-  grammarDef.ref = {
-    '@cssPendKey': cssPendKey,
-    '@cssSetval': cssSetval,
-    '@cssClearPend': cssClearPend,
-  }
+  // The grammar builds the typed AST entirely from these grammar-local
+  // actions (node constructors, field setters, and array pushers).
+  grammarDef.ref = makeActions(lowercaseProperties)
 
   // All jsonic option overrides live on the grammar object so the plugin
   // applies them atomically alongside its rule alts.
   grammarDef.options = {
     rule: {
-      // Remove jsonic extensions (implicit maps/lists, top-level commas,
-      // path dives). CSS structure is supplied entirely by the rules above.
+      // Remove jsonic extensions (implicit maps/lists, top-level commas, path
+      // dives). The AST structure is supplied entirely by the rules above.
       exclude: 'jsonic,imp',
       start: 'stylesheet',
     },
@@ -213,25 +279,19 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
       },
     },
     tokenSet: {
-      // Keys are the text tokens produced by the cssToken matcher: a
-      // selector / property name (#TX) or a statement at-keyword (#AT).
-      KEY: ['#TX', '#AT'],
+      KEY: ['#TX'],
     },
     // The cssToken matcher owns all non-fixed text (selectors, property
-    // names, values), so the default string/number/text matchers are off.
-    string: {
-      chars: '',
-    },
-    number: {
-      lex: false,
-    },
-    text: {
-      lex: false,
-    },
-    value: {
-      lex: false,
-    },
-    // Only `/* ... */` block comments in CSS.
+    // names, values, comments, at-rule preludes), so the default
+    // string/number/text/value matchers are off.
+    string: { chars: '' },
+    number: { lex: false },
+    text: { lex: false },
+    value: { lex: false },
+    // `/* ... */` block comments are lexed by the builtin matcher only when
+    // the cssToken matcher declines them (i.e. away from statement positions,
+    // where they would otherwise be captured as comment nodes); there they
+    // are skipped as insignificant whitespace.
     comment: {
       lex: true,
       def: {
@@ -242,12 +302,9 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
     },
     lex: {
       match: {
-        // Runs ahead of the fixed-token matcher so it owns selectors,
-        // property names and values; it defers (returns undefined) on the
-        // fixed punctuation and on whitespace/comments.
         cssToken: {
           order: 1e5,
-          make: buildCssTokenMatcher(lowercaseProperties, lowercaseValues),
+          make: buildCssTokenMatcher(lowercaseProperties),
         },
       },
     },
@@ -258,98 +315,286 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
   tn.grammar(grammarDef, { rule: { alt: { g: 'css' } } })
 }
 
-// The single lex matcher. It emits one of three text tokens by position;
-// all the structural decisions live in the grammar:
-//   - value mode (the `val` rule is open) -> read a declaration value up to
-//     `;`/`}` and emit #VL.
-//   - key mode (otherwise) -> a selector / block-at-rule prelude up to `{`
-//     (#TX), a property name up to `:` (#TX), or a statement at-keyword
-//     (#AT), chosen by a single lookahead.
-// Anything else (fixed punctuation, whitespace, comments) is deferred to the
-// later builtin matchers. The matcher is stateless: value position is read
-// straight off `rule.name`/`rule.state` because the grammar always pushes
-// `val` at a value position (after `:`, or after an #AT key). This keeps the
-// logic identical to the Go port, which cannot read the grammar's
-// expected-token columns or inject lookahead tokens.
-function buildCssTokenMatcher(
-  lowercaseProperties: boolean,
-  lowercaseValues: boolean,
-) {
+// --- Grammar actions: build the AST ---------------------------------------
+
+// All grammar-local actions, keyed by their `@name$` reference. The node
+// constructors overwrite `r.node`; the field setters mutate it; the pushers
+// append a finished child node to a parent array.
+function makeActions(_lowercaseProperties: boolean): Record<string, Function> {
+  const tokenVal = (r: Rule, i = 0): any => (r as any).o[i]?.val
+  const childNode = (r: Rule): any => r.child && r.child.node
+
+  return {
+    // Node constructors.
+    '@cssSheet': (r: Rule) => {
+      r.node = { type: 'stylesheet', rules: [] }
+    },
+    '@cssRule': (r: Rule) => {
+      r.node = { type: 'rule', selectors: [], declarations: [] }
+    },
+    '@cssDecl': (r: Rule) => {
+      r.node = { type: 'declaration', property: tokenVal(r), value: '' }
+    },
+    '@cssComment': (r: Rule) => {
+      r.node = { type: 'comment', comment: tokenVal(r) }
+    },
+    '@cssKeyframe': (r: Rule) => {
+      r.node = { type: 'keyframe', values: [], declarations: [] }
+    },
+    '@cssAtRules': (r: Rule) => {
+      r.node = makeAtRules((r as any).o[0])
+    },
+    '@cssAtDecls': (r: Rule) => {
+      r.node = makeAtDecls((r as any).o[0])
+    },
+    '@cssKeyframes': (r: Rule) => {
+      r.node = makeKeyframes((r as any).o[0])
+    },
+    '@cssAtStmt': (r: Rule) => {
+      r.node = makeAtStmt((r as any).o[0])
+    },
+
+    // Field setters (mutate the current node, which the rule inherited).
+    '@cssSelector': (r: Rule) => {
+      ;(r.node as Node).selectors.push(tokenVal(r))
+    },
+    '@cssKfValue': (r: Rule) => {
+      ;(r.node as Node).values.push(tokenVal(r))
+    },
+    '@cssDeclVal': (r: Rule) => {
+      ;(r.node as Node).value = tokenVal(r)
+    },
+
+    // Array pushers (append the built child node to a parent array).
+    '@cssPushRule': (r: Rule) => {
+      const c = childNode(r)
+      if (undefined !== c) (r.node as Node).rules.push(c)
+    },
+    '@cssPushDecl': (r: Rule) => {
+      const c = childNode(r)
+      if (undefined !== c) (r.node as Node).declarations.push(c)
+    },
+    '@cssPushKf': (r: Rule) => {
+      const c = childNode(r)
+      if (undefined !== c) (r.node as Node).keyframes.push(c)
+    },
+  }
+}
+
+// Build a block at-rule node whose body is a list of rules (@media, @supports,
+// @document, @host, and generic block at-rules).
+function makeAtRules(tok: any): Node {
+  const kw: string = tok.val
+  const prelude: string = (tok.use && tok.use.prelude) || ''
+  if ('media' === kw) return { type: 'media', media: prelude, rules: [] }
+  if ('supports' === kw) return { type: 'supports', supports: prelude, rules: [] }
+  if ('host' === kw) return { type: 'host', rules: [] }
+  if ('document' === kw || /-document$/.test(kw)) {
+    const node: Node = { type: 'document', document: prelude, rules: [] }
+    const v = vendorPrefix(kw)
+    if (v) node.vendor = v
+    return node
+  }
+  // Generic block at-rule with a rules body (e.g. @container, @layer, @scope).
+  return { type: kw, [kw]: prelude, rules: [] }
+}
+
+// Build a block at-rule node whose body is declarations (@font-face, @page,
+// and generic declaration at-rules).
+function makeAtDecls(tok: any): Node {
+  const kw: string = tok.val
+  const prelude: string = (tok.use && tok.use.prelude) || ''
+  if ('font-face' === kw) return { type: 'font-face', declarations: [] }
+  if ('page' === kw) {
+    return { type: 'page', selectors: prelude ? [prelude] : [], declarations: [] }
+  }
+  return { type: kw, declarations: [] }
+}
+
+// Build a @keyframes node (possibly vendor-prefixed).
+function makeKeyframes(tok: any): Node {
+  const kw: string = tok.val
+  const name: string = (tok.use && tok.use.prelude) || ''
+  const node: Node = { type: 'keyframes', name }
+  const v = vendorPrefix(kw)
+  if (v) node.vendor = v
+  node.keyframes = []
+  return node
+}
+
+// Build a statement at-rule node (@import, @charset, @namespace, …): the
+// at-keyword is the node type and the field carrying its params.
+function makeAtStmt(tok: any): Node {
+  const kw: string = tok.val
+  const params: string = (tok.use && tok.use.params) || ''
+  return { type: kw, [kw]: params }
+}
+
+// Extract a `-vendor-` prefix from an at-keyword (e.g. `-webkit-keyframes`).
+function vendorPrefix(kw: string): string | undefined {
+  const m = /^(-[a-z]+-)/.exec(kw)
+  return m ? m[1] : undefined
+}
+
+// --- Lexer ----------------------------------------------------------------
+
+// Rule names at which a `/* */` comment is captured as a node — the statement
+// / declaration / keyframe LIST readers, which lex the first token of each
+// item. (The item builders `statement`/`decl`/`keyframe` reuse that cached
+// token; a comment seen mid-construct, e.g. between a property and its `:`,
+// is under a builder rule and so is skipped, not captured.)
+const COMMENT_NODE_RULES: Record<string, true> = {
+  items: true,
+  decls: true,
+  kfitems: true,
+  // The block wrappers lex the first body token (their empty-block `#OB #CB`
+  // lookahead), so a comment immediately after `{` is captured here too.
+  declbody: true,
+  rulesbody: true,
+  kfbody: true,
+}
+
+// The single lex matcher. It emits the AST's text tokens by position; the
+// grammar assembles them into nodes:
+//   - in `declval` (a value position) -> a value run up to `;`/`}` (#VL)
+//   - a `,` separating selectors of a group -> #GC
+//   - a `@`-rule -> #ATR / #ATD / #ATK / #ATS (keyword in val, prelude/params
+//     in use), classified block-vs-statement by `{`-before-`;` lookahead
+//   - a `/* */` comment at a list position -> #CC (else deferred / skipped)
+//   - otherwise a single selector (up to a top-level `,` or `{`) or a
+//     property name (up to `:`) -> #TX
+// Fixed punctuation and whitespace are deferred to the builtin matchers.
+function buildCssTokenMatcher(lowercaseProperties: boolean) {
   return function makeCssTokenMatcher(_cfg: Config, _opts: TabnasOptions) {
     return function cssTokenMatcher(lex: Lex, rule: Rule) {
       const { pnt } = lex
       const src: string = lex.src as unknown as string
       const { sI, cI } = pnt
       const c = src[sI]
+      const name = (rule as any).name
 
-      // Defer whitespace and `/* */` comments to the builtin matchers.
       if (undefined === c) return undefined
+      // Defer whitespace to the space/line matchers.
       if (' ' === c || '\t' === c || '\r' === c || '\n' === c) return undefined
-      if ('/' === c && '*' === src[sI + 1]) return undefined
 
-      // Value mode is driven entirely by the grammar: the val rule is open
-      // exactly at a value position (after a `:` declaration separator, or
-      // after a statement at-keyword pushes it). No flag or lookbehind is
-      // needed — every value is read under val.
-      if ('val' === (rule as any).name && 'o' === (rule as any).state) {
-        // Fixed punctuation here belongs to the grammar, not a value.
+      // Comments: a node at a list position, otherwise deferred (and skipped).
+      if ('/' === c && '*' === src[sI + 1]) {
+        if (true !== COMMENT_NODE_RULES[name]) return undefined
+        let e = src.indexOf('*/', sI + 2)
+        const contentEnd = e < 0 ? src.length : e
+        const end = e < 0 ? src.length : e + 2
+        const tkn = lex.token('#CC', src.substring(sI + 2, contentEnd),
+          src.substring(sI, end), pnt)
+        advance(pnt, sI, cI, end)
+        return tkn
+      }
+
+      // Value position: read a declaration value up to the next top-level
+      // `;`/`}` and emit one #VL (comments stripped, trailing space trimmed).
+      if ('declval' === name) {
         if ('{' === c || '}' === c || ';' === c || ':' === c) return undefined
         const endI = scanValueEnd(src, sI)
-        let val = src.substring(sI, endI).replace(/\s+$/, '')
-        if (lowercaseValues) val = val.toLowerCase()
+        const val = stripComments(src.substring(sI, endI)).trim()
         const tkn = lex.token('#VL', val, src.substring(sI, endI), pnt)
-        pnt.sI = endI
-        pnt.cI = cI + (endI - sI)
+        advance(pnt, sI, cI, endI)
         return tkn
       }
 
-      // Key position. A top-level comma separates the selectors of a group
-      // (`h1, h2`); emit it as a #GC token so the grammar can collect each
-      // selector as its own key. (Commas inside selectors / values / at-rule
-      // preludes never reach here — they are consumed as text below.)
+      // A top-level selector-group comma.
       if (',' === c) {
         const tkn = lex.token('#GC', ',', ',', pnt)
-        pnt.sI = sI + 1
-        pnt.cI = cI + 1
+        advance(pnt, sI, cI, sI + 1)
         return tkn
       }
-      // A selector may begin with `:` (a pseudo-class), so `:` is NOT block
-      // punctuation here.
+
+      // An at-rule.
+      if ('@' === c) return matchAtRule(lex, src, sI, cI)
+
+      // Other fixed punctuation belongs to the grammar.
       if ('{' === c || '}' === c || ';' === c) return undefined
+
+      // A selector or a property name, by `{`-before-`;` lookahead.
       const brace = scanToBraceOrEnd(src, sI)
       if (brace.kind === 'selector') {
-        // A single selector (one member of a possible group) ends at the next
-        // top-level `,` or `{`. A block at-rule prelude (`@media …`) is kept
-        // whole up to `{` — its commas are a media-query list, not a group.
-        const end =
-          '@' === src[sI] ? brace.index : scanSelectorEnd(src, sI)
-        const sel = src.substring(sI, end).replace(/\s+$/, '')
+        // One selector of a (possible) group: up to the next top-level `,`/`{`
+        // (comments stripped, surrounding space trimmed).
+        const end = scanSelectorEnd(src, sI)
+        const sel = stripComments(src.substring(sI, end)).trim()
         const tkn = lex.token('#TX', sel, src.substring(sI, end), pnt)
-        pnt.sI = end
-        pnt.cI = cI + (end - sI)
+        advance(pnt, sI, cI, end)
         return tkn
       }
-      // A property name or a statement at-keyword: the identifier up to `:`,
-      // whitespace, `;` or `}`. A leading `@` makes it an at-keyword (#AT),
-      // which the grammar follows directly with a value; otherwise #TX.
+      // A property name: the identifier up to `:`, whitespace, `;` or `}`.
       let eI = sI
-      const isAt = '@' === src[eI]
-      if (isAt) eI++
       while (eI < src.length && isPropChar(src.charCodeAt(eI))) eI++
       if (eI === sI) return undefined
-      let name = src.substring(sI, eI)
-      if (lowercaseProperties) name = name.toLowerCase()
-      const tkn = lex.token(isAt ? '#AT' : '#TX', name, name, pnt)
-      pnt.sI = eI
-      pnt.cI = cI + (eI - sI)
+      let prop = src.substring(sI, eI)
+      if (lowercaseProperties) prop = prop.toLowerCase()
+      const tkn = lex.token('#TX', prop, src.substring(sI, eI), pnt)
+      advance(pnt, sI, cI, eI)
       return tkn
     }
   }
 }
 
-// Scan a key prelude: return where it ends and whether it is a selector (a
-// top-level `{` was reached first) or a declaration (a top-level `;`/`}` or
-// end-of-input was reached first). Strings, (), [] and comments are skipped.
+// Lex an at-rule starting at `@`. Classifies it block-vs-statement by lookahead
+// and, for blocks, by keyword, emitting #ATR/#ATD/#ATK (with the prelude) or
+// #ATS (with the params).
+function matchAtRule(lex: Lex, src: string, sI: number, cI: number) {
+  const { pnt } = lex
+  let kEnd = sI + 1
+  while (kEnd < src.length && isAtChar(src.charCodeAt(kEnd))) kEnd++
+  const kw = src.substring(sI + 1, kEnd)
+
+  const brace = scanToBraceOrEnd(src, sI)
+  if (brace.kind === 'selector') {
+    // Block at-rule: the prelude is the text between the keyword and `{`.
+    const prelude = src.substring(kEnd, brace.index).trim()
+    const tin =
+      isKeyframesKw(kw) ? '#ATK' : isDeclsKw(kw) ? '#ATD' : '#ATR'
+    const tkn = lex.token(tin, kw, src.substring(sI, brace.index), pnt, {
+      prelude,
+    })
+    advance(pnt, sI, cI, brace.index)
+    return tkn
+  }
+  // Statement at-rule: params run up to the next top-level `;`/`}`. A `;` is
+  // consumed (it terminates the statement); a `}`/end-of-input is left.
+  const pEnd = scanValueEnd(src, kEnd)
+  const params = src.substring(kEnd, pEnd).trim()
+  const end = ';' === src[pEnd] ? pEnd + 1 : pEnd
+  const tkn = lex.token('#ATS', kw, src.substring(sI, end), pnt, { params })
+  advance(pnt, sI, cI, end)
+  return tkn
+}
+
+// Advance the scan point to `end`, updating column. (Row is left to the
+// space/line matchers; the AST carries no positions.)
+function advance(pnt: any, sI: number, cI: number, end: number) {
+  pnt.sI = end
+  pnt.cI = cI + (end - sI)
+}
+
+const KEYFRAMES_RE = /^(-[a-z]+-)?keyframes$/
+function isKeyframesKw(kw: string): boolean {
+  return KEYFRAMES_RE.test(kw)
+}
+const DECLS_KW: Record<string, true> = {
+  'font-face': true,
+  page: true,
+  viewport: true,
+  '-ms-viewport': true,
+  'counter-style': true,
+  property: true,
+  'font-palette-values': true,
+}
+function isDeclsKw(kw: string): boolean {
+  return true === DECLS_KW[kw]
+}
+
+// Scan a key prelude: where it ends and whether it is a selector (a top-level
+// `{` is reached first) or a declaration (a top-level `;`/`}` or end-of-input
+// is reached first). Strings, (), [] and comments are skipped.
 function scanToBraceOrEnd(
   src: string,
   i: number,
@@ -378,9 +623,8 @@ function scanToBraceOrEnd(
   return { kind: 'decl', index: i }
 }
 
-// Scan a single selector: return the index of the next top-level `,` (a
-// group separator) or `{` (or end-of-input). Strings, (), [] and comments
-// are skipped, so a comma inside `:not(.a, .b)` is part of the selector.
+// Scan a single selector: the next top-level `,` (a group separator) or `{`
+// (or end-of-input). Strings, (), [] and comments are skipped.
 function scanSelectorEnd(src: string, i: number): number {
   let depth = 0
   while (i < src.length) {
@@ -405,8 +649,8 @@ function scanSelectorEnd(src: string, i: number): number {
   return i
 }
 
-// Scan a declaration value: return the index of the next top-level `;` or
-// `}` (or end-of-input). Strings, (), [] and comments are skipped.
+// Scan a declaration value / at-rule params: the next top-level `;` or `}`
+// (or end-of-input). Strings, (), [] and comments are skipped.
 function scanValueEnd(src: string, i: number): number {
   let depth = 0
   while (i < src.length) {
@@ -431,8 +675,7 @@ function scanValueEnd(src: string, i: number): number {
   return i
 }
 
-// Skip a quoted string starting at the quote char; returns the index after
-// the closing quote (honouring backslash escapes).
+// Skip a quoted string; returns the index after the closing quote.
 function skipString(src: string, i: number): number {
   const q = src[i]
   i++
@@ -447,14 +690,38 @@ function skipString(src: string, i: number): number {
   return i
 }
 
-// Skip a `/* ... */` comment starting at `/`; returns the index after `*/`.
+// Remove `/* ... */` comments from a selector / value run, leaving quoted
+// strings (which may contain `/*`) untouched.
+function stripComments(s: string): string {
+  if (s.indexOf('/*') < 0) return s
+  let out = ''
+  let i = 0
+  while (i < s.length) {
+    const c = s[i]
+    if ('"' === c || '\'' === c) {
+      const j = skipString(s, i)
+      out += s.substring(i, j)
+      i = j
+      continue
+    }
+    if ('/' === c && '*' === s[i + 1]) {
+      i = skipComment(s, i)
+      continue
+    }
+    out += c
+    i++
+  }
+  return out
+}
+
+// Skip a `/* ... */` comment; returns the index after `*/`.
 function skipComment(src: string, i: number): number {
   i += 2
   while (i < src.length && !('*' === src[i] && '/' === src[i + 1])) i++
   return i + 2
 }
 
-// CSS property / at-keyword name characters.
+// CSS property name characters.
 function isPropChar(c: number): boolean {
   return (
     (48 <= c && c <= 57) || // 0-9
@@ -465,58 +732,19 @@ function isPropChar(c: number): boolean {
   )
 }
 
-// Grammar action: record the just-matched key token (a selector of a group)
-// onto the rule's kept `pend` list. `k` propagates across the open-phase
-// `r: pair` loop, so each selector in `h1, h2, …` accumulates a pending key.
-function cssPendKey(r: Rule, _ctx: Context) {
-  const pend: string[] = (r.k.pend as string[]) || (r.k.pend = [])
-  const tok = r.o[0]
-  if (tok) pend.push(tok.val)
-}
-
-// Grammar action: assign the pair's built value (r.child.node) into the
-// enclosing map. A ruleset has collected one or more keys on `k.pend` (one per
-// grouped selector); the value is assigned to each, with its own deep copy so
-// the entries stay independent. A declaration / statement at-rule has a single
-// captured key in `u.key`. No selector text is ever parsed or split here — the
-// keys arrived as separate tokens from the lexer.
-function cssSetval(r: Rule, _ctx: Context) {
-  const node: any = r.node
-  if (null == node || 'object' !== typeof node) return
-  const val = r.child.node
-  const pend = r.k.pend as string[] | undefined
-  if (pend && 0 < pend.length) {
-    for (let i = 0; i < pend.length; i++) {
-      node[pend[i]] = 0 === i ? val : cloneNode(val)
-    }
-    r.k.pend = [] // reset for the next member at this level
-    return
-  }
-  node[r.u.key] = val
-}
-
-// Grammar action: reset the pending-key list for a freshly opened block. The
-// list is given a NEW array (not cleared in place), so the enclosing ruleset's
-// own `k.pend` — shared by reference up the stack — keeps its selectors.
-function cssClearPend(r: Rule, _ctx: Context) {
-  r.k.pend = []
-}
-
-// Deep-copy a parsed value (plain map / array / scalar) so grouped selectors
-// don't share a mutable value object. Maps are rebuilt null-prototype to
-// match the engine's output.
-function cloneNode(v: any): any {
-  if (null == v || 'object' !== typeof v) return v
-  if (Array.isArray(v)) return v.map(cloneNode)
-  const out: any = Object.create(null)
-  for (const k of Object.keys(v)) out[k] = cloneNode(v[k])
-  return out
+// At-keyword characters (letters, digits, `-`).
+function isAtChar(c: number): boolean {
+  return (
+    (48 <= c && c <= 57) ||
+    (65 <= c && c <= 90) ||
+    (97 <= c && c <= 122) ||
+    45 === c
+  )
 }
 
 // Default option values.
 Css.defaults = {
   lowercaseProperties: false,
-  lowercaseValues: false,
 } as CssOptions
 
 export { Css }

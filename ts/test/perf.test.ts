@@ -34,8 +34,22 @@ describe('perf', () => {
     // the parse result en route.
     for (let i = 0; i < 100; i++) {
       assert.deepEqual(JSON.parse(JSON.stringify(j.parse(SRC))), {
-        a: { color: 'red', font: '12px sans-serif' },
-        '.b > .c': { margin: '0' },
+        type: 'stylesheet',
+        rules: [
+          {
+            type: 'rule',
+            selectors: ['a'],
+            declarations: [
+              { type: 'declaration', property: 'color', value: 'red' },
+              { type: 'declaration', property: 'font', value: '12px sans-serif' },
+            ],
+          },
+          {
+            type: 'rule',
+            selectors: ['.b > .c'],
+            declarations: [{ type: 'declaration', property: 'margin', value: '0' }],
+          },
+        ],
       })
     }
 

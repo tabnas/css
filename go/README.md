@@ -1,8 +1,10 @@
 # css (Go)
 
 A jsonic grammar plugin that parses [CSS](https://developer.mozilla.org/en-US/docs/Web/CSS)
-(Cascading Style Sheets) into Go values — a nested map of
-`selector → { property → value }`.
+into a faithful abstract syntax tree (the
+[`reworkcss/css`](https://github.com/reworkcss/css) model): ordered, typed
+nodes that preserve declaration order, duplicate properties, rule types, and
+comments.
 
 ## Install
 
@@ -16,21 +18,21 @@ import tabnascss "github.com/tabnas/css/go"
 
 ## One example
 
-`tabnascss.Parse` is the one-call entry point — pass source, get a value and
+`tabnascss.Parse` is the one-call entry point — pass source, get the AST and
 an `error`:
 
 ```go
-result, err := tabnascss.Parse(`a { color: red; font-size: 12px }`)
-// result: map[string]any{"a": map[string]any{"color": "red", "font-size": "12px"}}
-
-result, err = tabnascss.Parse(`@media screen { a { color: blue } }`)
-// result: map[string]any{"@media screen": map[string]any{"a": map[string]any{"color": "blue"}}}
+ast, err := tabnascss.Parse(`a { color: red }`)
+// ast: map[string]any{"type":"stylesheet","rules":[]any{
+//   map[string]any{"type":"rule","selectors":[]any{"a"},"declarations":[]any{
+//     map[string]any{"type":"declaration","property":"color","value":"red"}}}}}
 ```
 
-Maps come back as `map[string]any`; declaration values are raw strings. The
-no-options `Parse` path reuses a cached instance internally and is safe for
-concurrent use; for hot loops with options, build one instance with
-`tabnascss.MakeJsonic` and reuse it.
+Every node is a `map[string]any` with a `"type"` field; `rules`,
+`declarations`, `selectors`, etc. are `[]any`. The no-options `Parse` path
+reuses a cached instance internally and is safe for concurrent use; for hot
+loops with options, build one instance with `tabnascss.MakeJsonic` and reuse
+it.
 
 ## Documentation
 
@@ -40,7 +42,7 @@ framework:
 - [Tutorial](doc/tutorial.md) — a guided first parse, start to finish.
 - [How-to guide](doc/guide.md) — short recipes for individual tasks.
 - [Reference](doc/reference.md) — the public API, every option, and the
-  complete CSS syntax accepted.
+  complete AST node reference.
 - [Concepts](doc/concepts.md) — how the plugin reshapes the engine, and
   how the Go version differs from TypeScript.
 

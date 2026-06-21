@@ -3,250 +3,197 @@
 ## What this project is
 
 `@tabnas/css` is a **grammar plugin** that parses
-[CSS](https://developer.mozilla.org/en-US/docs/Web/CSS) (Cascading Style
-Sheets) into a plain nested object of `selector → { property → value }`:
-
-```css
-a { color: red; font-size: 12px; }
-.foo, .bar { margin: 0 }
-@media screen { a { color: blue } }
-```
-
-parses to:
+[CSS](https://developer.mozilla.org/en-US/docs/Web/CSS) into a faithful
+**abstract syntax tree** — the widely-used
+[`reworkcss/css`](https://github.com/reworkcss/css) model: ordered, typed
+nodes that preserve declaration order, duplicate properties, rule types and
+comments.
 
 ```js
-{
-  "a": { "color": "red", "font-size": "12px" },
-  ".foo": { "margin": "0" },
-  ".bar": { "margin": "0" },
-  "@media screen": { "a": { "color": "blue" } }
-}
+c.parse('a { color: red; color: blue } /* note */')
 ```
 
-(A comma-grouped selector like `.foo, .bar` is expanded into one entry per
-selector.)
+→
 
-Like `@tabnas/zon` (the repo this was templated from), this is a **jsonic
-plugin**: it layers on `@tabnas/jsonic`'s relaxed-JSON grammar, reuses its
-fixed punctuation tokens (`{` `}` `:`), and then reshapes everything into
-CSS. Install it on a jsonic-enabled engine — `new Tabnas().use(jsonic).use(Css)`
-(TS) / `jsonic.Make()` then `UseDefaults(Css, ...)` (Go). It does three
-things on top of jsonic:
+```js
+{ type: 'stylesheet', rules: [
+  { type: 'rule', selectors: ['a'], declarations: [
+    { type: 'declaration', property: 'color', value: 'red' },
+    { type: 'declaration', property: 'color', value: 'blue' } ] },
+  { type: 'comment', comment: ' note ' } ] }
+```
 
-1. **Disables jsonic extensions** it doesn't want (`rule.exclude: 'jsonic,imp'`
-   removes implicit maps/lists, top-level commas, path dives), remaps fixed
-   tokens (`;` becomes `#CA`, the member separator; bare `[` `]` are nulled),
-   and turns off the default string/number/text/value matchers so the custom
-   matcher owns all non-punctuation text.
-2. **Adds one custom lex matcher** (`cssToken`) for the context-sensitive
-   tokenisation CSS needs (the jsonic lexer can't express it).
-3. **Supplies its own grammar rules** (`stylesheet`/`block`/`pair`/`val`) so a
-   stylesheet is an implicit top-level map and `{ ... }` blocks nest
-   recursively.
+It is a **jsonic plugin**: it layers on `@tabnas/jsonic`, reuses its fixed
+punctuation tokens (`{` `}` `:`), turns off the relaxed-JSON value matchers,
+and supplies its own grammar that builds the AST. Install on a jsonic engine —
+`new Tabnas().use(jsonic).use(Css)` (TS) / `jsonic.Make()` then
+`UseDefaults(Css, ...)` (Go).
 
-The signature CSS trick: a stylesheet is **context-sensitive** — the same
-identifier is a selector, a property, or a value depending on position. The
-`cssToken` matcher resolves this without backtracking, and stays stateless by
-letting the grammar carry the structure:
+### Node types (the output contract)
 
-- **Key vs value** is decided by the active rule: when the `val` rule is open
-  the matcher reads a **value** (`#VL`) — the run of text up to the next
-  top-level `;`/`}`. The grammar pushes `val` exactly at a value position
-  (after a `:`, or after an `#AT` at-keyword), so no flag or lookbehind is
-  needed. Otherwise the matcher reads a **key**.
-- **Selector vs declaration** is decided by lookahead: scanning past strings,
-  `()`/`[]` and comments, if a top-level `{` is reached first the key is a
-  **selector** (`#TX`); if a `;`/`}` is reached first it is a **property name**
-  (`#TX`, the identifier up to `:`). A selector ends at the next top-level `,`
-  too, so a group like `h1, h2` yields two `#TX` keys separated by a `#GC`
-  token (a block at-rule prelude is read whole — its commas stay text).
-- A leading `@` in the declaration branch marks a **statement at-rule**: the
-  matcher emits a distinct `#AT` key token, and the grammar's `#AT` alt pushes
-  `val` directly so the params are read as a value (`@import "x"` →
-  `{ "@import": "\"x\"" }`).
+| `type` | Fields |
+|---|---|
+| `stylesheet` | `rules: Node[]` |
+| `rule` | `selectors: string[]`, `declarations: Node[]` |
+| `declaration` | `property: string`, `value: string` (raw, trimmed, comments stripped, quotes kept) |
+| `comment` | `comment: string` (text between `/*` `*/`) |
+| `media` / `supports` / `document` / `host` | a prelude field (`media`, `supports`, `document`; `host` has none), `rules: Node[]` |
+| `font-face` / `page` | `declarations: Node[]` (`page` also `selectors: string[]`) |
+| `keyframes` | `name`, optional `vendor` (e.g. `-webkit-`), `keyframes: Node[]` of `keyframe` `{ values: string[], declarations: Node[] }` |
+| `import` / `charset` / `namespace` (statement at-rules) | a same-named field with the raw params |
 
-A comma-grouped selector (e.g. `h1, h2`) is handled **structurally**, not by
-splitting a string: the matcher emits each selector as its own `#TX` key with
-a `#GC` token for the top-level group comma; the grammar accumulates the keys
-on a kept `pend` list and assigns the built block to each (deep-copied so they
-stay independent). At-rule preludes and commas nested in
-`:not(...)`/strings/`()`/`[]` are kept as text by the matcher, so they never
-become `#GC` separators.
+Block at-rules are classified by keyword: a **rules** body (`media`,
+`supports`, `document`, `host`, and unknown block at-rules → `{ type: kw,
+[kw]: prelude, rules }`), a **declarations** body (`font-face`, `page`,
+`viewport`, `counter-style`, `property`, …), or **keyframes**. A leading `-`
+vendor prefix is split into `vendor`.
 
-Two options shape output, both applied in the matcher: `lowercaseProperties`
-(lowercase declaration property names) and `lowercaseValues` (lowercase
-declaration values). Single selectors are left verbatim.
+## How the parse works
+
+CSS is context-sensitive (the same characters can begin a selector, a property
+or a value), so the **lexer** owns the hard tokenisation and the **grammar**
+assembles typed nodes.
+
+The single `cssToken` matcher emits, by position:
+
+- `#TX` — one selector (up to a top-level `,` or `{`) or a property name (up to
+  `:`), chosen by a `{`-before-`;` lookahead. Selectors/values have comments
+  stripped and whitespace trimmed.
+- `#GC` — a top-level selector-group comma (so `h1, h2` is two `#TX` keys).
+- `#VL` — a declaration value, read in the `declval` rule up to the next
+  top-level `;`/`}`.
+- `#CC` — a comment **node**, emitted only when the active rule is a list
+  reader / block wrapper (`items`/`decls`/`kfitems`/`declbody`/`rulesbody`/
+  `kfbody`). Elsewhere a comment is deferred to the builtin comment matcher and
+  skipped (so mid-construct comments, e.g. between a property and its `:`, are
+  dropped). **`#CC`, not `#CM`** — `#CM` is the engine's builtin comment tin
+  (tin 7), which the parser ignores; a custom name is required.
+- `#ATR` / `#ATD` / `#ATK` / `#ATS` — at-rules, classified by keyword and
+  block-vs-statement lookahead. The keyword is the token `val`; the prelude /
+  params ride in `tkn.use`. (`#ATR` = rules body, `#ATD` = declarations body,
+  `#ATK` = keyframes, `#ATS` = statement at-rule.)
+
+The grammar rules build the AST with grammar-local **actions** (named
+`@cssXxx`, never `@xxx$` — `$` is reserved for engine builtins):
+
+- node constructors `@cssSheet` / `@cssRule` / `@cssDecl` / `@cssComment` /
+  `@cssKeyframe` / `@cssAtRules` / `@cssAtDecls` / `@cssKeyframes` /
+  `@cssAtStmt` overwrite `r.node` with a fresh typed node;
+- field setters `@cssSelector` / `@cssKfValue` / `@cssDeclVal` mutate it;
+- array pushers `@cssPushRule` / `@cssPushDecl` / `@cssPushKf` append a built
+  child node to the parent's array.
+
+Rule shape: `stylesheet` → `items` (a statement-list loop) → `statement`
+(one rule / at-rule / comment) → for a style rule, `sel` (selector list) +
+`declbody` → `decls` → `decl` → `declval`. Block at-rules push `rulesbody`
+(→ `items`), `declbody`, or `kfbody` (→ `kfitems` → `keyframe` → `kfsel`).
+A node-building child rule **inherits** its parent's node; the array pushers
+write the just-built child into the parent's `rules`/`declarations`/`keyframes`
+array.
 
 ## Repository map
 
 | Path | What it is |
 |---|---|
-| [`ts/`](ts/) | **Canonical** TypeScript implementation — the `@tabnas/css` package (currently `0.1.0`). Plugin in `src/css.ts`. Peer-depends on `@tabnas/jsonic` and `@tabnas/parser`. No CLI. |
-| [`go/`](go/) | Go port — `github.com/tabnas/css/go` (`const Version` in `go/css.go`, currently `0.1.0`). Plugin `Css` plus `MakeJsonic` / `Parse` helpers. Depends on `github.com/tabnas/jsonic/go`. |
-| [`css-grammar.jsonic`](css-grammar.jsonic) | **Single source of truth** for the grammar rules (`stylesheet`/`block`/`pair`/`val`), authored in jsonic syntax. |
-| [`ts/embed-grammar.js`](ts/embed-grammar.js) | Embeds `css-grammar.jsonic` into **both** `src/css.ts` and `go/css.go` (between `BEGIN/END EMBEDDED` markers) as a `grammarText` string literal. Runs as the first half of `npm run build`. |
-| [`ts/test/`](ts/test/) | TS tests (`.ts`, compiled to `dist-test/`): `css.test.ts` (parse cases), `debug-model.test.ts` (the `@tabnas/debug` composition / model introspection), `doc-examples.test.ts` (runs `// =>` assertions in README/doc fences), `perf.test.ts` (instance-reuse regression guard). |
-| [`go/css_test.go`](go/css_test.go) | Go test suite — the same parse cases as `css.test.ts`, hand-mirrored. `go/perf_test.go` mirrors the TS perf guard. |
+| [`ts/`](ts/) | **Canonical** TypeScript implementation — the `@tabnas/css` package (`0.1.0`). Plugin in `src/css.ts`. Peer-depends on `@tabnas/jsonic` and `@tabnas/parser`. No CLI. |
+| [`go/`](go/) | Go port — `github.com/tabnas/css/go` (`const Version` in `go/css.go`). Plugin `Css` plus `MakeJsonic` / `Parse`. Depends on `github.com/tabnas/jsonic/go`. |
+| [`css-grammar.jsonic`](css-grammar.jsonic) | **Single source of truth** for the grammar rules, authored in jsonic syntax. |
+| [`ts/embed-grammar.js`](ts/embed-grammar.js) | Embeds `css-grammar.jsonic` into **both** `src/css.ts` and `go/css.go` (between `BEGIN/END EMBEDDED` markers). Runs first in `npm run build`. |
+| [`ts/test/`](ts/test/) | TS tests (compiled to `dist-test/`): `css.test.ts` (AST parse cases), `debug-model.test.ts` (`@tabnas/debug` composition / model), `doc-examples.test.ts` (`// =>` assertions in README/doc fences), `perf.test.ts` (instance-reuse guard). |
+| [`go/css_test.go`](go/css_test.go), [`go/perf_test.go`](go/perf_test.go) | Go suite — the same AST parse cases as `css.test.ts`, hand-mirrored, plus the perf guard. |
 | [`ts/doc/grammar.svg`](ts/doc/grammar.svg), [`ts/doc/grammar.txt`](ts/doc/grammar.txt) | Railroad / ASCII diagram of the live grammar, generated by `@tabnas/railroad`. |
-| [`ts/doc/`](ts/doc/), [`go/doc/`](go/doc/) | Per-runtime 4-quadrant Diataxis docs: `tutorial.md`, `guide.md`, `reference.md`, `concepts.md` (the Go `concepts.md` also covers differences from TS). |
-
-## The tabnas engine dependency
-
-Both runtimes depend on the `@tabnas` siblings. Note this repo sits **above
-jsonic** in the stack, not directly above the bare engine:
-
-- TypeScript: `@tabnas/jsonic` and `@tabnas/parser` are both
-  `peerDependencies` (`">=2"`) in `ts/package.json`, each mirrored as a
-  `file:../../<dep>/ts` devDependency for local builds (npm >=7 / Node >=24
-  auto-installs peers; `engines.node` is `">=24"`). `@tabnas/debug` and
-  `@tabnas/railroad` are **dev-only** `file:` devDependencies — debug for the
-  `debug-model.test.ts` composition test, railroad to regenerate
-  `ts/doc/grammar.{svg,txt}`.
-- Go: `go/go.mod` requires `github.com/tabnas/jsonic/go` (which in turn pulls
-  parser/json). The CI workflow can either use the published module versions
-  or a `go work` over sibling checkouts.
-
-Clone `https://github.com/tabnas/jsonic` and `https://github.com/tabnas/parser`
-(plus `json`, `debug`, `railroad` for jsonic's deps, the composition test,
-and the diagram) as siblings of this repo, build the TS halves
-(`cd parser/ts && npm install && npm run build`, likewise `jsonic/ts`), then
-work here. CI (`.github/workflows/build.yml`) checks the siblings out and
-builds them first.
+| [`ts/doc/`](ts/doc/), [`go/doc/`](go/doc/) | Per-runtime 4-quadrant Diataxis docs. |
 
 ## Authority and alignment rules
 
-1. **TypeScript is canonical.** When TS and Go disagree on parse behavior, TS
-   wins; change Go to match.
-2. **The grammar source is single-sourced, not duplicated.**
-   `css-grammar.jsonic` is authored once; `embed-grammar.js` copies it
-   verbatim into the `grammarText` literal in both `src/css.ts` and
-   `go/css.go`. **Never hand-edit the text between the
-   `--- BEGIN/END EMBEDDED css-grammar.jsonic ---` markers** in either file —
-   edit `css-grammar.jsonic` and re-run `npm run embed` (or `npm run build`,
-   which embeds first). The Go embed step rejects a grammar containing
-   backticks (incompatible with Go raw strings), so the grammar comments use
-   plain quotes, never backticks.
-3. The two ports must produce the same values for the same input. There are
-   **no shared fixtures** here; the parity contract is the shared grammar
-   source plus the hand-mirrored case sets in `ts/test/css.test.ts` and
-   `go/css_test.go`. When you add or change a parse case, add it to both.
-4. The jsonic option overrides (`rule.exclude`, `fixed.token`, `tokenSet.KEY`,
-   `string`, `number`, `text`, `value`, `comment`, `lex.match`) and the
-   `cssToken` matcher exist in **both** runtimes and must stay in step — they
-   all live on the grammar object so the plugin applies them atomically
-   alongside its rule alts.
-5. The `Defaults` (`lowercaseProperties: false`, `lowercaseValues: false`) and
-   `Version` const in `go/css.go` mirror the TS `Css.defaults` and the
-   `package.json` version; `Version` is bumped by `make publish-go`.
+1. **TypeScript is canonical.** When TS and Go disagree, TS wins; change Go.
+2. **The grammar is single-sourced.** `css-grammar.jsonic` is authored once;
+   `embed-grammar.js` copies it verbatim into the `grammarText` literal in both
+   `src/css.ts` and `go/css.go`. **Never hand-edit between the
+   `--- BEGIN/END EMBEDDED css-grammar.jsonic ---` markers** — edit the
+   `.jsonic` and re-run `npm run embed` (or `npm run build`). The Go embed
+   rejects backticks (Go raw strings), so the grammar comments use plain
+   quotes, never backticks.
+3. The two ports must produce the same AST for the same input. The parity
+   contract is the shared grammar plus the hand-mirrored case sets in
+   `ts/test/css.test.ts` and `go/css_test.go`. Add/change cases in both.
+4. The jsonic option overrides and the `cssToken` matcher exist in **both**
+   runtimes and must stay in step (they live on the grammar object so the
+   plugin applies them atomically with its rule alts).
+5. `Defaults` (`lowercaseProperties: false`) and `Version` in `go/css.go`
+   mirror the TS `Css.defaults` and the `package.json` version.
 
 ## Repo-specific gotchas
 
-- **The matcher is stateless** — it reads value-vs-key position straight off
-  `rule.Name`/`rule.State` (the `val` rule is open exactly at a value
-  position), never the grammar's expected-token columns and never a flag.
-  This is deliberate: the Go port runs in an external package that cannot read
-  the rule spec's token columns or inject lookahead tokens, so both runtimes
-  use the same rule-name signal for exact parity. Don't "optimise" the TS side
-  to read `rule.spec.def.tcol`; it would diverge from Go.
-- **Statement at-rules use a distinct `#AT` token, not a flag.** A `@import`
-  keyword has no `:` separator, so the matcher emits `#AT` (in the
-  declaration branch when the prelude starts with `@`); the grammar's
-  `{ s: '#AT' p: val }` alt then pushes `val` immediately, so the params are
-  read as a value under `val` like any declaration. This keeps the matcher
-  stateless — an earlier design carried a cross-rule `ctx.U` flag, which the
-  `#AT` token replaced. The `#AT` tin is resolved once via `j.Token("#AT")`
-  (Go) and auto-tokenised by `lex.token('#AT', ...)` (TS); `#AT` is added to
-  the `KEY` token set alongside `#TX`, and `#KEY` is used in the stylesheet
-  and implicit-continuation alts so either key token starts a rule.
-- **`cssToken` must out-order the fixed-token matcher** so it owns selectors,
-  properties and values before `{` `}` `:` `;` are considered (TS `order: 1e5`;
-  Go `Order: 100000`). It defers (returns undefined) on whitespace, `/* */`
-  comments, and the fixed punctuation.
-- **Declaration values are raw strings**, read verbatim (trimmed) up to the
-  next top-level `;`/`}`. They are not parsed further: `'1px solid #fff'`,
-  `'rgb(1, 2, 3)'`, `'red !important'` are single string values. A single
-  selector is likewise kept verbatim as the map key.
-- **Comma-grouped selectors are collected structurally, never split.** The
-  matcher reads one selector per `#TX` (stopping at a top-level `,` or `{`,
-  via `scanSelectorEnd`) and emits a `#GC` token for the group comma; only
-  non-`@` selectors split (a block at-rule prelude like `@media screen, print`
-  is read whole up to `{`). Three grammar-local actions (`ref`s on the grammar
-  object, mirrored in both runtimes) drive it: `@cssPendKey` appends each
-  selector token's value to the kept `k.pend` list across the open-phase
-  `r: pair` loop; `@cssSetval` (which replaces the builtin `@setval$` on every
-  `pair`-close alt) assigns the built value to every pending key (`cloneNode`
-  deep-copy for all but the first), else to the single `@key$` key for a
-  declaration / at-rule; `@cssClearPend` gives each opened `block` a fresh
-  `pend` so the enclosing ruleset's selectors don't leak in. `k` propagates on
-  both push and replace, so `pend` must be reset by **reassignment** (a new
-  array), never mutated in place. Keep the TS and Go
-  `@cssPendKey`/`@cssSetval`/`@cssClearPend`/`scanSelectorEnd`/`cloneNode` in
-  step. Note the Go `buildGrammarAlts` must handle an **array** `a:` field
-  (e.g. `['@object$' '@cssClearPend']`), not just a string.
-- **Statement at-rules require a terminating `;`** (or end-of-input / `}`); the
-  value reader stops at top-level `;`/`}` only, so an unterminated statement
-  at-rule before a `{` would run into the block.
-- **A zero-length source returns `undefined`/`nil`** — the engine's
-  max-iteration budget scales with source length, so an empty string runs no
-  rules. Any non-empty source (even whitespace or a comment) yields `{}`.
+- **`#CC`, not `#CM`, for comment nodes.** `#CM` resolves to the builtin
+  comment tin (7), which is in the parser's IGNORE set — emitting it silently
+  drops the node. Likewise the at-rule tokens use fresh names `#ATR/#ATD/#ATK/
+  #ATS` and the group comma `#GC`.
+- **Custom action refs may not contain `$`** (`$` is reserved for engine
+  builtins). All grammar-local actions are named `@cssXxx`.
+- **Go must resolve every custom token tin** via `j.Token("#CC")` etc. and pass
+  them to the matcher (an external Go package can't auto-tokenise like the TS
+  `lex.token('#CC', …)` does). The Go `buildGrammarAlts` also handles an
+  **array** `a:` action field (e.g. `['@reset$' '@cssX']`), not just a string.
+- **Comments are nodes only at list positions.** The matcher checks the active
+  rule name against `COMMENT_NODE_RULES`. The block wrappers
+  (`declbody`/`rulesbody`/`kfbody`) are included because their empty-block
+  `#OB #CB` lookahead lexes the first body token — a comment right after `{`
+  is captured there. The item *builders* (`statement`/`decl`/`keyframe`) are
+  NOT in the set; they reuse the cached `#CC` the list reader produced, so a
+  comment seen mid-construct (under a builder) is skipped.
+- **Declaration values and selectors are raw strings** (trimmed, comments
+  stripped), read by the `scanValueEnd` / `scanSelectorEnd` / `scanToBraceOrEnd`
+  lookahead scanners (which skip strings, `()`/`[]`, comments). Values are not
+  parsed further; selectors are verbatim except a top-level group is split into
+  the `selectors` list (commas inside `:not(...)` are not split).
+- **Statement at-rules need a terminating `;`** (or end-of-input / `}`).
+- **A zero-length source returns `undefined`/`nil`** (the engine's max-iteration
+  budget scales with source length). Any non-empty source — even whitespace or
+  a comment — yields a `stylesheet` node.
+- **CSS Nesting is not supported** — a style rule's block is declarations (and
+  comments) only; at-rules / rules nested inside it are out of scope.
 
 ## Build & test
 
 TypeScript (from `ts/`):
 
 ```bash
-npm install            # auto-installs the @tabnas/jsonic + @tabnas/parser peers; resolves file: siblings
+npm install
 npm run build          # node embed-grammar.js && tsc --build src test
 npm test               # node --enable-source-maps --test "dist-test/*.test.js"
 ```
 
-`npm run build` **embeds the grammar first** (into `src/css.ts` and
-`go/css.go`), then `tsc --build`s both `src` and `test` — the tests are
-written in TypeScript and compiled to `dist-test/`. The grammar diagram is
-regenerated with `@tabnas/railroad` off the live config
-(`ts/doc/grammar.{svg,txt}`).
+`npm run build` embeds the grammar first (into `src/css.ts` and `go/css.go`),
+then compiles `src` and `test`. The diagram is regenerated with
+`@tabnas/railroad` off the live config.
 
 Go (from `go/`):
 
 ```bash
 go build ./...
-go test -v ./...       # plugin parse cases (mirrors css.test.ts)
+go test -v ./...       # AST parse cases (mirrors css.test.ts)
 ```
 
-The repo-root [`Makefile`](Makefile) wraps both halves: `make build|test|clean`
-run the TS and Go sides, `make reset` rebuilds from clean, `make tags-go` lists
-`go/v*` tags, and `make publish-go V=x.y.z` injects `V` into the `const Version`
-in `go/css.go`, commits, and tags `go/vX.Y.Z`. `make publish-ts` publishes the
-TS package at its `package.json` version.
+The repo-root [`Makefile`](Makefile) wraps both halves
+(`make build|test|clean`, `make reset`, `make publish-go V=x.y.z`,
+`make publish-ts`).
 
 ## Composition test (@tabnas/debug)
 
-`ts/test/debug-model.test.ts` proves the plugin composes with the
-[`@tabnas/debug`](https://github.com/tabnas/debug) introspection plugin.
-`@tabnas/debug` is a `file:` devDependency, so plain `npm test` runs it; it
-resolves debug dynamically and **skips** when absent (set `TABNAS_DEBUG_PATH`
-to a built sibling checkout to force it). It asserts:
-
-- the CSS rules (`stylesheet`, `block`, `pair`, `val`) are present,
-- `m.config.start === 'stylesheet'`,
-- `Css` is in `m.plugins`,
-- the push edges: `stylesheet`/`block` open-push `pair`, `pair` open-pushes
-  `val` and close-replaces itself to iterate members, and `val` can open-push
-  a nested `block`,
-- and that the model is JSON-serialisable and round-trips.
-
-There is no Go equivalent of this test; the Go suite is self-contained.
+`ts/test/debug-model.test.ts` proves the plugin composes with
+[`@tabnas/debug`](https://github.com/tabnas/debug) (a `file:` devDependency,
+skipped when absent). It asserts the AST rule set is present
+(`stylesheet`/`items`/`statement`/`sel`/`declbody`/`decls`/`decl`),
+`config.start === 'stylesheet'`, `Css` in `plugins`, and the push/replace edges
+(stylesheet→items, items→statement and self-replace, statement→sel/bodies,
+decls self-replace), and that the model JSON round-trips. There is no Go
+equivalent; the Go suite is self-contained.
 
 ## CI
 
-`.github/workflows/build.yml` has two jobs, neither publishing to npm:
-
-- **build** (Ubuntu/Windows/macOS, Node 24): sets
-  `git config --global core.autocrlf false` (CRLF would corrupt the embedded
-  grammar / line-sensitive sources), git-clones the tabnas closure
-  (`parser debug json abnf railroad jsonic`) as siblings, runs `npm i && npm
-  run build --if-present` for each (then `css`), and `npm test` here. Because
-  `@tabnas/debug` is a devDependency, the composition test runs as part of
-  `npm test`.
-- **build-go** (Ubuntu/macOS, Go 1.24): clones the same siblings, sets up a
-  `go work` over the modules, then `go build` / `go test -v` here.
+`.github/workflows/build.yml` has a **build** job (Ubuntu/Windows/macOS,
+Node 24) that clones the tabnas closure as siblings, builds each, then runs
+`npm test` here (the composition test runs because `@tabnas/debug` is a
+devDependency), and a **build-go** job (Ubuntu/macOS, Go 1.24) that sets up a
+`go work` over the modules and runs `go build` / `go test -v`.

@@ -2,22 +2,11 @@
 
 A grammar plugin that teaches the [Tabnas](https://github.com/tabnas/parser)
 parser to read [CSS](https://developer.mozilla.org/en-US/docs/Web/CSS)
-(Cascading Style Sheets), turning a stylesheet into a plain nested object of
-`selector → { property → value }`. Available for both TypeScript and Go,
-built on the same grammar.
-
-CSS looks like this:
-
-```css
-body {
-  margin: 0;
-  font-family: "Helvetica Neue", Arial, sans-serif;
-}
-.nav > li { display: inline-block; padding: 0 10px; }
-@media (min-width: 768px) {
-  .nav > li { padding: 0 20px; }
-}
-```
+(Cascading Style Sheets) and produce a faithful **abstract syntax tree** —
+ordered, typed nodes that preserve declaration order, duplicate properties,
+rule types, and comments. The AST shape follows the widely-used
+[`reworkcss/css`](https://github.com/reworkcss/css) model. Available for both
+TypeScript and Go, built on the same grammar.
 
 ## Install
 
@@ -40,11 +29,17 @@ import { Css } from '@tabnas/css'
 
 const c = new Tabnas().use(jsonic).use(Css)
 
-c.parse('a { color: red; font-size: 12px }')
-// => { a: { color: 'red', 'font-size': '12px' } }
+const ast = c.parse('a { color: red; font-size: 12px }')
+ast.rules[0].type                  // => 'rule'
+ast.rules[0].selectors             // => ['a']
+ast.rules[0].declarations[1]       // => { type: 'declaration', property: 'font-size', value: '12px' }
+```
 
+The full tree:
+
+```js
 c.parse('h1, h2 { margin: 0 }')
-// => { h1: { margin: '0' }, h2: { margin: '0' } }
+// => { type: 'stylesheet', rules: [ { type: 'rule', selectors: ['h1','h2'], declarations: [ { type: 'declaration', property: 'margin', value: '0' } ] } ] }
 ```
 
 **Go** — `tabnascss.Parse` is the one-call entry point:
@@ -52,30 +47,33 @@ c.parse('h1, h2 { margin: 0 }')
 ```go
 import tabnascss "github.com/tabnas/css/go"
 
-result, _ := tabnascss.Parse(`a { color: red; font-size: 12px }`)
-// map[string]any{"a": map[string]any{"color": "red", "font-size": "12px"}}
+ast, _ := tabnascss.Parse(`a { color: red }`)
+// ast is map[string]any{"type":"stylesheet","rules":[]any{
+//   map[string]any{"type":"rule","selectors":[]any{"a"},"declarations":[]any{
+//     map[string]any{"type":"declaration","property":"color","value":"red"}}}}}
 ```
 
-## What it produces
+## The AST
 
-A stylesheet parses to a nested map:
+A stylesheet is `{ type: 'stylesheet', rules: [ ...nodes ] }`. Each node has a
+`type` discriminator:
 
-- each **rule** is a key (the selector text, verbatim) mapping to a map of
-  its declarations; a comma-grouped selector (`h1, h2`) is expanded into one
-  key per selector;
-- each **declaration** is a key (the property name) mapping to its value as
-  a raw string (e.g. `'1px solid #fff'`);
-- **nested at-rules** (e.g. `@media`) recurse — the prelude is the key and
-  the block is a nested map of rules;
-- **statement at-rules** (e.g. `@import`) become a key (the at-keyword)
-  mapping to the rest of the statement as a string.
+| `type` | Fields |
+|---|---|
+| `rule` | `selectors: string[]`, `declarations: Node[]` |
+| `declaration` | `property: string`, `value: string` (raw text) |
+| `comment` | `comment: string` |
+| `media` / `supports` / `document` / `host` | prelude field (e.g. `media`), `rules: Node[]` |
+| `font-face` / `page` | `declarations: Node[]` (`page` also `selectors`) |
+| `keyframes` | `name`, optional `vendor`, `keyframes: Node[]` (each a `keyframe` with `values` + `declarations`) |
+| `import` / `charset` / `namespace` | the at-keyword field (e.g. `import`) |
+
+Order and duplicates are preserved (arrays), comments are nodes, and selector
+groups become a list:
 
 ```js
 c.parse('@media screen { a { color: blue } }')
-// => { '@media screen': { a: { color: 'blue' } } }
-
-c.parse('@import "base.css";')
-// => { '@import': '"base.css"' }
+// => { type: 'stylesheet', rules: [ { type: 'media', media: 'screen', rules: [ { type: 'rule', selectors: ['a'], declarations: [ { type: 'declaration', property: 'color', value: 'blue' } ] } ] } ] }
 ```
 
 ## Documentation
@@ -87,7 +85,7 @@ framework — one file per quadrant, per language:
 |---|---|---|
 | **Tutorial** (learning) | [ts/doc/tutorial.md](ts/doc/tutorial.md) | [go/doc/tutorial.md](go/doc/tutorial.md) |
 | **How-to guide** (tasks) | [ts/doc/guide.md](ts/doc/guide.md) | [go/doc/guide.md](go/doc/guide.md) |
-| **Reference** (API + options + syntax) | [ts/doc/reference.md](ts/doc/reference.md) | [go/doc/reference.md](go/doc/reference.md) |
+| **Reference** (API + options + AST) | [ts/doc/reference.md](ts/doc/reference.md) | [go/doc/reference.md](go/doc/reference.md) |
 | **Concepts** (explanation) | [ts/doc/concepts.md](ts/doc/concepts.md) | [go/doc/concepts.md](go/doc/concepts.md) |
 
 Per-language hubs: [`ts/README.md`](ts/README.md),
@@ -99,8 +97,8 @@ The grammar is defined once in the top-level
 [`css-grammar.jsonic`](css-grammar.jsonic) and embedded into both
 implementations — TypeScript ([`ts/src/css.ts`](ts/src/css.ts)) and Go
 ([`go/css.go`](go/css.go)) — by [`ts/embed-grammar.js`](ts/embed-grammar.js)
-during the TypeScript build. Edit the grammar there, not in the
-generated sources.
+during the TypeScript build. Edit the grammar there, not in the generated
+sources.
 
 As a railroad/syntax diagram, generated from the live grammar with
 [`@tabnas/railroad`](https://github.com/tabnas/railroad):

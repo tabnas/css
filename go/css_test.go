@@ -19,168 +19,160 @@ func parse(t *testing.T, src string, opts ...CssOptions) any {
 func eq(t *testing.T, got, want any) {
 	t.Helper()
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %#v, want %#v", got, want)
+		t.Fatalf("\n got:  %#v\n want: %#v", got, want)
 	}
 }
 
-// m is a shorthand for building expected map[string]any values.
 type m = map[string]any
 
+func sheet(rules ...any) m { return m{"type": "stylesheet", "rules": list(rules...)} }
+func list(xs ...any) []any {
+	if xs == nil {
+		return []any{}
+	}
+	return xs
+}
+func ruleNode(sels []any, decls ...any) m {
+	return m{"type": "rule", "selectors": sels, "declarations": list(decls...)}
+}
+func decl(prop, val string) m {
+	return m{"type": "declaration", "property": prop, "value": val}
+}
+func comment(c string) m { return m{"type": "comment", "comment": c} }
+
 func TestEmptyStylesheet(t *testing.T) {
-	// A zero-length source runs no rules (an engine convention) and yields
-	// nil; any non-empty source (even whitespace or comments) yields an empty
-	// stylesheet map.
-	eq(t, parse(t, ""), nil)
-	eq(t, parse(t, "   \n  "), m{})
-	eq(t, parse(t, "/* only a comment */"), m{})
+	eq(t, parse(t, "   \n  "), sheet())
+	eq(t, parse(t, "/* only */"), sheet(comment(" only ")))
 }
 
-func TestSingleRuleSingleDeclaration(t *testing.T) {
-	eq(t, parse(t, "a { color: red; }"), m{"a": m{"color": "red"}})
+func TestSingleRule(t *testing.T) {
+	eq(t, parse(t, "a { color: red; }"),
+		sheet(ruleNode([]any{"a"}, decl("color", "red"))))
 }
 
-func TestDeclarationWithoutTrailingSemicolon(t *testing.T) {
-	eq(t, parse(t, "a { color: red }"), m{"a": m{"color": "red"}})
+func TestDeclOrderAndDuplicates(t *testing.T) {
+	eq(t, parse(t, "a { color: red; color: blue }"),
+		sheet(ruleNode([]any{"a"}, decl("color", "red"), decl("color", "blue"))))
 }
 
-func TestMultipleDeclarations(t *testing.T) {
-	eq(t, parse(t, "a { color: red; font-size: 12px; }"),
-		m{"a": m{"color": "red", "font-size": "12px"}})
+func TestNoTrailingSemicolon(t *testing.T) {
+	eq(t, parse(t, "a { color: red }"),
+		sheet(ruleNode([]any{"a"}, decl("color", "red"))))
 }
 
 func TestEmptyRuleBlock(t *testing.T) {
-	eq(t, parse(t, "a {}"), m{"a": m{}})
+	eq(t, parse(t, "a {}"), sheet(ruleNode([]any{"a"})))
 }
 
-func TestMultipleRules(t *testing.T) {
-	eq(t, parse(t, "a { color: red } b { color: blue }"),
-		m{"a": m{"color": "red"}, "b": m{"color": "blue"}})
+func TestMultipleRulesKeepOrder(t *testing.T) {
+	eq(t, parse(t, "a { x: 1 } b { y: 2 }"),
+		sheet(ruleNode([]any{"a"}, decl("x", "1")), ruleNode([]any{"b"}, decl("y", "2"))))
 }
 
-func TestCompoundValue(t *testing.T) {
-	eq(t, parse(t, "p { border: 1px solid #fff; }"),
-		m{"p": m{"border": "1px solid #fff"}})
-}
-
-func TestSelectorGrouping(t *testing.T) {
+func TestSelectorGroupIsList(t *testing.T) {
 	eq(t, parse(t, "h1, h2 { margin: 0 }"),
-		m{"h1": m{"margin": "0"}, "h2": m{"margin": "0"}})
+		sheet(ruleNode([]any{"h1", "h2"}, decl("margin", "0"))))
 }
 
-func TestGroupedSelectorsAreIndependent(t *testing.T) {
-	out := parse(t, "h1, h2 { margin: 0 }").(map[string]any)
-	out["h1"].(map[string]any)["margin"] = "changed"
-	eq(t, out["h2"], m{"margin": "0"})
-}
-
-func TestCommaInsideNotNotSplit(t *testing.T) {
+func TestCommaInsideNot(t *testing.T) {
 	eq(t, parse(t, "a:not(.x, .y), b { top: 0 }"),
-		m{"a:not(.x, .y)": m{"top": "0"}, "b": m{"top": "0"}})
+		sheet(ruleNode([]any{"a:not(.x, .y)", "b"}, decl("top", "0"))))
 }
 
-func TestAtRulePreludeCommaListNotSplit(t *testing.T) {
-	eq(t, parse(t, "@media screen, print { a { color: red } }"),
-		m{"@media screen, print": m{"a": m{"color": "red"}}})
+func TestCompoundValues(t *testing.T) {
+	eq(t, parse(t, "p { border: 1px solid #fff; color: rgb(1, 2, 3) }"),
+		sheet(ruleNode([]any{"p"}, decl("border", "1px solid #fff"), decl("color", "rgb(1, 2, 3)"))))
 }
 
-func TestCombinatorAndClassSelectors(t *testing.T) {
-	eq(t, parse(t, ".foo > .bar { top: 0 }"), m{".foo > .bar": m{"top": "0"}})
-}
-
-func TestPseudoClassSelector(t *testing.T) {
-	eq(t, parse(t, "a:hover { color: red }"), m{"a:hover": m{"color": "red"}})
-}
-
-func TestPseudoElementSelector(t *testing.T) {
-	eq(t, parse(t, "a::before { content: \"x\" }"),
-		m{"a::before": m{"content": "\"x\""}})
-}
-
-func TestAttributeSelector(t *testing.T) {
-	eq(t, parse(t, "input[type=text] { border: 0 }"),
-		m{"input[type=text]": m{"border": "0"}})
-}
-
-func TestValueContainingColon(t *testing.T) {
-	eq(t, parse(t, "a { background: url(http://x/y.png) }"),
-		m{"a": m{"background": "url(http://x/y.png)"}})
-}
-
-func TestFunctionValueWithCommas(t *testing.T) {
-	eq(t, parse(t, "a { color: rgb(1, 2, 3); top: 0 }"),
-		m{"a": m{"color": "rgb(1, 2, 3)", "top": "0"}})
-}
-
-func TestBlockCommentsIgnored(t *testing.T) {
-	src := `/* header */ a {
-      color: red; /* the colour */
-      /* a gap */
-      top: 0;
-    }`
-	eq(t, parse(t, src), m{"a": m{"color": "red", "top": "0"}})
-}
-
-func TestNestedAtRule(t *testing.T) {
-	eq(t, parse(t, "@media screen { a { color: blue } }"),
-		m{"@media screen": m{"a": m{"color": "blue"}}})
-}
-
-func TestAtRulePreludeWithParens(t *testing.T) {
-	eq(t, parse(t, "@media (max-width: 600px) { a { color: red } }"),
-		m{"@media (max-width: 600px)": m{"a": m{"color": "red"}}})
-}
-
-func TestStatementAtRule(t *testing.T) {
-	eq(t, parse(t, "@import \"base.css\";"), m{"@import": "\"base.css\""})
-}
-
-func TestStatementAtRuleThenRule(t *testing.T) {
-	eq(t, parse(t, "@charset \"utf-8\"; a { color: red }"),
-		m{"@charset": "\"utf-8\"", "a": m{"color": "red"}})
-}
-
-func TestImportantIsPartOfValue(t *testing.T) {
+func TestImportant(t *testing.T) {
 	eq(t, parse(t, "a { color: red !important }"),
-		m{"a": m{"color": "red !important"}})
+		sheet(ruleNode([]any{"a"}, decl("color", "red !important"))))
 }
 
-func TestRealisticStylesheet(t *testing.T) {
-	src := `
-      body {
-        margin: 0;
-        font-family: "Helvetica Neue", Arial, sans-serif;
-      }
-      .nav > li {
-        display: inline-block;
-        padding: 0 10px;
-      }
-      @media (min-width: 768px) {
-        .nav > li { padding: 0 20px; }
-      }
-    `
-	eq(t, parse(t, src), m{
-		"body": m{
-			"margin":      "0",
-			"font-family": "\"Helvetica Neue\", Arial, sans-serif",
-		},
-		".nav > li": m{
-			"display": "inline-block",
-			"padding": "0 10px",
-		},
-		"@media (min-width: 768px)": m{
-			".nav > li": m{"padding": "0 20px"},
-		},
-	})
+func TestCommentNodes(t *testing.T) {
+	eq(t, parse(t, "/* head */ a { /* c1 */ color: red; /* c2 */ }"),
+		sheet(comment(" head "), ruleNode([]any{"a"}, comment(" c1 "), decl("color", "red"), comment(" c2 "))))
 }
 
-func TestLowercasePropertiesOption(t *testing.T) {
+func TestMidConstructCommentsSkipped(t *testing.T) {
+	eq(t, parse(t, "a /* x */ { color /* y */ : red }"),
+		sheet(ruleNode([]any{"a"}, decl("color", "red"))))
+}
+
+func TestMedia(t *testing.T) {
+	eq(t, parse(t, "@media screen { a { color: blue } }"),
+		sheet(m{"type": "media", "media": "screen", "rules": list(ruleNode([]any{"a"}, decl("color", "blue")))}))
+}
+
+func TestSupports(t *testing.T) {
+	eq(t, parse(t, "@supports (display: grid) { a { x: 1 } }"),
+		sheet(m{"type": "supports", "supports": "(display: grid)", "rules": list(ruleNode([]any{"a"}, decl("x", "1")))}))
+}
+
+func TestFontFace(t *testing.T) {
+	eq(t, parse(t, `@font-face { font-family: "A"; src: url(a.woff) }`),
+		sheet(m{"type": "font-face", "declarations": list(decl("font-family", `"A"`), decl("src", "url(a.woff)"))}))
+}
+
+func TestImport(t *testing.T) {
+	eq(t, parse(t, `@import "base.css";`),
+		sheet(m{"type": "import", "import": `"base.css"`}))
+}
+
+func TestCharsetThenRule(t *testing.T) {
+	eq(t, parse(t, `@charset "utf-8"; a { x: 1 }`),
+		sheet(m{"type": "charset", "charset": `"utf-8"`}, ruleNode([]any{"a"}, decl("x", "1"))))
+}
+
+func TestKeyframes(t *testing.T) {
+	eq(t, parse(t, "@keyframes slide { from { left: 0 } 50%, 100% { left: 10px } }"),
+		sheet(m{"type": "keyframes", "name": "slide", "keyframes": list(
+			m{"type": "keyframe", "values": []any{"from"}, "declarations": list(decl("left", "0"))},
+			m{"type": "keyframe", "values": []any{"50%", "100%"}, "declarations": list(decl("left", "10px"))},
+		)}))
+}
+
+func TestVendorKeyframes(t *testing.T) {
+	eq(t, parse(t, "@-webkit-keyframes x { to { opacity: 1 } }"),
+		sheet(m{"type": "keyframes", "name": "x", "vendor": "-webkit-", "keyframes": list(
+			m{"type": "keyframe", "values": []any{"to"}, "declarations": list(decl("opacity", "1"))},
+		)}))
+}
+
+func TestPage(t *testing.T) {
+	eq(t, parse(t, "@page :first { margin: 1in }"),
+		sheet(m{"type": "page", "selectors": []any{":first"}, "declarations": list(decl("margin", "1in"))}))
+}
+
+func TestNamespaceStatement(t *testing.T) {
+	eq(t, parse(t, "@namespace svg url(http://x);"),
+		sheet(m{"type": "namespace", "namespace": "svg url(http://x)"}))
+}
+
+func TestVendorDocument(t *testing.T) {
+	eq(t, parse(t, "@-moz-document url(x) { a { c: 1 } }"),
+		sheet(m{"type": "document", "document": "url(x)", "vendor": "-moz-",
+			"rules": list(ruleNode([]any{"a"}, decl("c", "1")))}))
+}
+
+func TestGenericBlockAtRule(t *testing.T) {
+	eq(t, parse(t, "@layer base { a { c: 1 } }"),
+		sheet(m{"type": "layer", "layer": "base", "rules": list(ruleNode([]any{"a"}, decl("c", "1")))}))
+}
+
+func TestCommentInsideMedia(t *testing.T) {
+	eq(t, parse(t, "@media x { /* c */ a { b: 1 } }"),
+		sheet(m{"type": "media", "media": "x",
+			"rules": list(comment(" c "), ruleNode([]any{"a"}, decl("b", "1")))}))
+}
+
+func TestSemicolonInsideUrlString(t *testing.T) {
+	eq(t, parse(t, `a { background: url("a;b.png") }`),
+		sheet(ruleNode([]any{"a"}, decl("background", `url("a;b.png")`))))
+}
+
+func TestLowercaseProperties(t *testing.T) {
 	tru := true
 	eq(t, parse(t, "A { COLOR: Red }", CssOptions{LowercaseProperties: &tru}),
-		m{"A": m{"color": "Red"}})
-}
-
-func TestLowercaseValuesOption(t *testing.T) {
-	tru := true
-	eq(t, parse(t, "a { color: RED }", CssOptions{LowercaseValues: &tru}),
-		m{"a": m{"color": "red"}})
+		sheet(ruleNode([]any{"A"}, decl("color", "Red"))))
 }

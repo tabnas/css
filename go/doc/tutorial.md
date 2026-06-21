@@ -1,14 +1,19 @@
 # Tutorial — your first CSS parse (Go)
 
-This walks you from nothing to a working parse, then through nesting,
-at-rules, and one option. Follow it in order; each step builds on the
-last. When you finish you will have installed the module, parsed a
-rule, grouped selectors, nested an at-rule, parsed a statement at-rule,
-and switched on an option.
+This walks you from nothing to a working parse, then through selector
+groups, comments, at-rules, keyframes, and one option. Follow it in
+order; each step builds on the last. When you finish you will have
+installed the module, parsed a rule into an AST, read its nodes,
+grouped selectors, kept comments, nested a block at-rule, parsed a
+statement at-rule and a `@keyframes` block, and switched on an option.
+
+The parser produces a faithful **reworkcss-style AST**: ordered, typed
+nodes that preserve declaration order, duplicate properties, rule
+types, and comments — not a lossy map.
 
 For a recipe-style index of individual tasks, see the
-[how-to guide](guide.md). For exhaustive signatures and the full
-syntax, see the [reference](reference.md). For how it all works — and
+[how-to guide](guide.md). For exhaustive signatures and the full node
+reference, see the [reference](reference.md). For how it all works — and
 how the Go version differs from TypeScript — see
 [concepts](concepts.md).
 
@@ -28,102 +33,154 @@ import tabnascss "github.com/tabnas/css/go"
 ## 2. Parse a rule
 
 `tabnascss.Parse` is the one-call entry point. Give it CSS source and
-it returns the parsed value as `any` plus an `error`:
+it returns the AST as `any` plus an `error`:
 
 ```go
-result, err := tabnascss.Parse(`a { color: red; font-size: 12px }`)
-// result: map[string]any{"a": map[string]any{"color": "red", "font-size": "12px"}}
-// err:    nil
+ast, err := tabnascss.Parse(`a { color: red }`)
+// ast: map[string]any{"type": "stylesheet", "rules": []any{
+//   map[string]any{"type": "rule", "selectors": []any{"a"}, "declarations": []any{
+//     map[string]any{"type": "declaration", "property": "color", "value": "red"}}}}}
+// err: nil
 ```
 
-A stylesheet becomes a `map[string]any` keyed by selector; each rule's
-block is itself a `map[string]any` of `property → value`. Every
-declaration value comes back as a raw `string` — the parser does not
-interpret colours, lengths, or numbers. A trailing `;` is optional, so
-`a { color: red }` parses the same as `a { color: red; }`.
+Every node is a `map[string]any` with a `"type"` discriminator. The top
+node is always a `stylesheet`, whose `rules` is a `[]any` of child
+nodes. A style rule has a `selectors []any` and a `declarations []any`;
+each declaration has a `property` and a raw-string `value`. The parser
+does not interpret colours, lengths, or numbers — every value is a
+`string`. A trailing `;` is optional, so `a { color: red }` parses the
+same as `a { color: red; }`.
 
-## 3. Group and combine selectors
+## 3. Read the AST
 
-A single selector is kept verbatim as the map key, including
-combinators, pseudo-classes, and attribute selectors. A comma-**grouped**
-selector is expanded into one key per selector, each with its own copy
-of the block:
+Walk it with ordinary type assertions:
 
 ```go
-result, err := tabnascss.Parse(`h1, h2 { margin: 0 }`)
-// result: map[string]any{"h1": map[string]any{"margin": "0"},
-//                        "h2": map[string]any{"margin": "0"}}
-
-result, err = tabnascss.Parse(`.nav > li:hover { color: red }`)
-// result: map[string]any{".nav > li:hover": map[string]any{"color": "red"}}
+ast, _ := tabnascss.Parse(`a { color: red }`)
+sheet := ast.(map[string]any)
+rule := sheet["rules"].([]any)[0].(map[string]any)
+decl := rule["declarations"].([]any)[0].(map[string]any)
+color := decl["value"].(string) // "red"
 ```
 
-Apart from splitting a top-level group, the whole prelude up to the
-opening `{` is the key, trimmed of trailing whitespace, so you never
-quote or escape it — just write the selector. Commas nested inside
-`:not(...)`, strings, `()` or `[]` are not split.
+Because the arrays preserve order, duplicate properties survive too —
+`a { color: red; color: blue }` yields two `declaration` nodes in the
+order written, not a single overwritten entry.
 
-## 4. Nest an at-rule
+## 4. Group selectors
 
-A block at-rule such as `@media` keeps its prelude (`@media screen`) as
-the key, and its block recurses into another `map[string]any` of rules:
+A single selector is kept verbatim, including combinators,
+pseudo-classes, and attribute selectors. A comma-**grouped** selector
+becomes a list of selector strings on one `rule` node — the block is
+*not* duplicated:
 
 ```go
-result, err := tabnascss.Parse(`@media screen { a { color: blue } }`)
-// result: map[string]any{
-//   "@media screen": map[string]any{
-//     "a": map[string]any{"color": "blue"},
-//   },
-// }
+ast, _ := tabnascss.Parse(`h1, h2 { margin: 0 }`)
+// the rule node: map[string]any{"type": "rule",
+//   "selectors": []any{"h1", "h2"},
+//   "declarations": []any{
+//     map[string]any{"type": "declaration", "property": "margin", "value": "0"}}}
 ```
 
-This nests to any depth: the inner block is parsed exactly like a
-top-level stylesheet.
+Each selector is trimmed of surrounding whitespace. Commas nested
+inside `:not(...)`, strings, `()` or `[]` are not split, so
+`a:not(.x, .y), b` becomes `selectors: ["a:not(.x, .y)", "b"]`.
 
-## 5. Parse a statement at-rule
+## 5. Keep comments
 
-A statement at-rule such as `@import` has no block — it ends at `;`.
-Its at-keyword becomes the key and its parameters become the raw-string
-value:
+`/* ... */` comments at statement positions become `comment` nodes
+(holding the raw inner text), preserving where they appeared. Comments
+mid-construct (e.g. between a property and its `:`) are skipped.
 
 ```go
-result, err := tabnascss.Parse(`@import "base.css";`)
-// result: map[string]any{"@import": "\"base.css\""}
+ast, _ := tabnascss.Parse(`/* head */ a { /* c1 */ color: red }`)
+// rules: [ {type: "comment", comment: " head "},
+//          {type: "rule", selectors: ["a"], declarations: [
+//            {type: "comment", comment: " c1 "},
+//            {type: "declaration", property: "color", value: "red"} ] } ]
 ```
 
-Note the value keeps its surrounding quotes: declaration and at-rule
-values are never unquoted or otherwise decoded.
+## 6. Nest a block at-rule
 
-## 6. Turn on an option
+A block at-rule such as `@media` becomes a typed node carrying its
+prelude and a `rules []any` body that recurses exactly like the
+top-level stylesheet:
+
+```go
+ast, _ := tabnascss.Parse(`@media screen { a { color: blue } }`)
+// the media node: map[string]any{"type": "media", "media": "screen",
+//   "rules": []any{
+//     map[string]any{"type": "rule", "selectors": []any{"a"}, "declarations": []any{
+//       map[string]any{"type": "declaration", "property": "color", "value": "blue"}}}}}
+```
+
+`@supports`, `@document`, and `@host` work the same way (with their own
+prelude field). `@font-face` and `@page` instead carry a
+`declarations []any` body.
+
+## 7. Parse a statement at-rule
+
+A statement at-rule such as `@import` has no block — it ends at `;`. It
+becomes a leaf node whose `type` is the at-keyword, with a field of the
+same name holding the raw params:
+
+```go
+ast, _ := tabnascss.Parse(`@import "base.css";`)
+// the import node: map[string]any{"type": "import", "import": `"base.css"`}
+```
+
+The params keep their surrounding quotes: values are never unquoted or
+otherwise decoded. `@charset` and `@namespace` follow the same shape.
+
+## 8. Parse a @keyframes block
+
+`@keyframes` becomes a `keyframes` node with a `name` and a `keyframes
+[]any` of `keyframe` nodes; each keyframe has a `values []any` (the
+`from` / `to` / `50%` selectors) and its own `declarations []any`:
+
+```go
+ast, _ := tabnascss.Parse(`@keyframes slide { from { left: 0 } 50%, 100% { left: 10px } }`)
+// the keyframes node: map[string]any{"type": "keyframes", "name": "slide",
+//   "keyframes": []any{
+//     map[string]any{"type": "keyframe", "values": []any{"from"},
+//       "declarations": []any{ {type: "declaration", property: "left", value: "0"} }},
+//     map[string]any{"type": "keyframe", "values": []any{"50%", "100%"},
+//       "declarations": []any{ {type: "declaration", property: "left", value: "10px"} }}}}
+```
+
+A vendor-prefixed `@-webkit-keyframes` additionally carries
+`"vendor": "-webkit-"`.
+
+## 9. Turn on an option
 
 Options are passed as a `tabnascss.CssOptions` value after the source.
-For example, CSS property names are case-insensitive; set
-`LowercaseProperties` to normalise them (selectors are left untouched):
+CSS property names are case-insensitive; set `LowercaseProperties` to
+normalise them (selectors and values are left untouched):
 
 ```go
 yes := true
-result, err := tabnascss.Parse(
+ast, _ := tabnascss.Parse(
     `A { COLOR: Red }`,
     tabnascss.CssOptions{LowercaseProperties: &yes},
 )
-// result: map[string]any{"A": map[string]any{"color": "Red"}}
+// the rule node: selectors ["A"], declarations [
+//   {type: "declaration", property: "color", value: "Red"} ]
 ```
 
-The fields are `*bool` so you can express "leave it at the default"
-(nil) versus "set it". There are only two options,
-`LowercaseProperties` and `LowercaseValues`; the
-[reference](reference.md#options) covers both.
+The field is `*bool` so you can express "leave it at the default"
+(nil) versus "set it". `LowercaseProperties` is the only option; the
+[reference](reference.md#options) covers it in full.
 
-## 7. The empty cases
+## 10. The empty cases
 
-A zero-length source runs no rules and returns `nil`; any non-empty
-source — even pure whitespace or a comment — returns an empty
-stylesheet map:
+A zero-length source returns `nil` (an engine convention); any
+non-empty source — even pure whitespace or a comment — returns a
+`stylesheet` node:
 
 ```go
-tabnascss.Parse("")                     // nil
-tabnascss.Parse("   \n  ")              // map[string]any{}
-tabnascss.Parse("/* only a comment */") // map[string]any{}
+tabnascss.Parse("")              // nil
+tabnascss.Parse("   \n  ")       // {type: "stylesheet", rules: []}
+tabnascss.Parse("/* only */")    // {type: "stylesheet", rules: [ {type: "comment", comment: " only "} ]}
 ```
 
 `Parse` returns an `error` rather than panicking, so always check it.
@@ -132,6 +189,6 @@ tabnascss.Parse("/* only a comment */") // map[string]any{}
 
 - [How-to guide](guide.md) — focused recipes for individual tasks.
 - [Reference](reference.md) — the public API, every option, the full
-  CSS syntax accepted.
+  AST node reference.
 - [Concepts](concepts.md) — how the plugin reshapes the engine, and
   how the Go version differs from TypeScript.
