@@ -1,9 +1,10 @@
-# Tutorial — your first ZON parse
+# Tutorial — your first CSS parse
 
 This walks you from nothing to a working parse, then through one
 option and one error. Follow it in order; each step builds on the
 last. When you finish you will have installed the plugin, parsed a
-struct and a tuple, switched on an option, and handled a parse error.
+rule and a grouped selector, nested an at-rule, switched on an option,
+and handled a parse error.
 
 For a recipe-style index of individual tasks, see the
 [how-to guide](guide.md). For exhaustive signatures and the full
@@ -12,12 +13,12 @@ syntax, see the [reference](reference.md). For how it all works, see
 
 ## 1. Install
 
-`@tabnas/zon` is a grammar plugin: it has no parser of its own. It runs
+`@tabnas/css` is a grammar plugin: it has no parser of its own. It runs
 on the Tabnas engine, with the relaxed-JSON grammar from
 `@tabnas/jsonic` underneath. Install all three:
 
 ```bash
-npm install @tabnas/parser @tabnas/jsonic @tabnas/zon
+npm install @tabnas/parser @tabnas/jsonic @tabnas/css
 ```
 
 `@tabnas/parser` (>= 2) and `@tabnas/jsonic` (>= 2) are peer
@@ -26,92 +27,106 @@ dependencies.
 ## 2. Build a parser
 
 Create a Tabnas engine, layer the jsonic grammar onto it, then layer
-the ZON plugin on top. The result is a reusable parser instance:
+the CSS plugin on top. The result is a reusable parser instance:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon)
+const c = new Tabnas().use(jsonic).use(Css)
 
-j.parse('.{ .name = "Alice", .age = 30 }') // => { name: 'Alice', age: 30 }
+c.parse('a { color: red; font-size: 12px }') // => { a: { color: 'red', 'font-size': '12px' } }
 ```
 
-You wrote Zig anonymous-struct syntax — `.{ ... }` to open, `.field`
-for each key, `=` to assign — and got back a plain object. That is the
-point: the plugin teaches the engine to read ZON.
+You wrote an ordinary CSS rule — a selector, a brace-delimited block,
+and `property: value` declarations — and got back a plain nested
+object. That is the point: the plugin teaches the engine to read CSS.
 
-## 3. Parse a tuple
+## 3. Group and nest selectors
 
-The same `.{ ... }` opener also makes tuples. When the brace is *not*
-immediately followed by `.field =`, the values inside become an array:
+Selectors are kept verbatim as keys, including grouping (`h1, h2`) and
+combinators (`.foo > .bar`):
 
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon)
+const c = new Tabnas().use(jsonic).use(Css)
 
-j.parse('.{ 1, 2, 3 }')      // => [1, 2, 3]
-j.parse('.{ "a", "b" }')     // => ['a', 'b']
+c.parse('h1, h2 { margin: 0 }')     // => { 'h1, h2': { margin: '0' } }
+c.parse('.foo > .bar { top: 0 }')   // => { '.foo > .bar': { top: '0' } }
 ```
 
-The plugin decides struct-vs-tuple by peeking past the opening brace,
-so you never have to mark which one you mean — just write it.
+The plugin never breaks a selector into components — the whole prelude,
+trimmed, is the key. That keeps the output faithful to the source.
 
-## 4. Nest and mix
+## 4. Nest an at-rule
 
-Structs and tuples nest freely, and a struct can hold both:
+A nested at-rule like `@media` recurses: its prelude is the key and its
+block is itself a map of rules:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon)
+const c = new Tabnas().use(jsonic).use(Css)
 
-j.parse('.{ .xs = .{ 1, 2, 3 }, .y = .{ .z = true } }') // => { xs: [1, 2, 3], y: { z: true } }
+c.parse('@media screen { a { color: blue } }') // => { '@media screen': { a: { color: 'blue' } } }
 ```
 
-This is the shape of a real `build.zig.zon` manifest: named fields,
-some holding nested structs, some holding tuple-style path lists.
+A *statement* at-rule — one with no block, terminated by `;` — instead
+becomes a single key/value pair. The at-keyword is the key, and the
+rest of the statement (quotes and all) is the value:
+
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css)
+
+c.parse('@import "base.css";') // => { '@import': '"base.css"' }
+```
 
 ## 5. Turn on an option
 
-The plugin is configured through its second `use()` argument. For
-example, a Zig char literal like `'A'` is a one-character string by
-default; set `charAsNumber: true` to get its code point instead:
+The plugin is configured through its second `use()` argument. CSS
+property names are case-insensitive, so you may want them normalised.
+Set `lowercaseProperties: true` to lowercase declaration property names
+(selectors and values are left untouched):
 
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon, { charAsNumber: true })
+const c = new Tabnas().use(jsonic).use(Css, { lowercaseProperties: true })
 
-j.parse("'A'") // => 65
+c.parse('A { COLOR: Red }') // => { A: { color: 'Red' } }
 ```
 
-There are only two options, `charAsNumber` and `enumTag`; the
-[reference](reference.md#options) lists both with their defaults.
+There are only two options, `lowercaseProperties` and
+`lowercaseValues`; the [reference](reference.md#options) lists both
+with their defaults.
 
 ## 6. Catch an error
 
-ZON is not a superset of JSON. A bare `{` is not a valid opener — the
-plugin removes it on purpose — so parsing one throws:
+A malformed stylesheet — for instance a rule whose block is never
+closed — throws the engine's standard parse error:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon)
+const c = new Tabnas().use(jsonic).use(Css)
 
 let threw = false
 try {
-  j.parse('{ a = 1 }') // not ZON: bare { is rejected
+  c.parse('a { color: red') // unterminated block
 } catch (e) {
   threw = true
 }
@@ -125,6 +140,6 @@ a source location, and a formatted message you can show a user.
 
 - [How-to guide](guide.md) — focused recipes for individual tasks.
 - [Reference](reference.md) — the public API, every option, the full
-  ZON syntax accepted.
+  CSS syntax accepted.
 - [Concepts](concepts.md) — how the plugin reshapes the engine, and
   why.

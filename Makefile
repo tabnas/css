@@ -44,9 +44,9 @@ clean-go:
 # (when gh is available) creates a GitHub release.
 publish-go: test-go
 	@test -n "$(V)" || (echo "Usage: make publish-go V=x.y.z" && exit 1)
-	sed -i.bak 's/^const Version = ".*"/const Version = "$(V)"/' go/zon.go
-	rm -f go/zon.go.bak
-	git add go/zon.go
+	sed -i.bak 's/^const Version = ".*"/const Version = "$(V)"/' go/css.go
+	rm -f go/css.go.bak
+	git add go/css.go
 	git commit -m "go: v$(V)"
 	git tag go/v$(V)
 	git push origin main go/v$(V)

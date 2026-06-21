@@ -6,127 +6,154 @@ basics). For the full API, every option, and the complete syntax,
 follow the links into the [reference](reference.md).
 
 ```go
-import tabnaszon "github.com/tabnas/zon/go"
+import tabnascss "github.com/tabnas/css/go"
 ```
 
-## Parse a single string
+## Parse a single stylesheet
 
-`tabnaszon.Parse` is the simplest entry point — pass source, get a value and
-an error:
+`tabnascss.Parse` is the simplest entry point — pass source, get a
+value and an error:
 
 ```go
-result, err := tabnaszon.Parse(`.{ .a = 1, .b = 2 }`)
-// result: map[string]any{"a": float64(1), "b": float64(2)}
+result, err := tabnascss.Parse(`a { color: red; font-size: 12px }`)
+// result: map[string]any{"a": map[string]any{"color": "red", "font-size": "12px"}}
 ```
 
 The no-options path reuses a single cached parser instance internally,
-so repeated `tabnaszon.Parse(src)` calls do not rebuild the engine each time.
-It is safe for concurrent use.
+so repeated `tabnascss.Parse(src)` calls do not rebuild the engine each
+time. It is safe for concurrent use.
 
-## Parse a realistic build.zig.zon
+## Read the parsed shape
 
-A ZON manifest mixes named struct fields with tuple-style `paths`
-lists and allows trailing commas and `//` line comments:
+The result is always a `map[string]any` (or `nil` for empty input).
+Selectors are keys; each block is a nested `map[string]any`; each
+declaration value is a raw `string`. Type-assert as you walk it:
 
 ```go
-src := `.{
-    .name = "example",
-    .version = "0.0.1",
-    .minimum_zig_version = "0.14.0",
-    .dependencies = .{
-        .foo = .{
-            .url = "https://example.com/foo.tar.gz",
-            .hash = "1220deadbeef",
-        },
-    },
-    .paths = .{
-        "build.zig",
-        "src",
-    },
-}`
+result, _ := tabnascss.Parse(`a { color: red }`)
+sheet := result.(map[string]any)
+rule := sheet["a"].(map[string]any)
+color := rule["color"].(string) // "red"
+```
 
-result, err := tabnaszon.Parse(src)
+## Parse a realistic stylesheet
+
+Rules, selector lists, combinators, and a nested `@media` block all
+mix freely:
+
+```go
+src := `
+    body {
+        margin: 0;
+        font-family: "Helvetica Neue", Arial, sans-serif;
+    }
+    .nav > li {
+        display: inline-block;
+        padding: 0 10px;
+    }
+    @media (min-width: 768px) {
+        .nav > li { padding: 0 20px; }
+    }
+`
+
+result, err := tabnascss.Parse(src)
 // result: map[string]any{
-//   "name":                "example",
-//   "version":             "0.0.1",
-//   "minimum_zig_version":  "0.14.0",
-//   "dependencies": map[string]any{
-//     "foo": map[string]any{
-//       "url": "https://example.com/foo.tar.gz", "hash": "1220deadbeef",
-//     },
+//   "body": map[string]any{
+//     "margin":      "0",
+//     "font-family": "\"Helvetica Neue\", Arial, sans-serif",
 //   },
-//   "paths": []any{"build.zig", "src"},
+//   ".nav > li": map[string]any{
+//     "display": "inline-block",
+//     "padding": "0 10px",
+//   },
+//   "@media (min-width: 768px)": map[string]any{
+//     ".nav > li": map[string]any{"padding": "0 20px"},
+//   },
 // }
 ```
 
-## Parse numbers in every ZON base
+## Keep compound and function values intact
 
-Numbers accept decimal, hex, octal, binary, floats, and `_` digit
-separators. Every number is a `float64`:
+A declaration value runs to the next top-level `;` or `}`, so
+space-separated shorthands, `!important`, and functions (whose inner
+commas and `:` are skipped) all stay as one raw string:
 
 ```go
-tabnaszon.Parse("0x2a")      // float64(42)
-tabnaszon.Parse("0o52")      // float64(42)
-tabnaszon.Parse("0b101010")  // float64(42)
-tabnaszon.Parse("1_000_000") // float64(1000000)
-tabnaszon.Parse("3.14")      // float64(3.14)
+tabnascss.Parse(`p { border: 1px solid #fff }`)
+// map[string]any{"p": map[string]any{"border": "1px solid #fff"}}
+
+tabnascss.Parse(`a { color: rgb(1, 2, 3); top: 0 }`)
+// map[string]any{"a": map[string]any{"color": "rgb(1, 2, 3)", "top": "0"}}
+
+tabnascss.Parse(`a { background: url(http://x/y.png) }`)
+// map[string]any{"a": map[string]any{"background": "url(http://x/y.png)"}}
+
+tabnascss.Parse(`a { color: red !important }`)
+// map[string]any{"a": map[string]any{"color": "red !important"}}
 ```
 
-## Parse character literals as code points
+## Parse a statement at-rule
 
-By default Zig char literals (`'A'`, `'\n'`, `'\u{1F600}'`) parse as
-one-character strings. Set `CharAsNumber` to receive numeric code
-points (as `float64`) instead:
+A statement at-rule (no block, terminated by `;`) becomes a
+`property → value` pair: the at-keyword is the key, its parameters the
+raw-string value. It can be followed by ordinary rules:
 
 ```go
-charAsNum := true
-result, err := tabnaszon.Parse(`'A'`, tabnaszon.ZonOptions{CharAsNumber: &charAsNum})
-// result: float64(65)
+tabnascss.Parse(`@import "base.css";`)
+// map[string]any{"@import": "\"base.css\""}
+
+tabnascss.Parse(`@charset "utf-8"; a { color: red }`)
+// map[string]any{"@charset": "\"utf-8\"", "a": map[string]any{"color": "red"}}
 ```
 
-## Tag enum literals to tell them apart from strings
+## Lowercase property names
 
-Without options, an enum-literal value like `.red` becomes the plain
-string `"red"` — indistinguishable from `"red"` in the parsed tree.
-Set `EnumTag` to wrap each enum value in a one-key map so you can tell
-which was which:
+CSS property names are case-insensitive. Set `LowercaseProperties` to
+normalise them; selectors are left untouched:
 
 ```go
-result, err := tabnaszon.Parse(
-    `.{ .kind = .red, .label = "red" }`,
-    tabnaszon.ZonOptions{EnumTag: "$enum"},
-)
-// result: map[string]any{
-//   "kind":  map[string]any{"$enum": "red"},
-//   "label": "red",
-// }
+yes := true
+tabnascss.Parse(`A { COLOR: Red }`, tabnascss.CssOptions{LowercaseProperties: &yes})
+// map[string]any{"A": map[string]any{"color": "Red"}}
 ```
 
-## Read multi-line Zig strings
+## Lowercase values
 
-Consecutive lines prefixed with `\\` become a single string, joined
-with `\n` (the `\\` prefix is stripped from each line):
+Off by default, because parts of a value (string contents, `url()`
+contents, custom idents) are case-sensitive. Turn it on only when you
+know the values are safe to fold:
 
 ```go
-src := ".{\n" +
-    "    .description =\n" +
-    "        \\\\first line\n" +
-    "        \\\\second line\n" +
-    "    ,\n" +
-    "}"
+yes := true
+tabnascss.Parse(`a { color: RED }`, tabnascss.CssOptions{LowercaseValues: &yes})
+// map[string]any{"a": map[string]any{"color": "red"}}
+```
 
-result, err := tabnaszon.Parse(src)
-// result: map[string]any{"description": "first line\nsecond line"}
+## Skip comments
+
+Only `/* ... */` block comments are recognised; they are discarded
+wherever they appear. (CSS has no `//` line comments.)
+
+```go
+src := `/* header */ a {
+    color: red; /* the colour */
+    /* a gap */
+    top: 0;
+}`
+tabnascss.Parse(src)
+// map[string]any{"a": map[string]any{"color": "red", "top": "0"}}
 ```
 
 ## Reuse a parser for many inputs (with options)
 
-`tabnaszon.Parse(src, opts)` builds a dedicated instance per call when you
-pass options, since the configuration differs per call. For a hot loop
-with fixed options, build one instance with `MakeJsonic` and reuse it:
+`tabnascss.Parse(src, opts)` builds a dedicated instance per call when
+you pass options, since the configuration differs per call. For a hot
+loop with fixed options, build one instance with `MakeJsonic` and reuse
+it:
 
 ```go
-j := tabnaszon.MakeJsonic(tabnaszon.ZonOptions{EnumTag: "$enum"})
+yes := true
+j := tabnascss.MakeJsonic(tabnascss.CssOptions{LowercaseProperties: &yes})
 for _, src := range inputs {
     result, err := j.Parse(src)
     _ = result
@@ -134,38 +161,37 @@ for _, src := range inputs {
 }
 ```
 
-(With *no* options, plain `tabnaszon.Parse(src)` already reuses a cached
-instance, so you do not need `MakeJsonic` for that case.)
+(With *no* options, plain `tabnascss.Parse(src)` already reuses a
+cached instance, so you do not need `MakeJsonic` for that case.)
 
 ## Handle a parse error
 
-ZON deliberately rejects non-ZON input — a bare `{` opener, for
-instance. The parse never panics; it returns an `error`:
+`Parse` never panics on bad input; it returns an `error`:
 
 ```go
-result, err := tabnaszon.Parse(`{ a = 1 }`) // not ZON: bare { is rejected
+result, err := tabnascss.Parse(src)
 if err != nil {
     // handle the syntax error; result is nil
 }
 ```
 
-## Re-enable strict JSON while the plugin is loaded
+## Switch the CSS grammar off while the plugin is loaded
 
-Every grammar alternate the plugin adds carries the group tag `zon`.
-To switch those alts off — restoring the plain jsonic grammar while
-the plugin stays registered — exclude that tag through the underlying
+Every grammar alternate the plugin adds carries the group tag `css`.
+To switch those alts off — restoring the plain jsonic grammar while the
+plugin stays registered — exclude that tag through the underlying
 jsonic instance:
 
 ```go
 import (
-    tabnasjsonic "github.com/tabnas/jsonic/go"
-    tabnaszon "github.com/tabnas/zon/go"
+    jsonic "github.com/tabnas/jsonic/go"
+    tabnascss "github.com/tabnas/css/go"
 )
 
-j := tabnasjsonic.Make()
-j.UseDefaults(tabnaszon.Zon, tabnaszon.Defaults)
-j.SetOptions(tabnasjsonic.Options{Rule: &tabnasjsonic.RuleOptions{Exclude: "zon"}})
+j := jsonic.Make()
+j.UseDefaults(tabnascss.Css, tabnascss.Defaults)
+j.SetOptions(jsonic.Options{Rule: &jsonic.RuleOptions{Exclude: "css"}})
 ```
 
 This is rarely useful — you would normally just not load the plugin —
-but it is the supported way to peel the ZON layer back off.
+but it is the supported way to peel the CSS layer back off.

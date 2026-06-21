@@ -3,8 +3,8 @@
 // Performance regression guard. Mirrors go/perf_test.go
 // (TestParseReusesInstance).
 //
-// zon has NO convenience parse() entry point on the TS side: it is a plugin
-// users install themselves (new Tabnas().use(jsonic).use(Zon)). So there is
+// css has NO convenience parse() entry point on the TS side: it is a plugin
+// users install themselves (new Tabnas().use(jsonic).use(Css)). So there is
 // nothing for the module to cache — the regression we can guard is the
 // *usage*: build ONE instance and reuse it for many parses, never rebuilding
 // the (expensive) engine + grammar per parse. Building the grammar dominates a
@@ -20,20 +20,23 @@ import assert from 'node:assert'
 
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '../dist/zon'
+import { Css } from '../dist/css'
 
-const SRC = '.{ .a = 1, .b = "x", .c = .{ 1, 2, 3 } }' // tiny representative ZON value
+const SRC = 'a { color: red; font: 12px sans-serif } .b > .c { margin: 0 }' // tiny representative CSS value
 const N = 2000
 
 describe('perf', () => {
   test('reusing one instance stays linear and beats rebuild-per-parse', () => {
     // Build the reusable instance once (the expensive step).
-    const j = new Tabnas().use(jsonic).use(Zon)
+    const j = new Tabnas().use(jsonic).use(Css)
 
     // Warm the reuse path so the comparison is steady-state, and sanity-check
     // the parse result en route.
     for (let i = 0; i < 100; i++) {
-      assert.deepEqual(j.parse(SRC), { a: 1, b: 'x', c: [1, 2, 3] })
+      assert.deepEqual(JSON.parse(JSON.stringify(j.parse(SRC))), {
+        a: { color: 'red', font: '12px sans-serif' },
+        '.b > .c': { margin: '0' },
+      })
     }
 
     // Time one isolated (already-warmed) parse on the reused instance.
@@ -52,7 +55,7 @@ describe('perf', () => {
     // anti-pattern this guards against.
     t0 = process.hrtime.bigint()
     for (let i = 0; i < N; i++) {
-      const rj = new Tabnas().use(jsonic).use(Zon)
+      const rj = new Tabnas().use(jsonic).use(Css)
       rj.parse(SRC)
     }
     const rebuild = Number(process.hrtime.bigint() - t0)

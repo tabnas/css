@@ -1,6 +1,6 @@
 # Concepts
 
-Background on how the ZON plugin is put together, and why. This is
+Background on how the CSS plugin is put together, and why. This is
 understanding-oriented reading — for steps see the
 [tutorial](tutorial.md) and [how-to guide](guide.md), and for exact
 signatures and syntax see the [reference](reference.md).
@@ -13,144 +13,166 @@ three pieces:
 - the **Tabnas engine** (`@tabnas/parser`) — a rule-based parser over a
   configurable, matcher-based lexer,
 - the **relaxed-JSON grammar** (`@tabnas/jsonic`) — the rules and
-  helper actions (`@array$`, the `val`/`map`/`list`/`pair`/`elem` rule
-  set) that turn tokens into objects and arrays, and
-- **this plugin** (`@tabnas/zon`) — the option overrides, custom lex
-  matchers, and small grammar overlay that retune that stack to read
-  Zig anonymous-struct syntax instead of JSON.
+  helper actions (`@object$`, the `key`/`setval`/`reset`/`value` action
+  set) that turn tokens into objects, and
+- **this plugin** (`@tabnas/css`) — the option overrides, one custom
+  lex matcher, and small grammar overlay that retune that stack to read
+  CSS instead of JSON.
 
-Because the engine is configuration-driven, ZON support is mostly an
+Because the engine is configuration-driven, CSS support is mostly an
 options change plus a handful of alternates — not a new parser. The
 plugin embeds the canonical grammar text (from the repo-root
-`zon-grammar.jsonic`) as a string, parses it with a throwaway jsonic
+`css-grammar.jsonic`) as a string, parses it with a throwaway jsonic
 instance to get a grammar object, attaches its option overrides to that
 object, and hands the whole thing to the engine atomically via
-`tn.grammar(grammarDef, { rule: { alt: { g: 'zon' } } })`.
+`tn.grammar(grammarDef, { rule: { alt: { g: 'css' } } })`.
 
-## ZON is not a superset of JSON
+## The output model
 
-JSON and ZON share scalars but differ in structure:
+A stylesheet parses to a nested map of `selector → { property → value
+}`:
 
-| | JSON / jsonic | ZON |
+- each **rule** is a key (the selector prelude, kept verbatim) mapping
+  to a map of its declarations;
+- each **declaration** is a key (the property name) mapping to its
+  value as a **raw string** (e.g. `'1px solid #fff'`);
+- **nested at-rules** (e.g. `@media`) recurse — the prelude is the key
+  and the block is a nested map of rules;
+- **statement at-rules** (e.g. `@import`) become a key (the at-keyword)
+  mapping to the rest of the statement as a string.
+
+The deliberate simplification is that values and selectors are **not**
+parsed into structure. A value is the text up to the next top-level
+`;` or `}`; a selector is the text up to its `{`. This keeps the output
+faithful to the source and the grammar small — a consumer that needs to
+pick a selector or value apart can do so on the returned strings.
+
+## CSS is not JSON
+
+JSON and CSS share braces but little else, so the plugin reshapes the
+jsonic stack rather than accepting both:
+
+| | JSON / jsonic | CSS |
 |---|---|---|
-| Open a map | `{` | `.{` (followed by `.field =`) |
-| Open a list | `[` | `.{` (otherwise) |
-| Close | `}` / `]` | `}` |
-| Key/value separator | `:` | `=` |
-| Keys | strings | `.identifier` |
-| Strings | `"` `'` `` ` `` | `"` only |
-| Comments | `#` `//` `/* */` | `//` only |
+| Top level | a single value | an implicit, brace-free map of rules |
+| Map keys | quoted strings | selectors / property names (text) |
+| Key/value separator | `:` | `:` (declarations) |
+| Member separator | `,` | `;` |
+| Bare `[` `]` | lists | disabled (only inside selectors/values) |
+| Strings | `"` `'` `` ` `` | values are raw text, not lexed strings |
+| Comments | `#` `//` `/* */` | `/* */` only |
 
 The plugin makes those swaps by **disabling** what JSON allows and
-**adding** what ZON needs, rather than accepting both. That is a
-deliberate choice: a `build.zig.zon` file that accidentally used JSON
-braces should be a clear error, not a silent success.
+**adding** what CSS needs: it remaps the member separator from `,` to
+`;`, disables the `[` `]` openers, turns off jsonic's string/number/
+text matchers (one custom matcher owns all text), narrows the key set,
+and limits comments to `/* */`.
 
-## The four mechanisms
+## The one context-sensitive matcher
 
-The plugin reshapes the stack with four cooperating mechanisms, all
-applied together through one `GrammarSpec`:
+The heart of the plugin is a single custom lex matcher, `cssToken`,
+registered with a high `order` so it runs ahead of the fixed-token
+matcher and owns all non-punctuation text. It defers (returns
+`undefined`) on whitespace, on `/* */` comments, and on the fixed
+punctuation (`{` `}` `:` `;`), letting the builtin matchers handle
+those.
 
-1. **Custom lex matchers** own the `.`-prefixed and Zig-specific
-   tokens. They run ahead of the fixed-token matcher (high `order`
-   values) so they reliably claim their input:
-   - `.{` peeks ahead and emits `#OB` (struct) when followed by
-     `<ws>.ident<ws>=`, or `#OS` (tuple) otherwise.
-   - `.identifier` emits `#TX` whose `val` is the identifier with the
-     dot stripped, and whose `use.zonEnum` flag marks it for optional
-     enum-tag wrapping.
-   - `\\`-prefixed lines emit one `#ST` string token with the joined
-     content.
-   - char literals (`'x'`, `'\n'`, `'\xNN'`, `'\u{...}'`) emit a `#NR`
-     number token whose value is a one-char string or the code point,
-     per `charAsNumber`.
+What it emits depends on whether it is at a **key** or a **value**
+position, which it decides from the active rule alone — it is stateless:
 
-2. **Token remapping.** `#CL` is rebound from `:` to `=`; the default
-   char mappings for `#OB`, `#OS`, and `#CS` are dropped to `null`, so
-   a stray `{`, `[`, or `]` produces a syntax error instead of silently
-   opening a structure. The default jsonic text matcher is turned off,
-   since identifiers only ever appear as `.ident` and are owned by the
-   custom matcher.
+- **Value mode** — selected when the `val` rule is open. The grammar
+  pushes `val` exactly at a value position (just after a `:`, or after a
+  statement at-keyword), so the matcher needs no flag or lookbehind: it
+  reads the run of text up to the next top-level `;` or `}` and emits one
+  `#VL` token. So `1px solid #fff` becomes a single value.
 
-3. **Key-set restriction.** The `KEY` token set is narrowed to `#TX`
-   alone, so only an identifier (not a number or a quoted string) can
-   sit on the left of `=`.
+- **Key mode** — otherwise. It peeks ahead: if a top-level `{` is
+  reached before any `;`/`}`, the text is a **selector** (the whole
+  prelude, trimmed, as `#TX`); if a `;`/`}`/end-of-input is reached
+  first, it is a **property name** (the identifier, as `#TX`). A leading
+  `@` instead emits a distinct `#AT` at-keyword token.
 
-4. **Grammar overlay.** A few alternates are prepended to `val`,
-   `list`, `elem`, and `pair`. They swap the list terminator from the
-   default `#CS` to `#CB`, seed the list node with `@array$`, and
-   accept a trailing comma before `}`. This is the only part written in
-   grammar text; everything else is options.
+Both scans skip over quoted strings, `/* */` comments, and balanced
+`()` / `[]`, so a `;` inside `url(...)` or a `{` inside an attribute
+selector does not fool the classifier.
 
-The `{ rule: { exclude: 'jsonic,imp' } }` override also removes
-jsonic's implicit maps/lists, top-level commas, and path-dive
-extensions, and `{ rule: { start: 'val' } }` makes a single value the
-entry rule.
+## Selector vs property vs at-rule
 
-## Struct vs tuple disambiguation
+The matcher's lookahead is what lets the text tokens stand for three
+different things, disambiguated in the grammar by the key token and the
+**next** token:
 
-ZON uses one opener, `.{`, for both maps and lists. The engine's parser
-allows only two tokens of lookahead, which is not enough to tell a
-struct from a tuple by grammar alone (you would have to see an
-arbitrary distance ahead to find the first `=`).
+- `#TX #CL` (`property :`) → a **declaration**; the value follows.
+- `#TX #OB` (`selector {`) → a **nested ruleset**; the block follows.
+- `#AT` (`@keyword`) → a **statement at-rule**; the grammar pushes `val`
+  straight away, so the params are read as the value.
 
-So the decision is pushed down into the lexer. When the `.{` matcher
-fires, it scans past the opening brace, whitespace, and `//` comments,
-then checks for `.ident` followed by `=`. If found, it emits `#OB`
-(struct); otherwise `#OS` (tuple). The grammar therefore only ever sees
-an already-classified open token, and a two-token-lookahead rule set is
-enough. This is why `.{}` parses as an **empty list** rather than an
-empty map: with nothing inside, there is no `.field =` to mark it as a
-struct.
+Because the classifier ran in the lexer, the grammar only ever sees an
+already-disambiguated shape and a two-token-lookahead rule set is
+enough. This is also why a pseudo-class selector like `a:hover` is not
+mistaken for a property named `a`: in key position a `:` is allowed
+inside the prelude, and the trailing `{` proves it is a selector.
 
-## Enum literals: one token, two roles
+## The implicit top-level map
 
-A bare `.foo` token (`#TX`) is valid in two positions. Before `=` it is
-a key (the field name `foo`); in value position it is an enum literal
-(the value `'foo'`). Because `#TX` is a member of both the `KEY` and
-`VAL` token sets, the parser picks the right interpretation purely by
-context — no grammar branching is needed.
+Unlike a JSON document, a stylesheet has no surrounding braces — it is
+just a sequence of rules. The `stylesheet` start rule models this as an
+implicit top-level map, seeded with `@object$`, that runs the `pair`
+rule until end-of-input (`#ZZ`). Each `pair` adds one
+selector/property key and resolves its value via `@setval$`. The `val`
+rule resets the parent-seeded node (`@reset$`) so a value does not
+inherit the enclosing object, then resolves it (`@value$`) to a built
+block (a nested map) or the `#VL` scalar.
 
-When `enumTag` is set, an enum literal in value position must be
-wrapped as `{ [enumTag]: name }`. The relaxed-JSON grammar already owns
-the value-close phase via `@val-bc/replace`, and once a phase is
-"replaced" the engine suppresses any `/prepend` on it. So the wrapping
-runs in the *after-close* phase (`@val-ac`): it checks whether the
-closed value came from a token carrying the `zonEnum` flag, and if so
-rebuilds the node as the tagged object. Keys are unaffected, because
-they are consumed in key position, not as values.
+This is why a **zero-length** source returns `undefined`: with no
+input, no rule ever runs, an engine convention. Any non-empty source —
+even whitespace or a lone comment — runs the start rule and yields at
+least an empty stylesheet `{}`.
+
+## The case-folding options
+
+The two options act only in the matcher, on the text it is already
+about to emit:
+
+- `lowercaseProperties` lowercases the identifier in **key mode** when
+  it resolved to a property name — never a selector, never a value.
+- `lowercaseValues` lowercases the text emitted in **value mode**.
+
+`lowercaseValues` is off by default because a value can carry
+case-sensitive parts — quoted strings, `url()` contents, custom
+identifiers — that lowercasing would corrupt. `lowercaseProperties` is
+safe because CSS property names are case-insensitive.
 
 ## Why reuse one instance
 
-Building the ZON grammar — parsing the embedded grammar text, applying
-the option overlay, wiring the custom matchers — dominates the cost of
-a parse; the parse itself, on a typical small ZON value, is cheap by
+Building the CSS grammar — parsing the embedded grammar text, applying
+the option overlay, wiring the custom matcher — dominates the cost of a
+parse; the parse itself, on a typical small stylesheet, is cheap by
 comparison. The instance is stateless across parses (each parse builds
 its own context and only reads instance state), so the right pattern is
-to build the engine once and reuse it for every input. The repo's
-performance test guards exactly this: reuse stays linear, and the
-rebuild-per-parse anti-pattern is many times slower.
+to build the engine once and reuse it for every input.
 
 ## Accepted vs rejected — edge cases
 
-- `.{}` → `[]`. An empty literal is a list, not a map.
-- `{ a = 1 }` → **error**. Bare `{` is not a ZON opener; it was
-  removed.
-- `'A'` → `'A'` by default, `65` with `charAsNumber: true`. The single
-  quote is a char literal, not a string delimiter.
-- `"a\\b"` → `'a\b'`. Double quotes are the only string delimiter, with
-  Zig escapes; an unknown escape is an error.
-- `.red` as a value → `'red'`, or `{ tag: 'red' }` with `enumTag`.
-- `.red` as a key (`.red = 1`) → key `red`; `enumTag` never applies to
-  keys.
-- Trailing comma before `}` → accepted in both structs and tuples.
-- `//` comment → discarded; `#` and `/* */` are **not** comments in
-  ZON.
+- `''` → `undefined`; `'   '` and `/* c */` → `{}`. A zero-length
+  source runs no rules; any non-empty source yields a stylesheet.
+- `a {}` → `{ a: {} }`. An empty block is an empty map.
+- `h1, h2 { ... }` → key `'h1, h2'`. Selector grouping is kept
+  verbatim.
+- `a:hover { ... }` → key `'a:hover'`, not a property `a`. A `:` is
+  allowed inside a selector prelude.
+- `1px solid #fff` → one value string. Values are not parsed further.
+- `url(http://x/y.png)` → one value; the `:` and `/` inside `()` do not
+  terminate it.
+- `@media ... { ... }` → recurses into a nested map of rules.
+- `@import "base.css";` → `{ '@import': '"base.css"' }`; the value
+  keeps its quotes. A statement at-rule must end with `;`.
+- `/* ... */` → discarded; `#` and `//` are **not** comments in CSS.
 
 ## Relationship to the Go port
 
 The plugin ships in two implementations — this TypeScript one and a Go
-port — built from the same canonical `zon-grammar.jsonic`. The
+port — built from the same canonical `css-grammar.jsonic`. The
 TypeScript version is the reference. For the Go API shape, value types,
 and any accepted differences, see
 [../../go/doc/concepts.md](../../go/doc/concepts.md).

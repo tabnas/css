@@ -1,20 +1,21 @@
-# @tabnas/zon
+# @tabnas/css
 
 A grammar plugin that teaches the [Tabnas](https://github.com/tabnas/parser)
-parser to read [Zig Object Notation (ZON)](https://ziglang.org/documentation/master/#ZON) —
-the anonymous-struct data format used for `build.zig.zon` manifests.
-Available for both TypeScript and Go, built on the same grammar.
+parser to read [CSS](https://developer.mozilla.org/en-US/docs/Web/CSS)
+(Cascading Style Sheets), turning a stylesheet into a plain nested object of
+`selector → { property → value }`. Available for both TypeScript and Go,
+built on the same grammar.
 
-ZON looks like this:
+CSS looks like this:
 
-```zon
-.{
-    .name = "example",
-    .version = "0.0.1",
-    .dependencies = .{
-        .foo = .{ .url = "https://example.com/foo.tar.gz", .hash = "1220deadbeef" },
-    },
-    .paths = .{ "build.zig", "src" },
+```css
+body {
+  margin: 0;
+  font-family: "Helvetica Neue", Arial, sans-serif;
+}
+.nav > li { display: inline-block; padding: 0 10px; }
+@media (min-width: 768px) {
+  .nav > li { padding: 0 20px; }
 }
 ```
 
@@ -22,10 +23,10 @@ ZON looks like this:
 
 ```bash
 # TypeScript / JavaScript
-npm install @tabnas/parser @tabnas/jsonic @tabnas/zon
+npm install @tabnas/parser @tabnas/jsonic @tabnas/css
 
 # Go
-go get github.com/tabnas/zon/go@latest
+go get github.com/tabnas/css/go@latest
 ```
 
 ## One tiny example
@@ -35,21 +36,45 @@ go get github.com/tabnas/zon/go@latest
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon)
+const c = new Tabnas().use(jsonic).use(Css)
 
-j.parse('.{ .name = "Alice", .age = 30 }') // => { name: 'Alice', age: 30 }
-j.parse('.{ 1, 2, 3 }')                     // => [1, 2, 3]
+c.parse('a { color: red; font-size: 12px }')
+// => { a: { color: 'red', 'font-size': '12px' } }
+
+c.parse('h1, h2 { margin: 0 }')
+// => { 'h1, h2': { margin: '0' } }
 ```
 
-**Go** — `tabnaszon.Parse` is the one-call entry point:
+**Go** — `tabnascss.Parse` is the one-call entry point:
 
 ```go
-import tabnaszon "github.com/tabnas/zon/go"
+import tabnascss "github.com/tabnas/css/go"
 
-result, _ := tabnaszon.Parse(`.{ .name = "Alice", .age = 30 }`)
-// map[string]any{"name": "Alice", "age": float64(30)}
+result, _ := tabnascss.Parse(`a { color: red; font-size: 12px }`)
+// map[string]any{"a": map[string]any{"color": "red", "font-size": "12px"}}
+```
+
+## What it produces
+
+A stylesheet parses to a nested map:
+
+- each **rule** is a key (the selector text, verbatim) mapping to a map of
+  its declarations;
+- each **declaration** is a key (the property name) mapping to its value as
+  a raw string (e.g. `'1px solid #fff'`);
+- **nested at-rules** (e.g. `@media`) recurse — the prelude is the key and
+  the block is a nested map of rules;
+- **statement at-rules** (e.g. `@import`) become a key (the at-keyword)
+  mapping to the rest of the statement as a string.
+
+```js
+c.parse('@media screen { a { color: blue } }')
+// => { '@media screen': { a: { color: 'blue' } } }
+
+c.parse('@import "base.css";')
+// => { '@import': '"base.css"' }
 ```
 
 ## Documentation
@@ -70,16 +95,16 @@ Per-language hubs: [`ts/README.md`](ts/README.md),
 ## Grammar diagram
 
 The grammar is defined once in the top-level
-[`zon-grammar.jsonic`](zon-grammar.jsonic) and embedded into both
-implementations — TypeScript ([`ts/src/zon.ts`](ts/src/zon.ts)) and Go
-([`go/zon.go`](go/zon.go)) — by [`ts/embed-grammar.js`](ts/embed-grammar.js)
+[`css-grammar.jsonic`](css-grammar.jsonic) and embedded into both
+implementations — TypeScript ([`ts/src/css.ts`](ts/src/css.ts)) and Go
+([`go/css.go`](go/css.go)) — by [`ts/embed-grammar.js`](ts/embed-grammar.js)
 during the TypeScript build. Edit the grammar there, not in the
 generated sources.
 
 As a railroad/syntax diagram, generated from the live grammar with
 [`@tabnas/railroad`](https://github.com/tabnas/railroad):
 
-![zon grammar railroad diagram](ts/doc/grammar.svg)
+![css grammar railroad diagram](ts/doc/grammar.svg)
 
 ASCII version: [`ts/doc/grammar.txt`](ts/doc/grammar.txt).
 

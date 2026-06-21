@@ -1,7 +1,7 @@
 # Reference
 
-The complete public surface of `@tabnas/zon` (TypeScript): exports,
-the parse entry, the two options, and the exact ZON syntax accepted.
+The complete public surface of `@tabnas/css` (TypeScript): exports,
+the parse entry, the two options, and the exact CSS syntax accepted.
 For a guided introduction see the [tutorial](tutorial.md); for task
 recipes see the [how-to guide](guide.md); for how it works see
 [concepts](concepts.md).
@@ -9,13 +9,13 @@ recipes see the [how-to guide](guide.md); for how it works see
 ## Package
 
 ```bash
-npm install @tabnas/parser @tabnas/jsonic @tabnas/zon
+npm install @tabnas/parser @tabnas/jsonic @tabnas/css
 ```
 
 | | |
 |---|---|
-| Package | `@tabnas/zon` |
-| Module type | CommonJS (`main: dist/zon.js`, types `dist/zon.d.ts`) |
+| Package | `@tabnas/css` |
+| Module type | CommonJS (`main: dist/css.js`, types `dist/css.d.ts`) |
 | Peer deps | `@tabnas/parser` >= 2, `@tabnas/jsonic` >= 2 |
 | Engine | `@tabnas/parser` (Tabnas) |
 | Underlying grammar | `@tabnas/jsonic` |
@@ -24,15 +24,15 @@ npm install @tabnas/parser @tabnas/jsonic @tabnas/zon
 
 | Export | Kind | Description |
 |---|---|---|
-| `Zon` | `Plugin` | The plugin function. Register with `engine.use(Zon, options)`. |
-| `ZonOptions` | type | The options object shape (see [Options](#options)). |
+| `Css` | `Plugin` | The plugin function. Register with `engine.use(Css, options)`. |
+| `CssOptions` | type | The options object shape (see [Options](#options)). |
 
-`Zon.defaults` (a `ZonOptions`) holds the merged default options:
+`Css.defaults` (a `CssOptions`) holds the merged default options:
 
 ```typescript
-Zon.defaults = {
-  charAsNumber: false,
-  enumTag: null,
+Css.defaults = {
+  lowercaseProperties: false,
+  lowercaseValues: false,
 }
 ```
 
@@ -40,26 +40,26 @@ Zon.defaults = {
 
 The plugin has **no convenience `parse()` function** of its own. You
 parse by building a Tabnas engine, layering the jsonic grammar, then
-the `Zon` plugin, and calling the engine's `.parse()`:
+the `Css` plugin, and calling the engine's `.parse()`:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon)
+const c = new Tabnas().use(jsonic).use(Css)
 
-j.parse('.{ .a = 1 }') // => { a: 1 }
+c.parse('a { color: red }') // => { a: { color: 'red' } }
 ```
 
-### `engine.use(Zon, options?)`
+### `engine.use(Css, options?)`
 
 Registers and immediately applies the plugin. Returns the engine, so
-registrations chain (`new Tabnas().use(jsonic).use(Zon, opts)`). The
-plugin merges `options` over `Zon.defaults`, installs the embedded ZON
-grammar, and re-applies its jsonic option overrides (struct/tuple
-tokens, `=` separator, identifier keys, Zig escapes, ZON comments, and
-the three custom lex matchers).
+registrations chain (`new Tabnas().use(jsonic).use(Css, opts)`). The
+plugin merges `options` over `Css.defaults`, installs the embedded CSS
+grammar, and re-applies its jsonic option overrides (the `;` member
+separator, disabled `[` `]` openers, the narrowed key set, `/* */`-only
+comments, and the custom `cssToken` lex matcher).
 
 The instance is reusable and stateless across parses; build it once
 and reuse it. Building the grammar dominates a parse, so do not
@@ -67,184 +67,216 @@ reconstruct the engine per call.
 
 ### `engine.parse(src)`
 
-Parses a ZON source string and returns the resulting JavaScript value.
-Objects come back as maps built with `Object.create(null)` (no
-prototype); arrays are plain arrays; scalars are `number`, `string`,
-`boolean`, or `null`. A failed parse throws (see [Errors](#errors)).
+Parses a CSS source string and returns the resulting JavaScript value.
+A stylesheet comes back as a nested map of `selector → { property →
+value }`; maps are built with `Object.create(null)` (no prototype),
+and declaration values are raw strings. A failed parse throws (see
+[Errors](#errors)).
+
+The empty-input quirk: a zero-length source (`''`) returns `undefined`,
+because a zero-length source runs no rules (an engine convention). Any
+non-empty source — even whitespace or a lone comment — yields an empty
+stylesheet object `{}`.
+
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css)
+
+c.parse('')                    // => undefined
+c.parse('   ')                 // => {}
+c.parse('/* only a comment */') // => {}
+```
 
 ## Options
 
-`ZonOptions` has exactly two fields:
+`CssOptions` has exactly two fields:
 
 ```typescript
-type ZonOptions = {
-  charAsNumber: boolean
-  enumTag: null | string
+type CssOptions = {
+  lowercaseProperties: boolean
+  lowercaseValues: boolean
 }
 ```
 
-### `charAsNumber`
+### `lowercaseProperties`
 
 - **Type:** `boolean`
 - **Default:** `false`
-- **Effect:** Controls how Zig character literals (`'x'`, `'\n'`,
-  `'\x41'`, `'\u{1F600}'`) are parsed.
-  - `false` — the literal becomes a one-character string. `'A'` → `'A'`.
-  - `true` — the literal becomes its numeric Unicode code point. `'A'`
-    → `65`, `'\n'` → `10`, `'\u{1F600}'` → `128512`.
+- **Effect:** When `true`, lowercases declaration **property names**
+  only. CSS property names are case-insensitive, so this normalises
+  them. Selectors and values are left untouched.
 
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon, { charAsNumber: true })
-j.parse("'A'") // => 65
+const c = new Tabnas().use(jsonic).use(Css, { lowercaseProperties: true })
+c.parse('A { COLOR: Red }') // => { A: { color: 'Red' } }
 ```
 
-### `enumTag`
+### `lowercaseValues`
 
-- **Type:** `null | string`
-- **Default:** `null`
-- **Effect:** Controls how enum-literal *values* (a bare `.foo` used in
-  value position) are represented.
-  - `null` — the enum literal becomes the bare identifier string.
-    `.red` → `'red'`.
-  - a string `T` — the enum literal is wrapped in a one-key object
-    `{ [T]: name }`, so it can be distinguished from an ordinary
-    string. With `enumTag: '$enum'`, `.red` → `{ $enum: 'red' }`.
-
-The tag affects enum literals only when they are *values*. A `.field`
-used as a key (before `=`) is always the plain field name regardless of
-`enumTag`.
+- **Type:** `boolean`
+- **Default:** `false`
+- **Effect:** When `true`, lowercases declaration **values**. Off by
+  default because parts of a value (quoted strings, `url()` contents,
+  custom identifiers) are case-sensitive.
 
 ```js
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
-import { Zon } from '@tabnas/zon'
+import { Css } from '@tabnas/css'
 
-const j = new Tabnas().use(jsonic).use(Zon, { enumTag: '$enum' })
-j.parse('.{ .kind = .red, .label = "red" }') // => { kind: { $enum: 'red' }, label: 'red' }
+const c = new Tabnas().use(jsonic).use(Css, { lowercaseValues: true })
+c.parse('a { color: RED }') // => { a: { color: 'red' } }
 ```
 
-## ZON syntax
+## CSS syntax
 
-ZON is **not** a superset of JSON. It uses Zig anonymous-struct
-syntax. The plugin disables the bare `{`, `[`, `]` openers and rebinds
-the key/value separator to `=`.
+A stylesheet is an implicit, brace-free top-level map of rules. Each
+rule is a key (the selector or at-rule prelude) mapping to a value.
 
-### Structs (maps)
+### Rules and declarations
 
-A struct literal opens with `.{`, contains `.field = value` pairs
-separated by commas, and closes with `}`. Field names are identifiers
-(`[A-Za-z_][A-Za-z0-9_]*`), written with a leading dot that is
-stripped from the key.
+A rule is `selector { declaration; declaration; ... }`. Each
+declaration is `property: value`. The selector becomes a key, its block
+a nested map, and each property a key with its value as a raw string.
+The trailing `;` is optional before the closing `}`.
 
-```
-.{ .a = 1, .b = 2 }     => { a: 1, b: 2 }
-.{ .a = .{ .b = 1 } }   => { a: { b: 1 } }
-```
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
 
-### Tuples (lists)
+const c = new Tabnas().use(jsonic).use(Css)
 
-A tuple literal also opens with `.{`, but contains bare values (no
-`.field =`), separated by commas, and closes with `}`. It produces an
-array.
-
-```
-.{ 1, 2, 3 }            => [1, 2, 3]
-.{ "a", "b" }           => ['a', 'b']
-.{ .{ 1, 2 }, .{ 3, 4 } } => [[1, 2], [3, 4]]
+c.parse('a { color: red; font-size: 12px }') // => { a: { color: 'red', 'font-size': '12px' } }
+c.parse('a { color: red }')                  // => { a: { color: 'red' } }
+c.parse('a {}')                              // => { a: {} }
 ```
 
-The struct-vs-tuple decision is made at lex time by peeking past the
-`.{`: if the next significant token is `.identifier` followed by `=`,
-it is a struct; otherwise it is a tuple.
+### Selectors
 
-### Empty literal
+The selector text is kept **verbatim** as the key — it is not parsed
+into components. Grouping (`,`), combinators (`>`, `+`, `~`),
+descendant whitespace, pseudo-classes (`:hover`), pseudo-elements
+(`::before`), and attribute selectors (`[type=text]`) are all kept
+exactly as written (with surrounding whitespace trimmed).
 
-An empty `.{}` parses as an **empty array** (`[]`), since with no
-contents there is no `.field =` to mark it as a struct.
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
 
-```
-.{}                     => []
-```
+const c = new Tabnas().use(jsonic).use(Css)
 
-### Trailing commas
-
-A trailing comma before `}` is allowed in both structs and tuples.
-
-```
-.{ .a = 1, }            => { a: 1 }
-.{ 1, 2, 3, }           => [1, 2, 3]
+c.parse('h1, h2 { margin: 0 }')           // => { 'h1, h2': { margin: '0' } }
+c.parse('.foo > .bar { top: 0 }')         // => { '.foo > .bar': { top: '0' } }
+c.parse('input[type=text] { border: 0 }') // => { 'input[type=text]': { border: '0' } }
 ```
 
-### Scalars
+### Declaration values
 
-| Construct | Example | Result |
-|---|---|---|
-| Integer | `42` | `42` |
-| Float | `3.14` | `3.14` |
-| Hex | `0x2a` | `42` |
-| Octal | `0o52` | `42` |
-| Binary | `0b101010` | `42` |
-| Digit separator | `1_000_000` | `1000000` |
-| Boolean | `true`, `false` | `true`, `false` |
-| Null | `null` | `null` |
-| String | `"hello"` | `'hello'` |
-| Enum literal | `.red` | `'red'` (or `{ tag: 'red' }`) |
-| Char literal | `'A'` | `'A'` (or `65`) |
+A value is the run of text after `:` up to the next top-level `;` or
+`}` (trimmed). It is kept as **one raw string** and is not parsed
+further. Internal commas, hashes, spaces, `!important`, and balanced
+`()` / `[]` (so a `;` inside `url(...)` or a function does not
+terminate the value) are all part of the string.
 
-### Strings
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
 
-Double-quoted strings only (single quotes are reserved for char
-literals). Zig-flavoured escapes are recognised: `\n`, `\r`, `\t`,
-`\\`, `\"`, `\'`. Unknown escapes are an error.
+const c = new Tabnas().use(jsonic).use(Css)
 
-```
-"hello"                 => 'hello'
-"a\nb"                  => 'a\nb'
-"a\\b"                  => 'a\b'
+c.parse('p { border: 1px solid #fff }')        // => { p: { border: '1px solid #fff' } }
+c.parse('a { color: red !important }')          // => { a: { color: 'red !important' } }
+c.parse('a { color: rgb(1, 2, 3); top: 0 }')    // => { a: { color: 'rgb(1, 2, 3)', top: '0' } }
 ```
 
-### Multi-line strings
+### Nested at-rules
 
-Consecutive lines beginning with `\\` form one string. Each line
-contributes its text after the `\\`; lines are joined with `\n`.
-Inter-line whitespace before the next `\\` is allowed.
+An at-rule with a block (e.g. `@media`, `@supports`) recurses: its
+prelude (kept verbatim) is the key and its block is a nested map of
+rules.
 
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css)
+
+c.parse('@media screen { a { color: blue } }') // => { '@media screen': { a: { color: 'blue' } } }
 ```
-\\hello
-\\world                 => 'hello\nworld'
+
+### Statement at-rules
+
+An at-rule with no block (e.g. `@import`, `@charset`) is a statement
+**terminated by `;`**. It becomes a single key/value pair: the
+at-keyword is the key, the rest of the statement (quotes included) is
+the value.
+
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css)
+
+c.parse('@import "base.css";')                // => { '@import': '"base.css"' }
+c.parse('@charset "utf-8"; a { color: red }') // => { '@charset': '"utf-8"', a: { color: 'red' } }
 ```
 
-### Character literals
-
-Single-quoted Zig char literals: a single character, or an escape
-`'\n'` `'\r'` `'\t'` `'\\'` `'\''` `'\"'` `'\0'`, a hex escape
-`'\xNN'`, or a Unicode escape `'\u{...}'`. By default the result is a
-one-character string; with `charAsNumber: true` it is the numeric code
-point.
-
-```
-'A'                     => 'A'   (or 65 with charAsNumber)
-'\n'                    => '\n'  (or 10)
-'\u{1F600}'             => '😀'  (or 128512)
-```
+A statement at-rule that is **not** terminated with `;` does not close,
+and the parser reads following content as part of the same statement.
 
 ### Comments
 
-`//` line comments only. They are discarded.
+Only `/* ... */` block comments are recognised. They are discarded
+wherever they appear.
 
-```
-.{
-  // a comment
-  .name = "x", // trailing comment
-}                       => { name: 'x' }
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css)
+
+const sheet = c.parse(`/* header */ a {
+  color: red; /* the colour */
+  /* a gap */
+  top: 0;
+}`)
+
+sheet // => { a: { color: 'red', top: '0' } }
 ```
 
-(Jsonic's `#` hash comments and `/* */` block comments are disabled by
-the plugin.)
+(Jsonic's `#` hash comments and `//` line comments are disabled by the
+plugin.)
+
+### Empty input
+
+A zero-length source returns `undefined` (no rules run). Any non-empty
+source — whitespace or a comment alone — yields an empty stylesheet
+`{}`. An empty rule block yields an empty map.
+
+```js
+import { Tabnas } from '@tabnas/parser'
+import { jsonic } from '@tabnas/jsonic'
+import { Css } from '@tabnas/css'
+
+const c = new Tabnas().use(jsonic).use(Css)
+
+c.parse('')      // => undefined
+c.parse('   ')   // => {}
+c.parse('a {}')  // => { a: {} }
+```
 
 ## Tokens
 
@@ -253,25 +285,29 @@ diagram legend):
 
 | Token | Source | Meaning |
 |---|---|---|
-| `#OB` | `.{` | start of a struct (map) |
-| `#OS` | `.{` | start of a tuple (list) |
-| `#CB` | `}` | close of struct or tuple |
-| `#CL` | `=` | key/value separator |
-| `#TX` | `.ident` | field name (key) or enum literal (value) |
-| `VAL` | — | a value: number, string, `true`/`false`/`null`, or `.enum` |
+| `#OB` | `{` | start of a block |
+| `#CB` | `}` | end of a block |
+| `#CL` | `:` | declaration separator |
+| `#CA` | `;` | declaration terminator |
+| `#TX` | text | a key: a selector or property name |
+| `#AT` | text | a key: a statement at-keyword (e.g. `@import`) |
+| `#VL` | text | a value: a declaration value (raw text) |
 
-`{`, `[`, and `]` are **not** tokens — they are removed, so a bare `{`
-is a syntax error.
+`#TX`, `#AT` and `#VL` are produced by the custom `cssToken` matcher,
+which owns all non-punctuation text. The fixed `{`, `}`, `:` lex as
+`#OB`, `#CB`, `#CL`; `;` is remapped to `#CA`. Bare `[` and `]` are
+disabled as structure — they only ever appear inside selectors and
+values, which the matcher consumes as text.
 
 ## Grammar group tag
 
-Every grammar alternate the plugin adds carries the group tag `zon`.
-Callers can switch the ZON alts off (restoring plain jsonic) via
-`rule.exclude: 'zon'`:
+Every grammar alternate the plugin adds carries the group tag `css`.
+Callers can switch the CSS alts off (restoring plain jsonic) via
+`rule.exclude: 'css'`:
 
 ```typescript
-const j = new Tabnas().use(jsonic).use(Zon).options({
-  rule: { exclude: 'zon' },
+const c = new Tabnas().use(jsonic).use(Css).options({
+  rule: { exclude: 'css' },
 })
 ```
 
@@ -280,5 +316,14 @@ const j = new Tabnas().use(jsonic).use(Zon).options({
 A failed parse throws the engine's standard parse error. It carries
 the usual fields — an error `code`, the source location (`row`, `col`,
 `pos`), the offending `src` fragment, and a formatted multi-line
-`message` with a source-context extract. Inputs that are valid jsonic
-but not valid ZON (such as a bare `{` opener) are errors.
+`message` with a source-context extract. Malformed input — for example
+an unterminated block — is an error.
+
+## Limitations
+
+- A statement at-rule **must** be terminated with `;`.
+- Declaration values are **not** parsed further — each is kept as one
+  raw string.
+- Selector text is kept **verbatim** — it is not parsed into its
+  component parts.
+- Only `/* ... */` block comments are recognised.
