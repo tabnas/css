@@ -1,6 +1,6 @@
 {
   "name": "@tabnas/css",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "This plugin allows the [Tabnas](https://github.com/tabnas/parser) JSON parser to parse CSS (Cascading Style Sheets) into a reworkcss-style abstract syntax tree.",
   "main": "dist/css.js",
   "type": "commonjs",
