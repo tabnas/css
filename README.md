@@ -1,5 +1,12 @@
 # @tabnas/css
 
+<!-- tabnas-badges -->
+[![npm](https://tabnas.github.io/status/badges/css-npm.svg)](https://www.npmjs.com/package/@tabnas/css)
+[![CI](https://github.com/tabnas/css/actions/workflows/ci.yml/badge.svg)](https://github.com/tabnas/css/actions/workflows/ci.yml)
+[![go](https://tabnas.github.io/status/badges/css-go.svg)](https://pkg.go.dev/github.com/tabnas/css/go)
+[![tabnas standard](https://tabnas.github.io/status/badges/css-standard.svg)](https://tabnas.github.io/status/)
+<!-- /tabnas-badges -->
+
 A grammar plugin that teaches the [Tabnas](https://github.com/tabnas/parser)
 parser to read [CSS](https://developer.mozilla.org/en-US/docs/Web/CSS)
 (Cascading Style Sheets) and produce a faithful **abstract syntax tree** —
