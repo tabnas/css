@@ -32,7 +32,7 @@ import (
 	jsonic "github.com/tabnas/jsonic/go"
 )
 
-const Version = "0.1.0"
+const Version = "0.1.2"
 
 // --- BEGIN EMBEDDED css-grammar.jsonic ---
 const grammarText = `
