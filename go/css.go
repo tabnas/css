@@ -242,6 +242,7 @@ const grammarText = `
   }
 }
 `
+
 // --- END EMBEDDED css-grammar.jsonic ---
 
 // Css is a jsonic plugin that adds CSS parsing support.
@@ -940,6 +941,9 @@ func parseGrammarText(text string, refs map[jsonic.FuncRef]any) (*jsonic.Grammar
 	if err != nil {
 		return nil, fmt.Errorf("css: failed to parse grammar text: %w", err)
 	}
+	// The parser now builds insertion-ordered *OrderedMap object nodes; this
+	// grammar spec is order-agnostic config, so flatten to plain map trees.
+	parsed = jsonic.Plainify(parsed)
 	parsedMap, ok := parsed.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("css: grammar text did not parse to a map")
