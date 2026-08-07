@@ -11,6 +11,48 @@ on:
 
 jobs:
   ci:
+    # The third-party conformance corpora are fetched BEFORE the tests inside
+    # the reusable workflow, without needing to change it:
+    #   ts/  - the `pretest` npm script runs scripts/fetch-suites.sh
+    #   go/  - TestMain in go/conformance_test.go runs it
+    # If a corpus is absent the conformance tests FAIL LOUDLY; they never
+    # skip. The previous arrangement had CI silently not running them at all.
     uses: tabnas/.github/.github/workflows/polyglot-ci.yml@main
     with:
       deps: "parser debug json abnf railroad jsonic"
+
+  # Independent gate on the corpora themselves. The conformance numbers in
+  # this repository are only meaningful against two exact snapshots, so verify
+  # that the pinned commits are still fetchable and that the census has not
+  # moved. This job does not need the tabnas sibling closure, so it fails fast
+  # and unambiguously when the problem is upstream rather than in the parser.
+  conformance-corpora:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Fetch the pinned third-party corpora
+        run: bash scripts/fetch-suites.sh
+      - name: Verify the corpus census
+        run: |
+          set -euo pipefail
+          for f in stylesheet.json rule_list.json declaration_list.json blocks_contents.json; do
+            test -f "test/css-parsing-tests/$f"
+          done
+          cases=$(find test/reworkcss-css/test/cases -maxdepth 1 -mindepth 1 -type d | wc -l)
+          echo "reworkcss/css cases: $cases"
+          if [ "$cases" -ne 46 ]; then
+            echo "ERROR: expected 46 reworkcss cases, found $cases." >&2
+            echo "The pinned corpus changed. Do not silently accept a smaller suite." >&2
+            exit 1
+          fi
+          test -f test/reworkcss-css/test/parse.js
+      - name: Corpora must never be committed
+        run: |
+          set -euo pipefail
+          for d in test/css-parsing-tests test/reworkcss-css; do
+            if git ls-files --error-unmatch "$d" >/dev/null 2>&1; then
+              echo "ERROR: $d is tracked by git. Third-party corpora are not" >&2
+              echo "redistributed by this repository; they must stay gitignored." >&2
+              exit 1
+            fi
+          done

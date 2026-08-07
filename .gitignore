@@ -33,3 +33,9 @@ package-lock.json
 yarn.lock
 
 
+
+# Third-party conformance corpora, fetched on demand at PINNED commits by
+# scripts/fetch-suites.sh. NEVER commit these: they are not redistributed by
+# this repository, and a vendored corpus cannot be verified against upstream.
+test/css-parsing-tests/
+test/reworkcss-css/

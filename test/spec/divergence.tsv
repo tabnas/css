@@ -1,0 +1,38 @@
+input	expected	opts
+# divergence.tsv - inputs where the TypeScript and Go runtimes CLASSIFY OR
+# VALUE THE SAME SOURCE DIFFERENTLY. Found by a differential probe over 1686
+# distinct generated CSS-ish inputs (51 diverged); these are the minimal
+# reproducers for the two classes found.
+#
+# AGENTS.md rule 1: "TypeScript is canonical. When TS and Go disagree, TS
+# wins; change Go." The `expected` column below is therefore the OBSERVED TS
+# behaviour, and every row is expected to FAIL in go/parity_test.go until Go
+# is brought into line. That red is the point: these fixtures exist to make an
+# invisible divergence visible, not to bless either answer.
+#
+# NOTE FOR THE FIX PHASE: pinning TS here follows the repo's authority rule,
+# it is NOT an endorsement. For class B in particular there is a live
+# question whether TS should strip comments from at-rule preludes the way it
+# already strips them from selectors and declaration values (AGENTS.md
+# "Declaration values and selectors are raw strings (trimmed, comments
+# stripped)"), in which case the correct fix is to change TS and re-pin these
+# rows -- not to change Go. Decide it deliberately; do not delete the rows.
+#
+# CLASS A - an UNTERMINATED /* inside an at-rule prelude.
+#   TS accepts it as part of the raw prelude text; Go raises an unexpected-
+#   character error. 27 of the 51 divergences were of this shape.
+@import/*red	{"type":"stylesheet","rules":[{"type":"import","import":"/*red"}]}	
+@import x/*y	{"type":"stylesheet","rules":[{"type":"import","import":"x/*y"}]}	
+@media screen/*y	{"type":"stylesheet","rules":[{"type":"media","media":"screen/*y"}]}	
+@font-face~/*	{"type":"stylesheet","rules":[{"type":"font-face","font-face":"~/*"}]}	
+#
+# CLASS B - a TERMINATED comment inside an at-rule prelude / params.
+#   TS keeps the comment text in the prelude string; Go strips it. Affects
+#   every at-rule flavour: statement, rules-body, declarations-body and
+#   keyframes. 24 of the 51 divergences were of this shape.
+@import /*c*/x;	{"type":"stylesheet","rules":[{"type":"import","import":"/*c*/x"}]}	
+@media /*c*/screen{a{b:d}}	{"type":"stylesheet","rules":[{"type":"media","media":"/*c*/screen","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"b","value":"d"}]}]}]}	
+@page/*c*/x{a:b}	{"type":"stylesheet","rules":[{"type":"page","selectors":["/*c*/x"],"declarations":[{"type":"declaration","property":"a","value":"b"}]}]}	
+@keyframes /*c*/n{from{a:b}}	{"type":"stylesheet","rules":[{"type":"keyframes","name":"/*c*/n","keyframes":[{"type":"keyframe","values":["from"],"declarations":[{"type":"declaration","property":"a","value":"b"}]}]}]}	
+@supports /*c*/(a:b){c{d:e}}	{"type":"stylesheet","rules":[{"type":"supports","supports":"/*c*/(a:b)","rules":[{"type":"rule","selectors":["c"],"declarations":[{"type":"declaration","property":"d","value":"e"}]}]}]}	
+@unknown /*c*/p;	{"type":"stylesheet","rules":[{"type":"unknown","unknown":"/*c*/p"}]}	

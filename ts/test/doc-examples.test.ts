@@ -186,7 +186,15 @@ describe('doc-examples', () => {
   }
 
   it('found at least one tested example (sanity)', () => {
-    // Not a hard failure if a repo has no `// =>` examples yet.
-    assert.ok(testable >= 0, `tested ${testable} doc example block(s)`)
+    // HARNESS HONESTY: this assertion used to be `testable >= 0`, which is
+    // true for every possible value -- so if the markdown walk, the fence
+    // extraction or the `// =>` rewrite ever broke, the whole doc-example
+    // suite would run ZERO cases and still report green. This repo's README
+    // documents `// =>` examples, so demand that they actually ran.
+    assert.ok(
+      1 <= testable,
+      `doc-examples ran ${testable} blocks; expected at least 1. Either the ` +
+        'extraction broke or the documented `// =>` examples were removed.',
+    )
   })
 })
