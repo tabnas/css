@@ -1,0 +1,48 @@
+input	expected	opts
+# leniency.tsv - jsonic base leniency must NOT leak through the CSS plugin.
+#
+# The documented setup is 'new Tabnas().use(jsonic).use(Css)' (TS) /
+# 'jsonic.Make()' + 'UseDefaults(Css, ...)' (Go). jsonic is a RELAXED JSON
+# dialect, and across the tabnas grammar plugins its base leniency leaking
+# through a plugin has been the single largest source of over-acceptance
+# (@tabnas/json5 rejects '{a:1' with the plugin alone but ACCEPTS it on the
+# documented stack). None of the documents below is CSS, so a CSS parser must
+# reject every one of them, on either configuration.
+#
+# ts/test/leniency.test.ts additionally asserts the stronger EQUIVALENCE
+# property: the documented stack and 'new Tabnas().use(Css)' (no jsonic)
+# classify every probe identically.
+#
+# NOT a probe: 'a:{b:1}'. It looks like a jsonic object but it is also a
+# perfectly well-formed CSS qualified rule (selector 'a:', block '{b:1}'),
+# and this plugin parses it as one. A fixture demanding ERROR there would be
+# a FALSE oracle, not a real conformance gap.
+#
+# The brace-first documents below ('{a:1}', '{"a":1}', '{}') are a genuine
+# disagreement between the two authorities this repo measures against: CSS
+# Syntax L3 accepts them as a qualified rule with an EMPTY prelude, while
+# reworkcss/css -- the AST model README.md claims -- throws "selector
+# missing". This plugin follows reworkcss, so ERROR is the expectation here.
+# The Syntax-L3 side of that disagreement is measured, and currently RED, in
+# ts/test/cssparsing.test.ts (see stylesheet.json ' /**/ { color: #aaa  ').
+{a:1}	ERROR
+{a:1	ERROR	
+[1,2,3]	ERROR	
+[1,2,3	ERROR	
+a:1	ERROR	
+a:1,b:2	ERROR	
+true	ERROR	
+null	ERROR	
+42	ERROR	
+"str"	ERROR	
+'str'	ERROR	
+`str`	ERROR	
+a,b,c	ERROR	
+{"a":1}	ERROR	
+{}	ERROR	
+[]	ERROR	
+a{c:1} # hash comment	ERROR	
+a{c:1} // line comment	ERROR	
+a{c:1}}	ERROR	
+}	ERROR	
+a{c:1} extra	ERROR	

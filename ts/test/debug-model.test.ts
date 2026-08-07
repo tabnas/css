@@ -32,6 +32,19 @@ const skip = Debug
   ? false
   : '@tabnas/debug not available (set TABNAS_DEBUG_PATH)'
 
+// HARNESS HONESTY: the skip above is only legitimate when @tabnas/debug is
+// genuinely not part of this package. It IS a declared devDependency here, so
+// a silent skip would mean a broken local install quietly stopped running the
+// composition test. Make that case loud instead.
+const declaresDebug = (() => {
+  try {
+    const pkg = require('../package.json')
+    return !!(pkg.devDependencies && pkg.devDependencies['@tabnas/debug'])
+  } catch {
+    return false
+  }
+})()
+
 function build(): any {
   const tn = new Tabnas().use(jsonic).use(Css, {})
   tn.use(Debug, { print: false, trace: false })
@@ -39,6 +52,16 @@ function build(): any {
 }
 
 describe('compose: css + @tabnas/debug', () => {
+  test('@tabnas/debug resolves when this package declares it', () => {
+    if (!declaresDebug) return
+    assert.ok(
+      Debug,
+      '@tabnas/debug is a declared devDependency of this package but did not ' +
+        'resolve, so the composition tests below SKIPPED. Fix the install ' +
+        '(admin/scripts/link.sh) rather than accepting a silent skip.',
+    )
+  })
+
   test('parses normally with the debug plugin installed', { skip }, () => {
     const tn = build()
     assert.deepStrictEqual(

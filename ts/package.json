@@ -22,6 +22,7 @@
     "directory": "ts"
   },
   "scripts": {
+    "pretest": "bash ../scripts/fetch-suites.sh || echo 'WARNING: conformance corpus fetch failed; the conformance tests will FAIL LOUDLY (they never skip)'",
     "test": "node --enable-source-maps --test \"dist-test/*.test.js\"",
     "test-some": "node --enable-source-maps --test-name-pattern=\"$npm_config_pattern\" --test \"dist-test/*.test.js\"",
     "test-watch": "node --test --watch dist-test/css.test.js",
