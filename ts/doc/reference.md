@@ -27,6 +27,7 @@ npm install @tabnas/parser @tabnas/jsonic @tabnas/css
 |---|---|---|
 | `Css` | `Plugin` | The plugin function. Register with `engine.use(Css, options)`. |
 | `CssOptions` | type | The options object shape (see [Options](#options)). |
+| `VERSION` | `string` | This package's version, always equal to `package.json` "version" (enforced by `ts/test/version.test.ts`). |
 
 `Css.defaults` (a `CssOptions`) holds the merged default options:
 
