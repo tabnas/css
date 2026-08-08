@@ -71,10 +71,11 @@ reconstruct the engine per call.
 Parses a CSS source string and returns the AST: a `stylesheet` node
 (see [The AST](#the-ast)). A failed parse throws (see [Errors](#errors)).
 
-The empty-input quirk: a zero-length source (`''`) returns `undefined`,
-because a zero-length source runs no rules (an engine convention). Any
-non-empty source — even whitespace or a lone comment — yields a
-`stylesheet` node.
+A zero-length source (`''`) yields an empty `stylesheet`, matching
+reworkcss. The engine returns `lex.emptyResult` for `''` before the rule
+loop runs, and this plugin declares that result; without it the value
+would be `undefined`. Any non-empty source — even whitespace or a lone
+comment — also yields a `stylesheet` node.
 
 ```js
 import { Tabnas } from '@tabnas/parser'
@@ -83,7 +84,7 @@ import { Css } from '@tabnas/css'
 
 const c = new Tabnas().use(jsonic).use(Css)
 
-c.parse('')                     // => undefined
+c.parse('')                     // => {"type":"stylesheet","rules":[]}
 c.parse('   ')                  // => { type: 'stylesheet', rules: [] }
 c.parse('/* only a comment */') // => { type: 'stylesheet', rules: [ { type: 'comment', comment: ' only a comment ' } ] }
 ```
@@ -358,9 +359,10 @@ plugin.)
 
 ### Empty input
 
-A zero-length source returns `undefined` (no rules run). Any non-empty
-source — whitespace or a comment alone — yields a `stylesheet` node. An
-empty rule block yields an empty `declarations` array.
+A zero-length source yields an empty `stylesheet` (via `lex.emptyResult`).
+Any non-empty source — whitespace or a comment alone — yields a
+`stylesheet` node. An empty rule block yields an empty `declarations`
+array.
 
 ```js
 import { Tabnas } from '@tabnas/parser'
@@ -369,7 +371,7 @@ import { Css } from '@tabnas/css'
 
 const c = new Tabnas().use(jsonic).use(Css)
 
-c.parse('')      // => undefined
+c.parse('')      // => {"type":"stylesheet","rules":[]}
 c.parse('   ')   // => { type: 'stylesheet', rules: [] }
 c.parse('a {}').rules[0]  // => { type: 'rule', selectors: ['a'], declarations: [] }
 ```

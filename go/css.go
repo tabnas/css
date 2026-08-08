@@ -306,6 +306,16 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 			},
 		},
 		Lex: &jsonic.LexOptions{
+			// The engine short-circuits an exactly-empty source before the
+			// rule loop runs (parser.go Start: `if "" == src { return
+			// j.emptyResult }`), so the start rule never builds its node and
+			// the default result is nil. reworkcss returns an empty
+			// stylesheet for "", so declare that here rather than expect the
+			// grammar to produce it. Mirrors ts/src/css.ts.
+			EmptyResult: map[string]any{
+				"type":  "stylesheet",
+				"rules": []any{},
+			},
 			Match: map[string]*jsonic.MatchSpec{
 				"cssToken": {Order: 100000, Make: buildCssTokenMatcher(lowercaseProperties, tins)},
 			},
@@ -526,11 +536,15 @@ func makeAtRules(tok *jsonic.Token) map[string]any {
 	case kw == "host":
 		return map[string]any{"type": "host", "rules": []any{}}
 	case kw == "document" || strings.HasSuffix(kw, "-document"):
-		n := map[string]any{"type": "document", "document": prelude, "rules": []any{}}
-		if v := vendorPrefix(kw); v != "" {
-			n["vendor"] = v
+		// `vendor` is always present on a document node (the empty
+		// string when the at-keyword carries no prefix), as in the
+		// reworkcss model.
+		return map[string]any{
+			"type":     "document",
+			"document": prelude,
+			"vendor":   vendorPrefix(kw),
+			"rules":    []any{},
 		}
-		return n
 	default:
 		return map[string]any{"type": kw, kw: prelude, "rules": []any{}}
 	}
@@ -542,11 +556,12 @@ func makeAtDecls(tok *jsonic.Token) map[string]any {
 	case "font-face":
 		return map[string]any{"type": "font-face", "declarations": []any{}}
 	case "page":
-		sels := []any{}
-		if prelude != "" {
-			sels = []any{prelude}
+		// A @page prelude is a selector group: `@page toc, index:blank`.
+		return map[string]any{
+			"type":         "page",
+			"selectors":    splitSelectors(prelude),
+			"declarations": []any{},
 		}
-		return map[string]any{"type": "page", "selectors": sels, "declarations": []any{}}
 	default:
 		return map[string]any{"type": kw, "declarations": []any{}}
 	}
@@ -573,7 +588,41 @@ func makeAtStmt(tok *jsonic.Token) map[string]any {
 			}
 		}
 	}
+	// `@custom-media --name <media query>` splits its params into a name and
+	// a media query, as in the reworkcss model.
+	if kw == "custom-media" {
+		if m := customMediaRe.FindStringSubmatch(params); m != nil {
+			return map[string]any{
+				"type":  "custom-media",
+				"name":  m[1],
+				"media": strings.TrimSpace(m[2]),
+			}
+		}
+	}
 	return map[string]any{"type": kw, kw: params}
+}
+
+var customMediaRe = regexp.MustCompile(`(?s)^(--\S+)\s*(.*)$`)
+
+// splitSelectors splits a selector-group prelude on its top-level commas
+// (commas inside strings, `()` or `[]` are part of a single selector),
+// stripping comments and trimming each selector. An empty prelude yields an
+// empty list.
+func splitSelectors(prelude string) []any {
+	out := []any{}
+	i := 0
+	for i <= len(prelude) {
+		end := scanSelectorEnd(prelude, i)
+		one := strings.TrimSpace(stripComments(prelude[i:end]))
+		if one != "" {
+			out = append(out, one)
+		}
+		if end >= len(prelude) {
+			break
+		}
+		i = end + 1
+	}
+	return out
 }
 
 var vendorRe = regexp.MustCompile(`^(-[a-z]+-)`)
@@ -637,12 +686,14 @@ func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLex
 					return nil
 				}
 				e := strings.Index(src[sI+2:], "*/")
-				contentEnd := len(src)
-				end := len(src)
-				if e >= 0 {
-					contentEnd = sI + 2 + e
-					end = contentEnd + 2
+				// An unclosed comment is an error, not a comment running to
+				// EOF (the builtin comment matcher, which handles comments
+				// away from list positions, does the same).
+				if e < 0 {
+					return lex.Bad("unterminated_comment")
 				}
+				contentEnd := sI + 2 + e
+				end := contentEnd + 2
 				tkn := lex.Token("#CC", tins.cc, src[sI+2:contentEnd], src[sI:end])
 				advance(pnt, src, sI, end)
 				return tkn
@@ -686,14 +737,17 @@ func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLex
 				advance(pnt, src, sI, end)
 				return tkn
 			}
-			eI := sI
-			for eI < len(src) && isPropChar(src[eI]) {
-				eI++
-			}
+			eI := scanPropEnd(src, sI)
 			if eI == sI {
 				return nil
 			}
-			prop := src[sI:eI]
+			// `/` and `*` are property characters (the `*prop` / `//prop`
+			// IE hacks), so a trailing `/*...*/` hack comment lands inside
+			// the scanned name; strip comments out of it, as reworkcss does.
+			prop := stripComments(src[sI:eI])
+			if prop == "" {
+				return nil
+			}
 			if lowercaseProperties {
 				prop = strings.ToLower(prop)
 			}
@@ -714,7 +768,7 @@ func matchAtRule(lex *jsonic.Lex, src string, sI int, tins cssTins) *jsonic.Toke
 
 	kind, idx := scanToBraceOrEnd(src, sI)
 	if kind == selectorKind {
-		prelude := strings.TrimSpace(stripComments(src[kEnd:idx]))
+		prelude := strings.TrimSpace(src[kEnd:idx])
 		var tinName string
 		var tin jsonic.Tin
 		switch {
@@ -731,7 +785,7 @@ func matchAtRule(lex *jsonic.Lex, src string, sI int, tins cssTins) *jsonic.Toke
 		return tkn
 	}
 	pEnd := scanValueEnd(src, kEnd)
-	params := strings.TrimSpace(stripComments(src[kEnd:pEnd]))
+	params := strings.TrimSpace(src[kEnd:pEnd])
 	end := pEnd
 	if pEnd < len(src) && src[pEnd] == ';' {
 		end = pEnd + 1
@@ -753,11 +807,26 @@ func advance(pnt *jsonic.Point, src string, sI, end int) {
 	}
 	if rows > 0 {
 		pnt.RI += rows
-		pnt.CI = end - lastNL
+		pnt.CI = 1 + colWidth(src[lastNL+1:end])
 	} else {
-		pnt.CI += end - sI
+		pnt.CI += colWidth(src[sI:end])
 	}
 	pnt.SI = end
+}
+
+// colWidth is the column width of s: the number of UTF-16 code units, which
+// is what a JavaScript string index counts. The canonical TypeScript plugin
+// derives its columns from JS string lengths, so the Go port must measure the
+// same way or the two runtimes report different columns for non-ASCII source.
+func colWidth(s string) int {
+	n := 0
+	for _, r := range s {
+		n++
+		if r > 0xFFFF {
+			n++ // astral code point: a surrogate pair in UTF-16
+		}
+	}
+	return n
 }
 
 // startPos is a token's first-character position (1-based line/column).
@@ -777,9 +846,9 @@ func endPos(tok *jsonic.Token) map[string]any {
 		}
 	}
 	if rows > 0 {
-		return map[string]any{"line": tok.RI + rows, "column": len(s) - lastNL}
+		return map[string]any{"line": tok.RI + rows, "column": 1 + colWidth(s[lastNL+1:])}
 	}
-	return map[string]any{"line": tok.RI, "column": tok.CI + len(s)}
+	return map[string]any{"line": tok.RI, "column": tok.CI + colWidth(s)}
 }
 
 const (
@@ -797,6 +866,12 @@ func scanToBraceOrEnd(src string, i int) (int, int) {
 		}
 		if c == '/' && i+1 < len(src) && src[i+1] == '*' {
 			i = skipComment(src, i)
+			continue
+		}
+		// A CSS escape (`\(`, `\'`, `\3A `, ...) hides the next
+		// character from the structural scan.
+		if c == '\\' {
+			i += 2
 			continue
 		}
 		if c == '(' || c == '[' {
@@ -830,6 +905,12 @@ func scanSelectorEnd(src string, i int) int {
 			i = skipComment(src, i)
 			continue
 		}
+		// A CSS escape (`\(`, `\'`, `\3A `, ...) hides the next
+		// character from the structural scan.
+		if c == '\\' {
+			i += 2
+			continue
+		}
 		if c == '(' || c == '[' {
 			depth++
 		} else if c == ')' || c == ']' {
@@ -854,6 +935,12 @@ func scanValueEnd(src string, i int) int {
 		}
 		if c == '/' && i+1 < len(src) && src[i+1] == '*' {
 			i = skipComment(src, i)
+			continue
+		}
+		// A CSS escape (`\(`, `\'`, `\3A `, ...) hides the next
+		// character from the structural scan.
+		if c == '\\' {
+			i += 2
 			continue
 		}
 		if c == '(' || c == '[' {
@@ -920,11 +1007,45 @@ func stripComments(s string) string {
 	return b.String()
 }
 
+// isPropChar reports a CSS property name character. Beyond the identifier
+// characters this includes the legacy IE hack prefixes `*`, `#`, `/` (as in
+// `//prop`) and a literal backslash, matching the reworkcss property pattern
+// \*?[-#/*\\\w]+(\[[0-9a-z_-]+\])? -- real-world stylesheets rely on them.
 func isPropChar(c byte) bool {
 	return (c >= '0' && c <= '9') ||
 		(c >= 'A' && c <= 'Z') ||
 		(c >= 'a' && c <= 'z') ||
+		c == '-' || c == '_' ||
+		c == '#' || c == '*' || c == '/' || c == '\\'
+}
+
+// isPropSuffixChar reports a `[0-9a-z_-]` character, the only content allowed
+// in a property name's bracket suffix (e.g. `opacity[sqrt]`).
+func isPropSuffixChar(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
 		c == '-' || c == '_'
+}
+
+// scanPropEnd scans a property name: the run of property characters plus an
+// optional `[...]` suffix. Returns the index after the name (== i if none).
+func scanPropEnd(src string, i int) int {
+	eI := i
+	for eI < len(src) && isPropChar(src[eI]) {
+		eI++
+	}
+	if eI == i {
+		return i
+	}
+	if eI < len(src) && src[eI] == '[' {
+		bI := eI + 1
+		for bI < len(src) && isPropSuffixChar(src[bI]) {
+			bI++
+		}
+		if bI > eI+1 && bI < len(src) && src[bI] == ']' {
+			return bI + 1
+		}
+	}
+	return eI
 }
 
 func isAtChar(c byte) bool {

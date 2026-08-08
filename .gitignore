@@ -32,4 +32,12 @@ dist-test
 package-lock.json
 yarn.lock
 
+# Third-party conformance corpus, fetched on demand by
+# scripts/fetch-reworkcss-tests.sh (never committed).
+test/reworkcss-css
 
+# SimonSapin/css-parsing-tests, if cloned here for reference. It measures CSS
+# Syntax Level 3 error recovery, which this plugin deliberately does not claim
+# (see Conformance in AGENTS.md), so no suite reads it. Third-party: never
+# committed.
+test/css-parsing-tests

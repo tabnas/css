@@ -22,10 +22,12 @@
     "directory": "ts"
   },
   "scripts": {
+    "pretest": "bash ../scripts/fetch-reworkcss-tests.sh || echo 'reworkcss corpus unavailable; conformance suites will SKIP (claim unverified)'",
     "test": "node --enable-source-maps --test \"dist-test/*.test.js\"",
     "test-some": "node --enable-source-maps --test-name-pattern=\"$npm_config_pattern\" --test \"dist-test/*.test.js\"",
     "test-watch": "node --test --watch dist-test/css.test.js",
     "embed": "node embed-grammar.js",
+    "install-reworkcss-tests": "bash ../scripts/fetch-reworkcss-tests.sh",
     "watch": "tsc --build src test -w",
     "build": "node embed-grammar.js && tsc --build src test",
     "clean": "rm -rf node_modules dist dist-test yarn.lock package-lock.json",

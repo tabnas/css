@@ -315,6 +315,12 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
       },
     },
     lex: {
+      // The engine short-circuits an exactly-empty source before the rule
+      // loop runs (parser.ts: `if ('' === src) return cfg.lex.emptyResult`),
+      // so the start rule never builds its node and the default result is
+      // `undefined`. reworkcss returns an empty stylesheet for `''`, so
+      // declare that here rather than expect the grammar to produce it.
+      emptyResult: { type: 'stylesheet', rules: [] },
       match: {
         cssToken: {
           order: 1e5,
@@ -462,10 +468,14 @@ function makeAtRules(tok: any): Node {
   if ('supports' === kw) return { type: 'supports', supports: prelude, rules: [] }
   if ('host' === kw) return { type: 'host', rules: [] }
   if ('document' === kw || /-document$/.test(kw)) {
-    const node: Node = { type: 'document', document: prelude, rules: [] }
-    const v = vendorPrefix(kw)
-    if (v) node.vendor = v
-    return node
+    // `vendor` is always present on a document node (the empty string when
+    // the at-keyword carries no prefix), as in the reworkcss model.
+    return {
+      type: 'document',
+      document: prelude,
+      vendor: vendorPrefix(kw) || '',
+      rules: [],
+    }
   }
   // Generic block at-rule with a rules body (e.g. @container, @layer, @scope).
   return { type: kw, [kw]: prelude, rules: [] }
@@ -478,9 +488,26 @@ function makeAtDecls(tok: any): Node {
   const prelude: string = (tok.use && tok.use.prelude) || ''
   if ('font-face' === kw) return { type: 'font-face', declarations: [] }
   if ('page' === kw) {
-    return { type: 'page', selectors: prelude ? [prelude] : [], declarations: [] }
+    // A @page prelude is a selector group: `@page toc, index:blank`.
+    return { type: 'page', selectors: splitSelectors(prelude), declarations: [] }
   }
   return { type: kw, declarations: [] }
+}
+
+// Split a selector-group prelude on its top-level commas (commas inside
+// strings, `()` or `[]` are part of a single selector), stripping comments and
+// trimming each selector. An empty prelude yields an empty list.
+function splitSelectors(prelude: string): string[] {
+  const out: string[] = []
+  let i = 0
+  while (i <= prelude.length) {
+    const end = scanSelectorEnd(prelude, i)
+    const one = stripComments(prelude.substring(i, end)).trim()
+    if ('' !== one) out.push(one)
+    if (end >= prelude.length) break
+    i = end + 1
+  }
+  return out
 }
 
 // Build a @keyframes node (possibly vendor-prefixed).
@@ -499,8 +526,16 @@ function makeKeyframes(tok: any): Node {
 function makeAtStmt(tok: any): Node {
   const kw: string = tok.val
   const params: string = (tok.use && tok.use.params) || ''
+  // `@custom-media --name <media query>` splits its params into a name and a
+  // media query, as in the reworkcss model.
+  if ('custom-media' === kw) {
+    const m = CUSTOM_MEDIA_RE.exec(params)
+    if (m) return { type: 'custom-media', name: m[1], media: m[2].trim() }
+  }
   return { type: kw, [kw]: params }
 }
+
+const CUSTOM_MEDIA_RE = /^(--\S+)\s*([\s\S]*)$/
 
 // Extract a `-vendor-` prefix from an at-keyword (e.g. `-webkit-keyframes`).
 function vendorPrefix(kw: string): string | undefined {
@@ -553,11 +588,13 @@ function buildCssTokenMatcher(lowercaseProperties: boolean) {
       if ('/' === c && '*' === src[sI + 1]) {
         if (true !== COMMENT_NODE_RULES[name]) return undefined
         let e = src.indexOf('*/', sI + 2)
-        const contentEnd = e < 0 ? src.length : e
-        const end = e < 0 ? src.length : e + 2
-        const tkn = lex.token('#CC', src.substring(sI + 2, contentEnd),
-          src.substring(sI, end), pnt)
-        advance(pnt, src, sI, end)
+        // An unclosed comment is an error, not a comment running to EOF (the
+        // builtin comment matcher, which handles comments away from list
+        // positions, does the same).
+        if (e < 0) return lex.bad('unterminated_comment', sI, src.length)
+        const tkn = lex.token('#CC', src.substring(sI + 2, e),
+          src.substring(sI, e + 2), pnt)
+        advance(pnt, src, sI, e + 2)
         return tkn
       }
 
@@ -597,10 +634,13 @@ function buildCssTokenMatcher(lowercaseProperties: boolean) {
         return tkn
       }
       // A property name: the identifier up to `:`, whitespace, `;` or `}`.
-      let eI = sI
-      while (eI < src.length && isPropChar(src.charCodeAt(eI))) eI++
+      const eI = scanPropEnd(src, sI)
       if (eI === sI) return undefined
-      let prop = src.substring(sI, eI)
+      // `/` and `*` are property characters (the `*prop` / `//prop` IE hacks),
+      // so a trailing `/*...*/` hack comment lands inside the scanned name;
+      // strip comments out of it, as reworkcss does.
+      let prop = stripComments(src.substring(sI, eI))
+      if ('' === prop) return undefined
       if (lowercaseProperties) prop = prop.toLowerCase()
       const tkn = lex.token('#TX', prop, src.substring(sI, eI), pnt)
       advance(pnt, src, sI, eI)
@@ -696,6 +736,12 @@ function scanToBraceOrEnd(
       i = skipComment(src, i)
       continue
     }
+    // A CSS escape (`\(`, `\'`, `\3A `, ...) hides the next character
+    // from the structural scan.
+    if ('\\' === c) {
+      i += 2
+      continue
+    }
     if ('(' === c || '[' === c) {
       depth++
     } else if (')' === c || ']' === c) {
@@ -723,6 +769,12 @@ function scanSelectorEnd(src: string, i: number): number {
       i = skipComment(src, i)
       continue
     }
+    // A CSS escape (`\(`, `\'`, `\3A `, ...) hides the next character
+    // from the structural scan.
+    if ('\\' === c) {
+      i += 2
+      continue
+    }
     if ('(' === c || '[' === c) {
       depth++
     } else if (')' === c || ']' === c) {
@@ -747,6 +799,12 @@ function scanValueEnd(src: string, i: number): number {
     }
     if ('/' === c && '*' === src[i + 1]) {
       i = skipComment(src, i)
+      continue
+    }
+    // A CSS escape (`\(`, `\'`, `\3A `, ...) hides the next character
+    // from the structural scan.
+    if ('\\' === c) {
+      i += 2
       continue
     }
     if ('(' === c || '[' === c) {
@@ -807,15 +865,44 @@ function skipComment(src: string, i: number): number {
   return i + 2
 }
 
-// CSS property name characters.
+// CSS property name characters. Beyond the identifier characters this
+// includes the legacy IE hack prefixes `*`, `#`, `/` (as in `//prop`) and a
+// literal `\`, matching the reworkcss property pattern
+// `\*?[-#\/\*\\\w]+(\[[0-9a-z_-]+\])?` — real-world stylesheets rely on them.
 function isPropChar(c: number): boolean {
   return (
     (48 <= c && c <= 57) || // 0-9
     (65 <= c && c <= 90) || // A-Z
     (97 <= c && c <= 122) || // a-z
     45 === c || // -
-    95 === c // _
+    95 === c || // _
+    35 === c || // #
+    42 === c || // *
+    47 === c || // /
+    92 === c // \
   )
+}
+
+// A `[0-9a-z_-]` character, the only content allowed in a property name's
+// bracket suffix (e.g. `opacity[sqrt]`).
+function isPropSuffixChar(c: number): boolean {
+  return (
+    (48 <= c && c <= 57) || (97 <= c && c <= 122) || 45 === c || 95 === c
+  )
+}
+
+// Scan a property name: the run of property characters, plus an optional
+// `[...]` suffix. Returns the index after the name (=== `i` if there is none).
+function scanPropEnd(src: string, i: number): number {
+  let eI = i
+  while (eI < src.length && isPropChar(src.charCodeAt(eI))) eI++
+  if (eI === i) return i
+  if ('[' === src[eI]) {
+    let bI = eI + 1
+    while (bI < src.length && isPropSuffixChar(src.charCodeAt(bI))) bI++
+    if (bI > eI + 1 && ']' === src[bI]) return bI + 1
+  }
+  return eI
 }
 
 // At-keyword characters (letters, digits, `-`).
