@@ -70,10 +70,11 @@ A stylesheet is `{ type: 'stylesheet', rules: [ ...nodes ] }`. Each node has a
 | `rule` | `selectors: string[]`, `declarations: Node[]` |
 | `declaration` | `property: string`, `value: string` (raw text) |
 | `comment` | `comment: string` |
-| `media` / `supports` / `document` / `host` | prelude field (e.g. `media`), `rules: Node[]` |
-| `font-face` / `page` | `declarations: Node[]` (`page` also `selectors`) |
+| `media` / `supports` / `document` / `host` | prelude field (e.g. `media`), `rules: Node[]` (`document` also `vendor`, `''` when unprefixed; `host` has no prelude) |
+| `font-face` / `page` | `declarations: Node[]` (`page` also `selectors`, a comma-split group) |
 | `keyframes` | `name`, optional `vendor`, `keyframes: Node[]` (each a `keyframe` with `values` + `declarations`) |
 | `import` / `charset` / `namespace` | the at-keyword field (e.g. `import`) |
+| `custom-media` | `name`, `media` |
 
 Order and duplicates are preserved (arrays), comments are nodes, and selector
 groups become a list:
@@ -82,6 +83,27 @@ groups become a list:
 c.parse('@media screen { a { color: blue } }')
 // => { type: 'stylesheet', rules: [ { type: 'media', media: 'screen', rules: [ { type: 'rule', selectors: ['a'], declarations: [ { type: 'declaration', property: 'color', value: 'blue' } ] } ] } ] }
 ```
+
+### Conformance
+
+The AST is measured against the
+[`reworkcss/css`](https://github.com/reworkcss/css) test corpus (pinned at
+`ae6a6f9`): **45 of its 46 cases are compared tree-for-tree** against
+upstream's own `ast.json`, with and without source positions, in both
+TypeScript and Go, and all six of its non-`silent` accept/reject assertions
+hold. There are no known divergences. The 46th case, a zero-length source, is
+asserted explicitly rather than skipped, because it used to be one: `''` now
+yields `{ type: 'stylesheet', rules: [] }`, as upstream does, and so does any
+non-empty source with no rules.
+
+Deliberately out of scope: CSS Syntax Level 3 *error recovery* (like
+reworkcss, this parser rejects an unclosed comment, a missing selector or an
+unclosed block), reworkcss's `{ silent: true }` error-collecting mode, and its
+`parent` / `source` back-references.
+
+Fetch the corpus and run the suites with `npm run install-reworkcss-tests`
+(from `ts/`) or `scripts/fetch-reworkcss-tests.sh`; it is third-party and is
+not committed here.
 
 **CSS Nesting** is supported — a style rule or at-rule nested inside a
 declaration block is appended to the parent's `declarations`, in source order:
