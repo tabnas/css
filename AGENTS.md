@@ -282,10 +282,18 @@ equivalent; the Go suite is self-contained.
 `deps: "parser debug json abnf railroad jsonic"` — it clones that closure as
 siblings, builds each, then runs `npm test` here (the composition test runs
 because `@tabnas/debug` is a devDependency) and `go build` / `go test` for the
-Go module. The `pretest` npm script fetches the reworkcss corpus, so the
-conformance suites really run in CI rather than skipping; if the fetch fails
-it prints a warning and the suites skip (claim unverified) rather than
-breaking the build.
+Go module. The `pretest` npm script fetches the reworkcss corpus, so the **TS**
+conformance suites really run in CI (verified on all three OSes) rather than
+skipping; if the fetch fails it prints a warning and they skip (claim
+unverified) rather than breaking the build.
+
+The **go** job runs on a separate runner with no fetch step, so
+`TestReworkcssCases` / `TestReworkcssAcceptReject` SKIP there — the Go
+conformance number is verified locally (`make test` after a fetch), not by CI.
+What CI does verify for Go is `test/spec/reworkcss.tsv`, the offline pins of
+every behaviour the corpus exercises, which the shared-fixture runner executes
+unconditionally. Do not add a network fetch to `go test` to close this;
+fetching stays opt-in.
 
 `.github/workflows/release.yml` publishes the npm package on a `ts/v*` tag via
 OIDC trusted publishing. The workflow files cannot be edited from a session
