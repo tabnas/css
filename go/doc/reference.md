@@ -21,7 +21,7 @@ import tabnascss "github.com/tabnas/css/go"
 | Module | `github.com/tabnas/css/go` |
 | Package | `tabnascss` |
 | Engine | `github.com/tabnas/jsonic/go` (pulled in transitively) |
-| `Version` | exported `const` string of the module version (`"0.1.0"`) |
+| `VERSION` | exported `const` string of the module version, always equal to `ts/package.json` "version" (enforced by `go/version_test.go`) |
 
 ## Public API
 
