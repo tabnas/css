@@ -22,7 +22,7 @@
     "directory": "ts"
   },
   "scripts": {
-    "pretest": "bash ../scripts/fetch-reworkcss-tests.sh || echo 'reworkcss corpus unavailable; conformance suites will SKIP (claim unverified)'",
+    "pretest": "bash ../scripts/fetch-reworkcss-tests.sh || echo 'WARNING: reworkcss corpus fetch FAILED; the conformance suites will FAIL LOUDLY (they never skip)'",
     "test": "node --enable-source-maps --test \"dist-test/*.test.js\"",
     "test-some": "node --enable-source-maps --test-name-pattern=\"$npm_config_pattern\" --test \"dist-test/*.test.js\"",
     "test-watch": "node --test --watch dist-test/css.test.js",

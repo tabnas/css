@@ -15,8 +15,10 @@ package tabnascss
 //
 //	scripts/fetch-reworkcss-tests.sh
 //
-// When it is absent the suite skips with that instruction — that state means
-// the conformance claim is UNVERIFIED, not that it passed.
+// `TestMain` in conformance_test.go runs that script before any test, so the
+// corpus is normally present. If it is still absent the suite FAILS — it never
+// skips, because a conformance suite that quietly does not run reports green
+// while measuring nothing.
 //
 // ts/test/reworkcss.test.ts runs the SAME corpus with the SAME derivation, so
 // the two runtimes cannot drift without one of them going red.
@@ -48,9 +50,15 @@ const (
 
 func reworkCorpusDir() string { return filepath.Join("..", "test", "reworkcss-css") }
 
-const reworkAbsent = "reworkcss/css corpus not installed — run " +
-	"scripts/fetch-reworkcss-tests.sh (the CSS conformance claim is " +
-	"UNVERIFIED without it)"
+// reworkAbsent is a FAILURE message, not a skip message. A conformance suite
+// that quietly does not run is worse than no suite at all, because the green
+// tick is a lie: it reports success while measuring nothing. TestMain
+// (conformance_test.go) fetches the corpus before any test runs, so reaching
+// this message means the fetch itself failed.
+const reworkAbsent = "MISSING CONFORMANCE CORPUS: reworkcss/css is not " +
+	"installed, so the CSS conformance claim is UNVERIFIED. Fetch it (pinned) " +
+	"with scripts/fetch-reworkcss-tests.sh. This test does NOT skip when the " +
+	"corpus is absent."
 
 func reworkCorpusPresent() bool {
 	_, err := os.Stat(filepath.Join(reworkCorpusDir(), "test", "parse.js"))
@@ -169,7 +177,7 @@ var reworkDivergent = map[string]func(t *testing.T){
 // TestReworkcssCases checks the parse VALUE for every case in the corpus.
 func TestReworkcssCases(t *testing.T) {
 	if !reworkCorpusPresent() {
-		t.Skip(reworkAbsent)
+		t.Fatal(reworkAbsent)
 	}
 	casesDir := filepath.Join(reworkCorpusDir(), "test", "cases")
 	entries, err := os.ReadDir(casesDir)
@@ -292,7 +300,7 @@ func reworkExtractErrorCases(t *testing.T) []reworkErrorCase {
 // TestReworkcssAcceptReject checks the inputs upstream asserts must (not) fail.
 func TestReworkcssAcceptReject(t *testing.T) {
 	if !reworkCorpusPresent() {
-		t.Skip(reworkAbsent)
+		t.Fatal(reworkAbsent)
 	}
 	cases := reworkExtractErrorCases(t)
 
