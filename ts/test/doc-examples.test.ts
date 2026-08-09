@@ -115,7 +115,11 @@ function importsToRequire(code) {
 }
 
 // Rewrite `<expr>  // => <expected>` lines into __eq(expr, expected) calls.
-const ARROW = /\/\/\s*=>(.*)$/
+// The `m` flag matters for the whole-block `ARROW.test(joined)` opt-in check
+// below: without it `$` anchors to the end of the joined string, so a block
+// whose `// =>` line was not the LAST line of the fence was silently treated
+// as having no assertions and dropped from the suite entirely.
+const ARROW = /\/\/\s*=>(.*)$/m
 function rewriteAssertions(code) {
   let count = 0
   const out = code.split('\n').map((line) => {
@@ -186,7 +190,15 @@ describe('doc-examples', () => {
   }
 
   it('found at least one tested example (sanity)', () => {
-    // Not a hard failure if a repo has no `// =>` examples yet.
-    assert.ok(testable >= 0, `tested ${testable} doc example block(s)`)
+    // This assertion used to read `testable >= 0`, which is true for every
+    // possible value — so if the markdown walk, the fence extraction or the
+    // `// =>` rewrite ever broke, this suite would run ZERO examples and
+    // still report green. The docs in this repo DO carry `// =>` examples,
+    // so require that at least one of them actually ran.
+    assert.ok(
+      1 <= testable,
+      `doc-examples ran ${testable} block(s); expected at least 1. Either the` +
+        ' extraction broke or the documented `// =>` examples were removed.',
+    )
   })
 })

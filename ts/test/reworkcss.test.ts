@@ -12,8 +12,10 @@
 //
 //     npm run install-reworkcss-tests     # or scripts/fetch-reworkcss-tests.sh
 //
-// When it is absent the suite skips with that instruction — that state means
-// the conformance claim is UNVERIFIED, not that it passed.
+// The `pretest` npm script runs that fetch before every `npm test`, so the
+// corpus is normally present. If it is still absent the suite FAILS — it never
+// skips, because a conformance suite that quietly does not run reports green
+// while measuring nothing.
 //
 // `go/reworkcss_test.go` runs the SAME corpus with the SAME derivation, so the
 // two runtimes cannot drift without one of them going red.
@@ -46,10 +48,21 @@ const OPTIONED_COUNT = 1 // `parse(src, {silent:true})` — no tabnas equivalent
 const corpusDir = join(__dirname, '..', '..', 'test', 'reworkcss-css')
 const casesDir = join(corpusDir, 'test', 'cases')
 
+// ABSENT is a FAILURE message, not a skip message. `pretest` fetches the
+// corpus before every run, so reaching this means the fetch itself failed.
 const ABSENT =
-  'reworkcss/css corpus not installed — run `npm run install-reworkcss-tests`' +
-  ' (the CSS conformance claim is UNVERIFIED without it)'
+  'MISSING CONFORMANCE CORPUS: reworkcss/css is not installed, so the CSS' +
+  ' conformance claim is UNVERIFIED. Fetch it (pinned) with `npm run' +
+  ' install-reworkcss-tests`. This test does NOT skip when the corpus is' +
+  ' absent.'
 const present = existsSync(join(corpusDir, 'test', 'parse.js'))
+
+// Registered first in each conformance suite below. It is the guard that
+// makes an unfetched corpus loud: without it the suites would simply contain
+// no cases and the run would be green while measuring nothing.
+function corpusPresent(): void {
+  assert.ok(present, ABSENT)
+}
 
 function parseCss(src: string, opts: any = {}): any {
   return new Tabnas().use(jsonic).use(Css, opts).parse(src)
@@ -109,10 +122,13 @@ const DIVERGENT: Record<string, (t: any) => void> = {
 // ---------------------------------------------------------------------------
 // Half 1: valid documents must parse AND produce the correct VALUE.
 // ---------------------------------------------------------------------------
-describe(`reworkcss/css cases (${SHA.slice(0, 7)})`, { skip: present ? false : ABSENT }, () => {
+describe(`reworkcss/css cases (${SHA.slice(0, 7)})`, () => {
   const names = present ? readdirSync(casesDir).sort() : []
 
+  test('corpus present', corpusPresent)
+
   test('corpus census', () => {
+    if (!present) return corpusPresent()
     assert.equal(
       names.length,
       CASE_COUNT,
@@ -217,11 +233,13 @@ function label(s: string): string {
 
 describe(
   `reworkcss/css accept-reject oracle (${SHA.slice(0, 7)})`,
-  { skip: present ? false : ABSENT },
   () => {
     const cases = present ? extractErrorCases() : []
 
+    test('corpus present', corpusPresent)
+
     test('extraction census', () => {
+      if (!present) return corpusPresent()
       const t = cases.filter((c) => 'throws' === c.kind && !c.optioned).length
       const n = cases.filter((c) => 'doesNotThrow' === c.kind && !c.optioned).length
       const o = cases.filter((c) => c.optioned).length
