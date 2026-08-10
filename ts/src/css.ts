@@ -924,7 +924,7 @@ Css.defaults = {
 // VERSION is this package's version. It MUST equal package.json "version":
 // the release orchestrator rewrites both, and the version test fails the
 // build if they drift. Mirrors `const VERSION` in go/css.go.
-const VERSION = '0.5.0'
+const VERSION = '0.5.1'
 
 export { Css, VERSION }
 export type { CssOptions }
