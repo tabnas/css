@@ -1,0 +1,20 @@
+{
+  "$schema": "https://tabnas.dev/schema/plugin.schema.json",
+  "name": "@tabnas/css",
+  "go": "github.com/tabnas/css/go",
+  "description": "CSS parsing for the tabnas engine.",
+  "base": "@tabnas/jsonic",
+  "engine": "@tabnas/parser",
+  "grammar": "css-grammar.jsonic",
+  "extensions": [
+    ".css"
+  ],
+  "mediaTypes": [
+    "text/css"
+  ],
+  "specDir": "test/spec",
+  "errorCodes": [],
+  "docs": "https://tabnas.dev/docs/packages",
+  "repository": "https://github.com/tabnas/css",
+  "versionSource": "ts/package.json"
+}
