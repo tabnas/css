@@ -413,21 +413,27 @@ equivalent; the Go suite is self-contained.
 
 `.github/workflows/ci.yml` calls the org-standard reusable workflow
 `tabnas/.github/.github/workflows/polyglot-ci.yml` with
-`deps: "parser debug json abnf railroad jsonic"` — it clones that closure as
+`deps: "parser support debug json jsonic"` — it clones that closure as
 siblings, builds each, then runs `npm test` here (the composition test runs
 because `@tabnas/debug` is a devDependency) and `go build` / `go test` for the
-Go module. The `pretest` npm script fetches the reworkcss corpus, so the **TS**
-conformance suites really run in CI (verified on all three OSes) rather than
-skipping; if the fetch fails it prints a warning and they skip (claim
-unverified) rather than breaking the build.
+Go module.
 
-The **go** job runs on a separate runner with no fetch step, so
-`TestReworkcssCases` / `TestReworkcssAcceptReject` SKIP there — the Go
-conformance number is verified locally (`make test` after a fetch), not by CI.
-What CI does verify for Go is `test/spec/reworkcss.tsv`, the offline pins of
-every behaviour the corpus exercises, which the shared-fixture runner executes
-unconditionally. Do not add a network fetch to `go test` to close this;
-fetching stays opt-in.
+**Both** runtimes fetch the reworkcss corpus for themselves, so the
+conformance suites really run in CI rather than skipping: the `pretest` npm
+script on the TS side, and `TestMain` in
+[`go/conformance_test.go`](go/conformance_test.go) on the Go side. If a fetch
+fails, the suites **fail loudly** — they do not skip. `pretest` swallows the
+script's exit status so the failure is reported by the suites (which name the
+missing corpus and how to get it) rather than as an opaque npm error, but the
+build still goes red either way.
+
+Do **not** restore a skip in either runtime, and do not remove the fetch from
+`go test`. Until `TestMain` was added the Go conformance tests skipped on
+every CI run, so half the conformance claim was reported green while
+measuring nothing. `test/spec/reworkcss.tsv` — the offline pins of the
+behaviours the corpus exercises — is run unconditionally by the shared-fixture
+runner as well, and is a complement to the corpus rather than a substitute
+for it.
 
 `.github/workflows/release.yml` publishes the npm package on a `ts/v*` tag via
 OIDC trusted publishing. The workflow files cannot be edited from a session
