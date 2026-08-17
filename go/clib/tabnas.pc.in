@@ -1,0 +1,11 @@
+# pkg-config for libtabnascss (tabnas-clib-template: v1)
+# Install alongside the built library; substitute @PREFIX@ at install.
+prefix=@PREFIX@
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libtabnascss
+Description: css parser (libtabnascss) — uniform tabnas C ABI (ADR-12)
+Version: @VERSION@
+Libs: -L${libdir} -ltabnascss
+Cflags: -I${includedir}
