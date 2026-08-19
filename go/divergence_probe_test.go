@@ -14,6 +14,7 @@ package tabnascss
 import (
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -29,6 +30,20 @@ func probeParse(src string) (any, error) {
 	}
 	return j.Parse(src)
 }
+
+// probeCode pulls the [pkg/code] tag out of an engine error, so the two
+// runtimes are compared on WHY they rejected and not merely that they did.
+// An error with no tag reports "?", which still differs from a tagged one
+// and so still shows up rather than passing quietly.
+func probeCode(err error) string {
+	m := probeCodeRe.FindStringSubmatch(err.Error())
+	if nil == m {
+		return "?"
+	}
+	return m[1]
+}
+
+var probeCodeRe = regexp.MustCompile(`\[[a-z0-9-]+/([a-z0-9_]+)\]`)
 
 // probeNorm normalises a value through JSON so the Go and TS dumps are
 // comparable shapes (the script sorts keys on both sides).
@@ -63,7 +78,14 @@ func TestDivergenceProbeDump(t *testing.T) {
 		q, _ := json.Marshal(src)
 		v, perr := probeParse(src)
 		if nil != perr {
-			b.WriteString(string(q) + "\tERR\n")
+			// The CODE, not a bare ERR. Recording only "ERR" scored
+			// every both-reject as agreement, so two runtimes rejecting
+			// the same input for different reasons looked identical to
+			// the diff. `a"b` was exactly that: unexpected here after
+			// the string-lex fix, unterminated_string before it, and
+			// unexpected in TypeScript throughout — a live divergence
+			// this probe would have reported as a match.
+			b.WriteString(string(q) + "\tERR " + probeCode(perr) + "\n")
 			continue
 		}
 		n, nerr := probeNorm(v)
