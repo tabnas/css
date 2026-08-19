@@ -893,7 +893,8 @@ func scanToBraceOrEnd(src string, i int) (int, int) {
 		}
 		i++
 	}
-	return declKind, i
+	// A trailing backslash escape steps i past the end; see clampLen.
+	return declKind, clampLen(i, src)
 }
 
 func scanSelectorEnd(src string, i int) int {
@@ -925,7 +926,8 @@ func scanSelectorEnd(src string, i int) int {
 		}
 		i++
 	}
-	return i
+	// A trailing backslash escape steps i past the end; see clampLen.
+	return clampLen(i, src)
 }
 
 func scanValueEnd(src string, i int) int {
@@ -957,7 +959,8 @@ func scanValueEnd(src string, i int) int {
 		}
 		i++
 	}
-	return i
+	// A trailing backslash escape steps i past the end; see clampLen.
+	return clampLen(i, src)
 }
 
 func skipString(src string, i int) int {
@@ -969,9 +972,36 @@ func skipString(src string, i int) int {
 			continue
 		}
 		if src[i] == q {
-			return i + 1
+			return clampLen(i+1, src)
 		}
 		i++
+	}
+	// A trailing backslash steps i past the end; see clampLen.
+	return clampLen(i, src)
+}
+
+// clampLen bounds a scan index to len(src).
+//
+// THIS IS THE WHOLE OF AUDIT ITEM C1, and it is a porting hazard rather than a
+// logic error. The TS scanners overshoot exactly as these do — `skipComment`
+// there is the same three lines and also returns `i + 2` past the end for an
+// unterminated `/*` — but JavaScript CLAMPS an out-of-range slice bound and Go
+// PANICS on one. So `@font-face/*a` is `{"font-face":"/*a"}` in TypeScript and
+// was `[jsonic/internal]: slice bounds out of range [:14] with length 13`
+// here, for 27 inputs.
+//
+// Clamping reproduces the JS result rather than inventing a new one: JS
+// `src.slice(kEnd, 14)` on a 13-char string yields the same substring as Go
+// `src[kEnd:13]`, and a guard like `pEnd < len(src) && src[pEnd] == ';'` is
+// false in Go for the clamped value exactly as `src[14]` is undefined in JS.
+//
+// Applied at every scanner return rather than at the crash site: the overshoot
+// comes from `i += 2` steps (an unterminated comment, an unterminated string,
+// a trailing backslash escape) and any caller that slices with the result is
+// one input away from the same panic.
+func clampLen(i int, src string) int {
+	if i > len(src) {
+		return len(src)
 	}
 	return i
 }
@@ -981,7 +1011,7 @@ func skipComment(src string, i int) int {
 	for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
 		i++
 	}
-	return i + 2
+	return clampLen(i+2, src)
 }
 
 // stripComments removes `/* ... */` comments from a selector / value run,

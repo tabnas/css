@@ -3,3 +3,8 @@ input	expected	opts
 /* head */\na {\n  /* c1 */\n  color: red; /* trailing */\n}	{"type":"stylesheet","rules":[{"type":"comment","comment":" head "},{"type":"rule","selectors":["a"],"declarations":[{"type":"comment","comment":" c1 "},{"type":"declaration","property":"color","value":"red"},{"type":"comment","comment":" trailing "}]}]}
 a /* x */ { color /* y */ : red }	{"type":"stylesheet","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"color","value":"red"}]}]}
 @media x { /* c */ a { b: 1 } }	{"type":"stylesheet","rules":[{"type":"media","media":"x","rules":[{"type":"comment","comment":" c "},{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"b","value":"1"}]}]}]}
+@font-face/*a	{"type":"stylesheet","rules":[{"type":"font-face","font-face":"/*a"}]}
+@import/*red	{"type":"stylesheet","rules":[{"type":"import","import":"/*red"}]}
+a{b:c/*x	ERROR:unexpected
+@media/*x	{"type":"stylesheet","rules":[{"type":"media","media":"/*x"}]}
+@keyframes--v 0%\t)/*,	{"type":"stylesheet","rules":[{"type":"keyframes--v","keyframes--v":"0%\t)/*,"}]}
