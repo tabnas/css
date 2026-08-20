@@ -22,9 +22,11 @@
     "directory": "ts"
   },
   "scripts": {
-    "pretest": "bash ../scripts/fetch-reworkcss-tests.sh || echo 'WARNING: reworkcss corpus fetch FAILED; the conformance suites will FAIL LOUDLY (they never skip)'",
+    "pretest": "npm run build && bash ../scripts/fetch-reworkcss-tests.sh || echo 'WARNING: reworkcss corpus fetch FAILED; the conformance suites will FAIL LOUDLY (they never skip)'",
     "test": "node --enable-source-maps --test \"dist-test/*.test.js\"",
+    "pretest-some": "npm run build",
     "test-some": "node --enable-source-maps --test-name-pattern=\"$npm_config_pattern\" --test \"dist-test/*.test.js\"",
+    "pretest-watch": "npm run build",
     "test-watch": "node --test --watch dist-test/css.test.js",
     "embed": "node embed-grammar.js",
     "install-reworkcss-tests": "bash ../scripts/fetch-reworkcss-tests.sh",
