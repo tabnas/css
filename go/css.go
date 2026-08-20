@@ -616,6 +616,12 @@ func splitSelectors(prelude string) []any {
 	i := 0
 	for i <= len(prelude) {
 		end := scanSelectorEnd(prelude, i)
+		if UNTERMINATED == end {
+			// Unreachable in practice: the prelude was scanned (and an
+			// unclosed comment rejected) before it got here. Treated as
+			// "the rest" so a sentinel can never index or spin.
+			end = len(prelude)
+		}
 		one := strings.TrimSpace(stripComments(prelude[i:end]))
 		if one != "" {
 			out = append(out, one)
@@ -708,6 +714,9 @@ func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLex
 					return nil
 				}
 				endI := scanValueEnd(src, sI)
+				if UNTERMINATED == endI {
+					return lex.Bad("unterminated_comment")
+				}
 				val := strings.TrimSpace(stripComments(src[sI:endI]))
 				tkn := lex.Token("#VL", jsonic.TinVL, val, src[sI:endI])
 				advance(pnt, src, sI, endI)
@@ -732,9 +741,15 @@ func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLex
 			}
 
 			// A selector or a property name.
-			kind, _ := scanToBraceOrEnd(src, sI)
+			kind, brace := scanToBraceOrEnd(src, sI)
+			if UNTERMINATED == brace {
+				return lex.Bad("unterminated_comment")
+			}
 			if kind == selectorKind {
 				end := scanSelectorEnd(src, sI)
+				if UNTERMINATED == end {
+					return lex.Bad("unterminated_comment")
+				}
 				sel := strings.TrimSpace(stripComments(src[sI:end]))
 				tkn := lex.Token("#TX", jsonic.TinTX, sel, src[sI:end])
 				advance(pnt, src, sI, end)
@@ -770,6 +785,9 @@ func matchAtRule(lex *jsonic.Lex, src string, sI int, tins cssTins) *jsonic.Toke
 	kw := src[sI+1 : kEnd]
 
 	kind, idx := scanToBraceOrEnd(src, sI)
+	if UNTERMINATED == idx {
+		return lex.Bad("unterminated_comment")
+	}
 	if kind == selectorKind {
 		prelude := strings.TrimSpace(src[kEnd:idx])
 		var tinName string
@@ -788,6 +806,9 @@ func matchAtRule(lex *jsonic.Lex, src string, sI int, tins cssTins) *jsonic.Toke
 		return tkn
 	}
 	pEnd := scanValueEnd(src, kEnd)
+	if UNTERMINATED == pEnd {
+		return lex.Bad("unterminated_comment")
+	}
 	params := strings.TrimSpace(src[kEnd:pEnd])
 	end := pEnd
 	if pEnd < len(src) && src[pEnd] == ';' {
@@ -868,7 +889,11 @@ func scanToBraceOrEnd(src string, i int) (int, int) {
 			continue
 		}
 		if c == '/' && i+1 < len(src) && src[i+1] == '*' {
-			i = skipComment(src, i)
+			n := skipComment(src, i)
+			if UNTERMINATED == n {
+				return declKind, UNTERMINATED
+			}
+			i = n
 			continue
 		}
 		// A CSS escape (`\(`, `\'`, `\3A `, ...) hides the next
@@ -893,7 +918,8 @@ func scanToBraceOrEnd(src string, i int) (int, int) {
 		}
 		i++
 	}
-	return declKind, i
+	// A trailing backslash escape steps i past the end; see clampLen.
+	return declKind, clampLen(i, src)
 }
 
 func scanSelectorEnd(src string, i int) int {
@@ -905,7 +931,11 @@ func scanSelectorEnd(src string, i int) int {
 			continue
 		}
 		if c == '/' && i+1 < len(src) && src[i+1] == '*' {
-			i = skipComment(src, i)
+			n := skipComment(src, i)
+			if UNTERMINATED == n {
+				return UNTERMINATED
+			}
+			i = n
 			continue
 		}
 		// A CSS escape (`\(`, `\'`, `\3A `, ...) hides the next
@@ -925,7 +955,8 @@ func scanSelectorEnd(src string, i int) int {
 		}
 		i++
 	}
-	return i
+	// A trailing backslash escape steps i past the end; see clampLen.
+	return clampLen(i, src)
 }
 
 func scanValueEnd(src string, i int) int {
@@ -937,7 +968,11 @@ func scanValueEnd(src string, i int) int {
 			continue
 		}
 		if c == '/' && i+1 < len(src) && src[i+1] == '*' {
-			i = skipComment(src, i)
+			n := skipComment(src, i)
+			if UNTERMINATED == n {
+				return UNTERMINATED
+			}
+			i = n
 			continue
 		}
 		// A CSS escape (`\(`, `\'`, `\3A `, ...) hides the next
@@ -957,7 +992,8 @@ func scanValueEnd(src string, i int) int {
 		}
 		i++
 	}
-	return i
+	// A trailing backslash escape steps i past the end; see clampLen.
+	return clampLen(i, src)
 }
 
 func skipString(src string, i int) int {
@@ -969,19 +1005,63 @@ func skipString(src string, i int) int {
 			continue
 		}
 		if src[i] == q {
-			return i + 1
+			return clampLen(i+1, src)
 		}
 		i++
+	}
+	// A trailing backslash steps i past the end; see clampLen.
+	return clampLen(i, src)
+}
+
+// clampLen bounds a scan index to len(src).
+//
+// THIS IS THE WHOLE OF AUDIT ITEM C1, and it is a porting hazard rather than a
+// logic error. The TS scanners overshoot exactly as these do — `skipComment`
+// there is the same three lines and also returns `i + 2` past the end for an
+// unterminated `/*` — but JavaScript CLAMPS an out-of-range slice bound and Go
+// PANICS on one. So `@font-face/*a` is `{"font-face":"/*a"}` in TypeScript and
+// was `[jsonic/internal]: slice bounds out of range [:14] with length 13`
+// here, for 27 inputs.
+//
+// Clamping reproduces the JS result rather than inventing a new one: JS
+// `src.slice(kEnd, 14)` on a 13-char string yields the same substring as Go
+// `src[kEnd:13]`, and a guard like `pEnd < len(src) && src[pEnd] == ';'` is
+// false in Go for the clamped value exactly as `src[14]` is undefined in JS.
+//
+// Applied at every scanner return rather than at the crash site: the overshoot
+// comes from `i += 2` steps (an unterminated comment, an unterminated string,
+// a trailing backslash escape) and any caller that slices with the result is
+// one input away from the same panic.
+// UNTERMINATED is the scanners' "there is no valid end here" result: an
+// unclosed `/* ... */`. It is a distinct value rather than an index because
+// the caller's response is a REJECTION, not a shorter span — see skipComment.
+const UNTERMINATED = -1
+
+func clampLen(i int, src string) int {
+	if i > len(src) {
+		return len(src)
 	}
 	return i
 }
 
+// skipComment returns the index after a closed `/* ... */`, or
+// UNTERMINATED if there is no closing `*/`.
+//
+// It does NOT run to end of source. AGENTS.md: "An unclosed `/* ... */` is an
+// error, not a comment to EOF (lex.bad / lex.Bad with unterminated_comment),
+// matching both the engine's builtin comment matcher and reworkcss", and
+// test/spec/reworkcss.tsv pins that for `/*` and for a trailing `/* b {`.
+// Running to EOF here is how an unclosed comment in an at-rule prelude
+// quietly became part of the prelude instead.
 func skipComment(src string, i int) int {
 	i += 2
 	for i+1 < len(src) && !(src[i] == '*' && src[i+1] == '/') {
 		i++
 	}
-	return i + 2
+	if i+1 >= len(src) {
+		return UNTERMINATED
+	}
+	return clampLen(i+2, src)
 }
 
 // stripComments removes `/* ... */` comments from a selector / value run,
@@ -1001,7 +1081,14 @@ func stripComments(s string) string {
 			continue
 		}
 		if c == '/' && i+1 < len(s) && s[i+1] == '*' {
-			i = skipComment(s, i)
+			n := skipComment(s, i)
+			if UNTERMINATED == n {
+				// Unreachable once the callers reject an unclosed comment,
+				// but a sentinel assigned to i would index negatively or
+				// spin. The rest of the span is comment text; drop it.
+				break
+			}
+			i = n
 			continue
 		}
 		b.WriteByte(c)

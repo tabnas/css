@@ -9,17 +9,39 @@
 # Nothing here is a third-party corpus: the inputs are generated from the seed
 # below, so a run is reproducible without vendoring anything.
 #
-# This is an INSTRUMENT, not a test. Nothing in CI runs it; run it by hand when
-# changing the grammar or porting a fix, and pin whatever it finds as a
-# fixture in test/spec/ once both runtimes agree on the answer.
+# This is a GATE. It EXITS NON-ZERO when the two runtimes disagree, and CI
+# runs it (ci/divergence.yml, staged for maintainer promotion per ADR-8).
 #
-# Usage:  bash scripts/divergence-probe.sh [count]     (default 4000)
+# It used to end with `process.exitCode = 0` and a header saying nothing in CI
+# ran it. Wiring that version into CI would have produced a job that reported
+# every divergence and passed anyway — a gate that cannot fail, which is worse
+# than no gate because the green tick is read as evidence.
+#
+# Still run it by hand when changing the grammar or porting a fix, and pin
+# whatever it finds as a fixture in test/spec/ once both runtimes agree: a
+# fixture names the case forever, while the probe only says a seed found it.
+#
+# Usage:  bash scripts/divergence-probe.sh [count] [--report-only]
+#
+#   count          how many inputs to generate (default 4000)
+#   --report-only  list divergences and exit 0. For exploring a change in
+#                  progress. Never use it in CI, which is the one place the
+#                  exit code is the whole point.
 #
 # Requires a built ts/dist (npm run build) and a working go toolchain.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COUNT="${1:-4000}"
+
+COUNT=4000
+REPORT_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --report-only) REPORT_ONLY=1 ;;
+    ''|*[!0-9]*) echo "unknown argument: $arg" >&2; exit 2 ;;
+    *) COUNT="$arg" ;;
+  esac
+done
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -94,5 +116,11 @@ for (const [src, av] of a) {
 console.log(n === 0
   ? "NO DIVERGENCE (" + a.size + " distinct inputs)"
   : n + " divergences of " + a.size + " distinct inputs")
-process.exitCode = 0
-' "$WORK/ts.out" "$WORK/go.out"
+
+// A divergence FAILS unless the caller explicitly asked for a report. The
+// argument is passed rather than read from the environment so that a CI job
+// cannot acquire the opt-out by inheriting a stray variable.
+if (0 < n && "1" !== process.argv[3]) {
+  process.exitCode = 1
+}
+' "$WORK/ts.out" "$WORK/go.out" "$REPORT_ONLY"

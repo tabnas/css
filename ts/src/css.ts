@@ -501,7 +501,11 @@ function splitSelectors(prelude: string): string[] {
   const out: string[] = []
   let i = 0
   while (i <= prelude.length) {
-    const end = scanSelectorEnd(prelude, i)
+    let end = scanSelectorEnd(prelude, i)
+    // Unreachable in practice: the prelude was scanned (and an unclosed
+    // comment rejected) before it got here. Treated as "the rest" so a
+    // sentinel can never index or spin.
+    if (UNTERMINATED === end) end = prelude.length
     const one = stripComments(prelude.substring(i, end)).trim()
     if ('' !== one) out.push(one)
     if (end >= prelude.length) break
@@ -603,6 +607,7 @@ function buildCssTokenMatcher(lowercaseProperties: boolean) {
       if ('declval' === name) {
         if ('{' === c || '}' === c || ';' === c || ':' === c) return undefined
         const endI = scanValueEnd(src, sI)
+        if (UNTERMINATED === endI) return lex.bad('unterminated_comment', sI, src.length)
         const val = stripComments(src.substring(sI, endI)).trim()
         const tkn = lex.token('#VL', val, src.substring(sI, endI), pnt)
         advance(pnt, src, sI, endI)
@@ -624,10 +629,12 @@ function buildCssTokenMatcher(lowercaseProperties: boolean) {
 
       // A selector or a property name, by `{`-before-`;` lookahead.
       const brace = scanToBraceOrEnd(src, sI)
+      if (UNTERMINATED === brace.index) return lex.bad('unterminated_comment', sI, src.length)
       if (brace.kind === 'selector') {
         // One selector of a (possible) group: up to the next top-level `,`/`{`
         // (comments stripped, surrounding space trimmed).
         const end = scanSelectorEnd(src, sI)
+        if (UNTERMINATED === end) return lex.bad('unterminated_comment', sI, src.length)
         const sel = stripComments(src.substring(sI, end)).trim()
         const tkn = lex.token('#TX', sel, src.substring(sI, end), pnt)
         advance(pnt, src, sI, end)
@@ -659,6 +666,7 @@ function matchAtRule(lex: Lex, src: string, sI: number, cI: number) {
   const kw = src.substring(sI + 1, kEnd)
 
   const brace = scanToBraceOrEnd(src, sI)
+  if (UNTERMINATED === brace.index) return lex.bad('unterminated_comment', sI, src.length)
   if (brace.kind === 'selector') {
     // Block at-rule: the prelude is the text between the keyword and `{`.
     const prelude = src.substring(kEnd, brace.index).trim()
@@ -673,6 +681,7 @@ function matchAtRule(lex: Lex, src: string, sI: number, cI: number) {
   // Statement at-rule: params run up to the next top-level `;`/`}`. A `;` is
   // consumed (it terminates the statement); a `}`/end-of-input is left.
   const pEnd = scanValueEnd(src, kEnd)
+  if (UNTERMINATED === pEnd) return lex.bad('unterminated_comment', sI, src.length)
   const params = src.substring(kEnd, pEnd).trim()
   const end = ';' === src[pEnd] ? pEnd + 1 : pEnd
   const tkn = lex.token('#ATS', kw, src.substring(sI, end), pnt, { params })
@@ -733,7 +742,11 @@ function scanToBraceOrEnd(
       continue
     }
     if ('/' === c && '*' === src[i + 1]) {
-      i = skipComment(src, i)
+      {
+        const n = skipComment(src, i)
+        if (UNTERMINATED === n) return { kind: 'decl', index: UNTERMINATED }
+        i = n
+      }
       continue
     }
     // A CSS escape (`\(`, `\'`, `\3A `, ...) hides the next character
@@ -766,7 +779,11 @@ function scanSelectorEnd(src: string, i: number): number {
       continue
     }
     if ('/' === c && '*' === src[i + 1]) {
-      i = skipComment(src, i)
+      {
+        const n = skipComment(src, i)
+        if (UNTERMINATED === n) return UNTERMINATED
+        i = n
+      }
       continue
     }
     // A CSS escape (`\(`, `\'`, `\3A `, ...) hides the next character
@@ -798,7 +815,11 @@ function scanValueEnd(src: string, i: number): number {
       continue
     }
     if ('/' === c && '*' === src[i + 1]) {
-      i = skipComment(src, i)
+      {
+        const n = skipComment(src, i)
+        if (UNTERMINATED === n) return UNTERMINATED
+        i = n
+      }
       continue
     }
     // A CSS escape (`\(`, `\'`, `\3A `, ...) hides the next character
@@ -849,7 +870,14 @@ function stripComments(s: string): string {
       continue
     }
     if ('/' === c && '*' === s[i + 1]) {
-      i = skipComment(s, i)
+      {
+        // Unreachable once the callers reject an unclosed comment, but a
+        // sentinel assigned to i would index negatively or spin. The rest of
+        // the span is comment text; drop it.
+        const n = skipComment(s, i)
+        if (UNTERMINATED === n) break
+        i = n
+      }
       continue
     }
     out += c
@@ -859,9 +887,25 @@ function stripComments(s: string): string {
 }
 
 // Skip a `/* ... */` comment; returns the index after `*/`.
+// UNTERMINATED is the scanners' "there is no valid end here" result: an
+// unclosed `/* ... */`. A distinct value rather than an index, because the
+// caller's response is a REJECTION, not a shorter span.
+const UNTERMINATED = -1
+
+// skipComment returns the index after a closed `/* ... */`, or UNTERMINATED
+// if there is no closing `*/`.
+//
+// It does NOT run to end of source. AGENTS.md: "An unclosed `/* ... */` is an
+// error, not a comment to EOF (lex.bad / lex.Bad with unterminated_comment),
+// matching both the engine's builtin comment matcher and reworkcss", and
+// test/spec/reworkcss.tsv pins that for `/*` and for a trailing `/* b {`.
+// Running to EOF here is how an unclosed comment in an at-rule prelude
+// quietly became part of the prelude instead: `@import/*red` parsed as an
+// import of "/*red".
 function skipComment(src: string, i: number): number {
   i += 2
   while (i < src.length && !('*' === src[i] && '/' === src[i + 1])) i++
+  if (i >= src.length) return UNTERMINATED
   return i + 2
 }
 
