@@ -55,6 +55,21 @@ const toks = [
   "@supports","@-webkit-keyframes","screen","from","0%","\"s\"","'"'"'s'"'"'",
   "url(x)","(",")","[","]","!important","--v","&",">","+","~",
   "<!--","-->","\\","1px","red","e:f","g:h;","\r",
+  // Bare, UNPAIRED quotes. The pool held only complete pairs -- "s" and
+  // '"'"'s'"'"' -- so concatenating tokens could never put a lone quote in
+  // text position, and this generator could not emit that class at all.
+  //
+  // It had a live divergence in it. On `a"b` TypeScript raised
+  // jsonic/unexpected and Go raised jsonic/unterminated_string, because Go
+  // could not represent the "no quote characters" the plugin asked for.
+  // The fleet probe in admin found it; this one could not have, however
+  // many seeds it was given, and for TWO independent reasons. It could not
+  // build the input, and both halves recorded a reject as a bare "ERR", so
+  // even given the input the two runtimes would have diffed as agreeing.
+  // Both are fixed here. A generator that cannot emit a class cannot find a
+  // bug in it -- and neither can a comparison that cannot tell two
+  // rejections apart.
+  "\"","'"'"'","'"'"'x","\"x",
 ]
 const out = []
 for (let i = 0; i < Number(process.argv[2]); i++) {
@@ -78,7 +93,10 @@ for (const src of fs.readFileSync(process.argv[1], "utf8").split("\n")) {
   try {
     const v = new Tabnas().use(jsonic).use(Css).parse(src)
     out.push(JSON.stringify(src) + "\tOK " + JSON.stringify(v === undefined ? null : v))
-  } catch { out.push(JSON.stringify(src) + "\tERR") }
+  } catch (e) {
+    const m = /\[[a-z0-9-]+\/([a-z0-9_]+)\]/.exec(String(e && e.message))
+    out.push(JSON.stringify(src) + "\tERR " + (m ? m[1] : "?"))
+  }
 }
 fs.writeFileSync(process.argv[2], out.join("\n") + "\n")
 ' "$WORK/in.txt" "$WORK/ts.out")
@@ -99,7 +117,9 @@ const load = (p) => {
     const i = line.indexOf("\t")
     const src = JSON.parse(line.slice(0, i))
     const rest = line.slice(i + 1)
-    m.set(src, rest === "ERR" ? "ERR" : "OK " + JSON.stringify(canon(JSON.parse(rest.slice(3)))))
+    m.set(src, rest.startsWith("ERR")
+      ? rest
+      : "OK " + JSON.stringify(canon(JSON.parse(rest.slice(3)))))
   }
   return m
 }

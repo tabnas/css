@@ -298,7 +298,7 @@ const Css: Plugin = (tn: Tabnas, options: CssOptions) => {
     // The cssToken matcher owns all non-fixed text (selectors, property
     // names, values, comments, at-rule preludes), so the default
     // string/number/text/value matchers are off.
-    string: { chars: '' },
+    string: { lex: false, chars: '' },
     number: { lex: false },
     text: { lex: false },
     value: { lex: false },

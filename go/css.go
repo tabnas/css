@@ -296,7 +296,7 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 		TokenSet: map[string][]string{
 			"KEY": {"#TX"},
 		},
-		String: &jsonic.StringOptions{Chars: ""},
+		String: &jsonic.StringOptions{Lex: boolPtr(false), Chars: ""},
 		Number: &jsonic.NumberOptions{Lex: boolPtr(false)},
 		Text:   &jsonic.TextOptions{Lex: boolPtr(false)},
 		Value:  &jsonic.ValueOptions{Lex: boolPtr(false)},

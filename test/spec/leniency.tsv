@@ -45,3 +45,15 @@ a{c:1} extra	ERROR
 a{c:1};;	ERROR
 a{c:1	ERROR
 @media screen{	ERROR
+# A bare quote in text position. The default string matcher must be OFF —
+# the cssToken matcher owns all non-fixed text — so the quote is an
+# ordinary character the CSS grammar has no rule for.
+#
+# The CODE is named, not a bare ERROR. Both ports already rejected this
+# before the fix that added the row: TypeScript with unexpected and Go
+# with unterminated_string, because Go had kept the default quote
+# characters. A bare ERROR row would have passed in both ports and pinned
+# nothing at all.
+a"b	ERROR:unexpected
+a'b	ERROR:unexpected
+a{c:"}	ERROR:unexpected
