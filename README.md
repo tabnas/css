@@ -15,6 +15,8 @@ rule types, and comments. The AST shape follows the widely-used
 [`reworkcss/css`](https://github.com/reworkcss/css) model. Available for both
 TypeScript and Go, built on the same grammar.
 
+Docs, guides, the error reference and the playground: **[tabnas.dev](https://tabnas.dev)**.
+
 ## Install
 
 ```bash
