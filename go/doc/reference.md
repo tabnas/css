@@ -107,9 +107,9 @@ type CssOptions struct {
 - **Effect:** Controls the case of declaration property names (the
   identifier before `:`). Selectors, values, and at-rule preludes are
   unaffected.
-  - nil / `false` — the property name is kept verbatim. `COLOR` →
+  - nil or `false`. The property name is kept verbatim. `COLOR` →
     `COLOR`.
-  - `true` — the property name is lowercased. `COLOR` → `color`.
+  - `true`. The property name is lowercased. `COLOR` → `color`.
 
 ```go
 yes := true
@@ -148,7 +148,7 @@ ast, _ := tabnascss.Parse("a {\n  color: red;\n}", tabnascss.CssOptions{Position
 Every node is a `map[string]any` with a `"type"` discriminator. Arrays
 (`rules`, `declarations`, `selectors`, `values`, `keyframes`) are
 `[]any` and preserve source order (including duplicate properties). All
-leaf values are `string` — there is no numeric type; `12px` and `0` are
+leaf values are `string`; there is no numeric type, and `12px` and `0` are
 strings.
 
 ### `stylesheet` (top)
@@ -220,7 +220,7 @@ its type (except `@host`, which has no prelude):
 | `@document url(...)` | `{type: "document", document: "...", rules: [...]}` |
 | `@host` | `{type: "host", rules: [...]}` |
 
-A generic block at-rule (e.g. `@layer base`) follows the same shape:
+A generic block at-rule (for example `@layer base`) follows the same shape:
 `{type: "layer", layer: "base", rules: [...]}`. A vendor-prefixed
 `@document` additionally carries a `vendor` field.
 
@@ -243,7 +243,7 @@ Generic declaration at-rules (`@viewport`, `@counter-style`,
 
 `@keyframes` becomes a `keyframes` node with a `name` and a `keyframes
 []any` of `keyframe` nodes. Each `keyframe` has a `values []any` (its
-selectors, e.g. `from`, `to`, `50%`) and a `declarations []any`. A
+selectors, for example `from`, `to`, `50%`) and a `declarations []any`. A
 vendor-prefixed `@-webkit-keyframes` additionally carries a `vendor`
 field.
 
@@ -338,15 +338,14 @@ a `keyframes` body; statement at-rules (`@import`, `@charset`,
 ### Comments
 
 Only `/* ... */` block comments are recognised. At a statement position
-they become `comment` nodes (raw inner text); mid-construct (e.g.
-between a property name and its `:`) they are skipped. CSS has no `//`
+they become `comment` nodes (raw inner text); mid-construct (for example between a property name and its `:`) they are skipped. CSS has no `//`
 line comments, and `#` is not a comment.
 
 ### Empty input
 
 A zero-length source runs no rules (an engine convention) and yields
-`nil`. Any non-empty source — even pure whitespace or a comment-only
-source — yields a `stylesheet` node.
+`nil`. Any non-empty source, even pure whitespace or a comment-only
+source, yields a `stylesheet` node.
 
 ```
 ""            => nil
@@ -375,7 +374,7 @@ punctuation lexes as a small set of tokens:
 | `#ATS` | `@import`, `@charset`, … | a statement at-rule |
 
 The at-rule tokens carry the keyword in `val` and the prelude/params in
-`use`. Bare `[` and `]` are **not** structural tokens — they only
+`use`. Bare `[` and `]` are **not** structural tokens; they only
 appear inside selectors/values, where the matcher consumes them as
 text.
 

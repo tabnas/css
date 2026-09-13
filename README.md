@@ -9,7 +9,7 @@
 
 A grammar plugin that teaches the [Tabnas](https://github.com/tabnas/parser)
 parser to read [CSS](https://developer.mozilla.org/en-US/docs/Web/CSS)
-(Cascading Style Sheets) and produce a faithful **abstract syntax tree** —
+(Cascading Style Sheets) and produce a faithful **abstract syntax tree**:
 ordered, typed nodes that preserve declaration order, duplicate properties,
 rule types, and comments. The AST shape follows the widely-used
 [`reworkcss/css`](https://github.com/reworkcss/css) model. Available for both
@@ -29,7 +29,7 @@ go get github.com/tabnas/css/go@latest
 
 ## One tiny example
 
-**TypeScript** — the plugin layers onto a Tabnas engine:
+**TypeScript.** The plugin layers onto a Tabnas engine:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
@@ -51,7 +51,7 @@ c.parse('h1, h2 { margin: 0 }')
 // => { type: 'stylesheet', rules: [ { type: 'rule', selectors: ['h1','h2'], declarations: [ { type: 'declaration', property: 'margin', value: '0' } ] } ] }
 ```
 
-**Go** — `tabnascss.Parse` is the one-call entry point:
+**Go.** `tabnascss.Parse` is the one-call entry point:
 
 ```go
 import tabnascss "github.com/tabnas/css/go"
@@ -72,10 +72,10 @@ A stylesheet is `{ type: 'stylesheet', rules: [ ...nodes ] }`. Each node has a
 | `rule` | `selectors: string[]`, `declarations: Node[]` |
 | `declaration` | `property: string`, `value: string` (raw text) |
 | `comment` | `comment: string` |
-| `media` / `supports` / `document` / `host` | prelude field (e.g. `media`), `rules: Node[]` (`document` also `vendor`, `''` when unprefixed; `host` has no prelude) |
+| `media` / `supports` / `document` / `host` | prelude field (for example `media`), `rules: Node[]` (`document` also `vendor`, `''` when unprefixed; `host` has no prelude) |
 | `font-face` / `page` | `declarations: Node[]` (`page` also `selectors`, a comma-split group) |
 | `keyframes` | `name`, optional `vendor`, `keyframes: Node[]` (each a `keyframe` with `values` + `declarations`) |
-| `import` / `charset` / `namespace` | the at-keyword field (e.g. `import`) |
+| `import` / `charset` / `namespace` | the at-keyword field (for example `import`) |
 | `custom-media` | `name`, `media` |
 
 Order and duplicates are preserved (arrays), comments are nodes, and selector
@@ -93,7 +93,7 @@ The AST is measured against the
 `ae6a6f9`): **45 of its 46 cases are compared tree-for-tree** against
 upstream's own `ast.json`, with and without source positions, in both
 TypeScript and Go, and all six of its non-`silent` accept/reject assertions
-hold. There are no known divergences. The 46th case, a zero-length source, is
+hold. There are no known divergences. The forty-sixth case, a zero-length source, is
 asserted explicitly rather than skipped, because it used to be one: `''` now
 yields `{ type: 'stylesheet', rules: [] }`, as upstream does, and so does any
 non-empty source with no rules.
@@ -107,7 +107,7 @@ Fetch the corpus and run the suites with `npm run install-reworkcss-tests`
 (from `ts/`) or `scripts/fetch-reworkcss-tests.sh`; it is third-party and is
 not committed here.
 
-**CSS Nesting** is supported — a style rule or at-rule nested inside a
+**CSS Nesting** is supported: a style rule or at-rule nested inside a
 declaration block is appended to the parent's `declarations`, in source order:
 
 ```js
@@ -127,13 +127,13 @@ Pass options as the third `use` argument (TS) or to `Parse`/`MakeJsonic` (Go):
 ```js
 new Tabnas().use(jsonic).use(Css, { position: true })
   .parse('a {\n  color: red;\n}')
-// every node gains e.g. position: { start: { line, column }, end: { line, column } }
+// every node gains for example position: { start: { line, column }, end: { line, column } }
 ```
 
 ## Documentation
 
 Full documentation follows the [Diátaxis](https://diataxis.fr)
-framework — one file per quadrant, per language:
+framework: one file per quadrant, per language:
 
 | | TypeScript | Go |
 |---|---|---|
@@ -149,8 +149,8 @@ Per-language hubs: [`ts/README.md`](ts/README.md),
 
 The grammar is defined once in the top-level
 [`css-grammar.jsonic`](css-grammar.jsonic) and embedded into both
-implementations — TypeScript ([`ts/src/css.ts`](ts/src/css.ts)) and Go
-([`go/css.go`](go/css.go)) — by [`ts/embed-grammar.js`](ts/embed-grammar.js)
+implementations, TypeScript ([`ts/src/css.ts`](ts/src/css.ts)) and Go
+([`go/css.go`](go/css.go)), by [`ts/embed-grammar.js`](ts/embed-grammar.js)
 during the TypeScript build. Edit the grammar there, not in the generated
 sources.
 

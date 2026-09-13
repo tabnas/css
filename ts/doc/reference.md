@@ -75,8 +75,8 @@ Parses a CSS source string and returns the AST: a `stylesheet` node
 A zero-length source (`''`) yields an empty `stylesheet`, matching
 reworkcss. The engine returns `lex.emptyResult` for `''` before the rule
 loop runs, and this plugin declares that result; without it the value
-would be `undefined`. Any non-empty source — even whitespace or a lone
-comment — also yields a `stylesheet` node.
+would be `undefined`. Any non-empty source, even whitespace or a lone
+comment, also yields a `stylesheet` node.
 
 ```js
 import { Tabnas } from '@tabnas/parser'
@@ -153,11 +153,11 @@ preserve source order (and duplicate properties).
 | `rule` | `selectors: string[]`, `declarations: Node[]` |
 | `declaration` | `property: string`, `value: string` (raw text) |
 | `comment` | `comment: string` |
-| `media` / `supports` / `document` / `host` | prelude field (e.g. `media`), `rules: Node[]` |
+| `media` / `supports` / `document` / `host` | prelude field (for example `media`), `rules: Node[]` |
 | `font-face` / `page` | `declarations: Node[]` (`page` also `selectors: string[]`) |
 | `keyframes` | `name: string`, optional `vendor: string`, `keyframes: Node[]` |
 | `keyframe` | `values: string[]`, `declarations: Node[]` |
-| `import` / `charset` / `namespace` | the at-keyword field (e.g. `import`) |
+| `import` / `charset` / `namespace` | the at-keyword field (for example `import`) |
 
 ### Rules and declarations
 
@@ -193,7 +193,7 @@ c.parse('a { color: red; color: blue }').rules[0].declarations
 
 ### Selectors
 
-Selector text is kept **verbatim** (trimmed) — it is not parsed into
+Selector text is kept **verbatim** (trimmed); it is not parsed into
 components. Combinators (`>`, `+`, `~`), descendant whitespace,
 pseudo-classes (`:hover`), pseudo-elements (`::before`), and attribute
 selectors (`[type=text]`) all survive as-is.
@@ -217,7 +217,7 @@ c.parse('a:not(.x, .y), b { top: 0 }').rules[0].selectors // => ['a:not(.x, .y)'
 ### Declaration values
 
 A declaration `value` is the run of text after `:` up to the next
-top-level `;` or `}` — trimmed, with comments stripped, kept as **one
+top-level `;` or `}`: trimmed, with comments stripped, kept as **one
 raw string** and not parsed further. Internal commas, hashes, spaces,
 `!important`, and balanced `()` / `[]` (so a `;` inside `url(...)` does
 not terminate the value) are all part of the string. Quotes are kept.
@@ -316,7 +316,7 @@ c.parse('@-webkit-keyframes x { to { opacity: 1 } }').rules[0].vendor // => '-we
 
 ### Statement at-rules
 
-An at-rule with no block (e.g. `@import`, `@charset`, `@namespace`) is a
+An at-rule with no block (for example `@import`, `@charset`, `@namespace`) is a
 statement **terminated by `;`**. It becomes a leaf node whose `type` is
 the at-keyword and whose same-named field holds the rest of the
 statement (quotes included).
@@ -339,8 +339,8 @@ and the parser reads following content as part of the same statement.
 
 Only `/* ... */` block comments are recognised. At a statement or
 declaration-list position they become `comment` nodes (the text between
-`/*` and `*/`), in order. A comment seen mid-construct — e.g. between a
-property name and its `:` — is skipped.
+`/*` and `*/`), in order. A comment seen mid-construct, for example between a
+property name and its `:`, is skipped.
 
 ```js
 import { Tabnas } from '@tabnas/parser'
@@ -361,7 +361,7 @@ plugin.)
 ### Empty input
 
 A zero-length source yields an empty `stylesheet` (via `lex.emptyResult`).
-Any non-empty source — whitespace or a comment alone — yields a
+Any non-empty source (whitespace or a comment alone) yields a
 `stylesheet` node. An empty rule block yields an empty `declarations`
 array.
 
@@ -400,7 +400,7 @@ diagram legend):
 `#TX`, `#GC`, `#VL`, `#CC` and the `#AT*` tokens are produced by the
 custom `cssToken` matcher, which owns all non-punctuation text. The
 fixed `{`, `}`, `:` lex as `#OB`, `#CB`, `#CL`; `;` is remapped to
-`#CA`. Bare `[` and `]` are disabled as structure — they only ever
+`#CA`. Bare `[` and `]` are disabled as structure; they only ever
 appear inside selectors and values, which the matcher consumes as text.
 
 ## Grammar group tag
@@ -418,16 +418,16 @@ const c = new Tabnas().use(jsonic).use(Css).options({
 ## Errors
 
 A failed parse throws the engine's standard parse error. It carries
-the usual fields — an error `code`, the source location (`row`, `col`,
+the usual fields: an error `code`, the source location (`row`, `col`,
 `pos`), the offending `src` fragment, and a formatted multi-line
-`message` with a source-context extract. Malformed input — for example
-an unterminated block — is an error.
+`message` with a source-context extract. Malformed input, for example
+an unterminated block, is an error.
 
 ## Limitations
 
-- Declaration values are **not** parsed further — each is kept as one
+- Declaration values are **not** parsed further; each is kept as one
   raw string.
-- Selector text is kept **verbatim** — it is not parsed into its
+- Selector text is kept **verbatim**; it is not parsed into its
   component parts (a top-level group is split into the `selectors`
   list).
 - A statement at-rule **must** be terminated with `;`.

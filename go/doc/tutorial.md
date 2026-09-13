@@ -1,4 +1,4 @@
-# Tutorial — your first CSS parse (Go)
+# Tutorial: your first CSS parse (Go)
 
 This walks you from nothing to a working parse, then through selector
 groups, comments, at-rules, keyframes, and one option. Follow it in
@@ -9,12 +9,12 @@ statement at-rule and a `@keyframes` block, and switched on an option.
 
 The parser produces a faithful **reworkcss-style AST**: ordered, typed
 nodes that preserve declaration order, duplicate properties, rule
-types, and comments — not a lossy map.
+types, and comments, not a lossy map.
 
 For a recipe-style index of individual tasks, see the
 [how-to guide](guide.md). For exhaustive signatures and the full node
-reference, see the [reference](reference.md). For how it all works — and
-how the Go version differs from TypeScript — see
+reference, see the [reference](reference.md). For how it all works (and
+how the Go version differs from TypeScript) see
 [concepts](concepts.md).
 
 ## 1. Install
@@ -47,7 +47,7 @@ Every node is a `map[string]any` with a `"type"` discriminator. The top
 node is always a `stylesheet`, whose `rules` is a `[]any` of child
 nodes. A style rule has a `selectors []any` and a `declarations []any`;
 each declaration has a `property` and a raw-string `value`. The parser
-does not interpret colours, lengths, or numbers — every value is a
+does not interpret colours, lengths, or numbers: every value is a
 `string`. A trailing `;` is optional, so `a { color: red }` parses the
 same as `a { color: red; }`.
 
@@ -63,7 +63,7 @@ decl := rule["declarations"].([]any)[0].(map[string]any)
 color := decl["value"].(string) // "red"
 ```
 
-Because the arrays preserve order, duplicate properties survive too —
+Because the arrays preserve order, duplicate properties survive too:
 `a { color: red; color: blue }` yields two `declaration` nodes in the
 order written, not a single overwritten entry.
 
@@ -71,7 +71,7 @@ order written, not a single overwritten entry.
 
 A single selector is kept verbatim, including combinators,
 pseudo-classes, and attribute selectors. A comma-**grouped** selector
-becomes a list of selector strings on one `rule` node — the block is
+becomes a list of selector strings on one `rule` node, and the block is
 *not* duplicated:
 
 ```go
@@ -90,7 +90,7 @@ inside `:not(...)`, strings, `()` or `[]` are not split, so
 
 `/* ... */` comments at statement positions become `comment` nodes
 (holding the raw inner text), preserving where they appeared. Comments
-mid-construct (e.g. between a property and its `:`) are skipped.
+mid-construct (for example between a property and its `:`) are skipped.
 
 ```go
 ast, _ := tabnascss.Parse(`/* head */ a { /* c1 */ color: red }`)
@@ -120,7 +120,7 @@ prelude field). `@font-face` and `@page` instead carry a
 
 ## 7. Parse a statement at-rule
 
-A statement at-rule such as `@import` has no block — it ends at `;`. It
+A statement at-rule such as `@import` has no block; it ends at `;`. It
 becomes a leaf node whose `type` is the at-keyword, with a field of the
 same name holding the raw params:
 
@@ -173,7 +173,7 @@ The field is `*bool` so you can express "leave it at the default"
 the [reference](reference.md#options) covers both in full.
 
 You can also nest a rule (or a block at-rule) inside another rule's
-declaration block — the nested node is appended to the parent's
+declaration block, and the nested node is appended to the parent's
 `declarations` in source order:
 
 ```go
@@ -187,7 +187,7 @@ tabnascss.Parse(`a { color: red; & b { top: 0 } }`)
 ## 10. The empty cases
 
 A zero-length source returns `nil` (an engine convention); any
-non-empty source — even pure whitespace or a comment — returns a
+non-empty source (even pure whitespace or a comment) returns a
 `stylesheet` node:
 
 ```go
@@ -200,8 +200,8 @@ tabnascss.Parse("/* only */")    // {type: "stylesheet", rules: [ {type: "commen
 
 ## Where to go next
 
-- [How-to guide](guide.md) — focused recipes for individual tasks.
-- [Reference](reference.md) — the public API, every option, the full
+- [How-to guide](guide.md). Focused recipes for individual tasks.
+- [Reference](reference.md). The public API, every option, the full
   AST node reference.
-- [Concepts](concepts.md) — how the plugin reshapes the engine, and
+- [Concepts](concepts.md). How the plugin reshapes the engine, and
   how the Go version differs from TypeScript.

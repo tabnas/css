@@ -18,7 +18,7 @@ import tabnascss "github.com/tabnas/css/go"
 
 ## One example
 
-`tabnascss.Parse` is the one-call entry point — pass source, get the AST and
+`tabnascss.Parse` is the one-call entry point: pass source, get the AST and
 an `error`:
 
 ```go
@@ -38,9 +38,9 @@ it.
 
 `tabnascss.CssOptions` has two `*bool` fields, both defaulting to `false`:
 
-- `LowercaseProperties` — normalise property names to lower case
+- `LowercaseProperties`. Normalise property names to lower case
   (selectors and values are left untouched).
-- `Position` — attach a `"position"` (1-based `start`/`end` line/column)
+- `Position`. Attach a `"position"` (1-based `start`/`end` line/column)
   to every node.
 
 ```go
@@ -68,11 +68,11 @@ tabnascss.Parse(`a { color: red; & b { top: 0 } }`)
 Full documentation follows the [Diátaxis](https://diataxis.fr)
 framework:
 
-- [Tutorial](doc/tutorial.md) — a guided first parse, start to finish.
-- [How-to guide](doc/guide.md) — short recipes for individual tasks.
-- [Reference](doc/reference.md) — the public API, every option, and the
+- [Tutorial](doc/tutorial.md). A guided first parse, start to finish.
+- [How-to guide](doc/guide.md). Short recipes for individual tasks.
+- [Reference](doc/reference.md). The public API, every option, and the
   complete AST node reference.
-- [Concepts](doc/concepts.md) — how the plugin reshapes the engine, and
+- [Concepts](doc/concepts.md). How the plugin reshapes the engine, and
   how the Go version differs from TypeScript.
 
 For the canonical TypeScript implementation, see
