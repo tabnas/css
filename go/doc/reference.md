@@ -30,7 +30,7 @@ import tabnascss "github.com/tabnas/css/go"
 Parses a CSS string and returns its AST. Convenience wrapper around
 `MakeJsonic(opts...).Parse(src)`.
 
-With **no** options it reuses a single lazily-created instance (behind a
+With **no** options it reuses a single lazily created instance (behind a
 `sync.Once`), so repeated calls do not rebuild the engine + grammar.
 The shared instance is safe for concurrent use (each parse builds its
 own context and only reads instance state). With options, a dedicated
