@@ -31,7 +31,7 @@ c.parse('a { color: red }')
 // => { type: 'stylesheet', rules: [ { type: 'rule', selectors: ['a'], declarations: [ { type: 'declaration', property: 'color', value: 'red' } ] } ] }
 ```
 
-Build the instance once and reuse it — constructing the grammar is the
+Build the instance once and reuse it: constructing the grammar is the
 expensive part.
 
 ## Options
@@ -39,8 +39,8 @@ expensive part.
 The plugin takes two options through its second `use()` argument, both
 defaulting to `false`:
 
-- `lowercaseProperties` — lowercase declaration property names.
-- `position` — attach a `position` (1-based `start`/`end` line and
+- `lowercaseProperties`. Lowercase declaration property names.
+- `position`. Attach a `position` (1-based `start`/`end` line and
   column) to every node.
 
 ```typescript
@@ -69,11 +69,11 @@ c.parse('a { color: red; & b { top: 0 } }').rules[0].declarations[1]
 Full documentation follows the [Diátaxis](https://diataxis.fr)
 framework:
 
-- [Tutorial](doc/tutorial.md) — a guided first parse, start to finish.
-- [How-to guide](doc/guide.md) — short recipes for individual tasks.
-- [Reference](doc/reference.md) — the public API, every option, and the
+- [Tutorial](doc/tutorial.md). A guided first parse, start to finish.
+- [How-to guide](doc/guide.md). Short recipes for individual tasks.
+- [Reference](doc/reference.md). The public API, every option, and the
   complete AST node reference.
-- [Concepts](doc/concepts.md) — how the plugin reshapes the engine, and
+- [Concepts](doc/concepts.md). How the plugin reshapes the engine, and
   why.
 
 For the Go port, see [`../go/README.md`](../go/README.md).

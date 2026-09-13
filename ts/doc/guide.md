@@ -29,7 +29,7 @@ c.parse('a { color: red }')
 // => { type: 'stylesheet', rules: [ { type: 'rule', selectors: ['a'], declarations: [ { type: 'declaration', property: 'color', value: 'red' } ] } ] }
 ```
 
-The instance is reusable — build it once and call `.parse()` as many
+The instance is reusable: build it once and call `.parse()` as many
 times as you like. (Building the grammar is the expensive part; do not
 reconstruct the instance per parse.)
 
@@ -56,7 +56,7 @@ ast.rules[1].declarations[0]     // => { type: 'declaration', property: 'top', v
 ## Preserve order and duplicates
 
 The AST keeps declarations in source order and never collapses repeated
-properties — both `color` declarations survive:
+properties; both `color` declarations survive:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
@@ -75,7 +75,7 @@ decls[1].value  // => 'blue'
 
 A declaration's `value` is one raw, trimmed string, up to the next
 top-level `;` or `}`. Commas, spaces, hashes, `!important`, and
-`url(...)` are all part of that string — they are not parsed further,
+`url(...)` are all part of that string; they are not parsed further,
 and quotes are kept:
 
 ```js
@@ -128,7 +128,7 @@ c.parse('a:not(.x, .y), b { top: 0 }').rules[0].selectors   // => ['a:not(.x, .y
 
 ## Handle block at-rules
 
-A block at-rule whose body is rules (e.g. `@media`, `@supports`)
+A block at-rule whose body is rules (for example `@media`, `@supports`)
 becomes a node typed for the keyword, with the prelude in a same-named
 field and the body in a nested `rules` array:
 
@@ -182,7 +182,7 @@ the following content as part of the same statement.
 
 `@keyframes` becomes a node with a `name` and a `keyframes` array; each
 entry is a `keyframe` node with a `values` list (`from`, `to`, `50%`,
-…) and its own `declarations`. A vendor prefix (e.g. `-webkit-`) is
+…) and its own `declarations`. A vendor prefix (for example `-webkit-`) is
 surfaced in a `vendor` field:
 
 ```js
@@ -226,8 +226,8 @@ c.parse('a { color: red; @media x { b { y: 1 } } }').rules[0].declarations[1]
 
 `/* ... */` block comments at a statement or declaration-list position
 become `comment` nodes (carrying the text between `/*` and `*/`), in
-order. Comments seen mid-construct — e.g. between a property and its
-`:` — are skipped:
+order. Comments seen mid-construct, for example between a property and its
+`:`, are skipped:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
@@ -311,8 +311,8 @@ threw // => true
 ## Re-enable strict JSON while the plugin is loaded
 
 Every grammar alternate the plugin adds carries the group tag `css`.
-To switch those alts off — restoring the plain jsonic grammar while
-the plugin stays registered — exclude that tag:
+To switch those alts off (restoring the plain jsonic grammar while
+the plugin stays registered) exclude that tag:
 
 ```typescript
 import { Tabnas } from '@tabnas/parser'
@@ -324,5 +324,5 @@ const c = new Tabnas().use(jsonic).use(Css).options({
 })
 ```
 
-This is rarely useful — you would normally just not load the plugin —
-but it is the supported way to peel the CSS layer back off.
+This is rarely useful, since you would normally not load the plugin at
+all, but it is the supported way to peel the CSS layer back off.

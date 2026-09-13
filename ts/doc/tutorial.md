@@ -1,4 +1,4 @@
-# Tutorial — your first CSS parse
+# Tutorial: your first CSS parse
 
 This walks you from nothing to a working parse, then through the AST,
 an at-rule, an option, and a parse error. Follow it in order; each step
@@ -43,8 +43,8 @@ ast.rules[0].selectors         // => ['a']
 ast.rules[0].declarations[1]   // => { type: 'declaration', property: 'font-size', value: '12px' }
 ```
 
-You wrote an ordinary CSS rule — a selector, a brace-delimited block,
-and `property: value` declarations — and got back an **abstract syntax
+You wrote an ordinary CSS rule (a selector, a brace-delimited block,
+and `property: value` declarations) and got back an **abstract syntax
 tree**: a `stylesheet` node whose `rules` array holds one typed `rule`
 node, itself holding typed `declaration` nodes. That is the point: the
 plugin teaches the engine to read CSS into the
@@ -69,14 +69,14 @@ ast.rules[0].declarations[1]       // => { type: 'declaration', property: 'color
 ```
 
 Because the AST uses ordered arrays, declaration order and even
-**duplicate** properties (`color` twice, here) are preserved — nothing
+**duplicate** properties (`color` twice, here) are preserved; nothing
 is collapsed into a map.
 
 ## 4. Group selectors
 
 A single selector is kept verbatim, including combinators
 (`.foo > .bar`). A comma-**grouped** selector becomes a list of
-selectors on one rule node — the block is not duplicated:
+selectors on one rule node, so the block is not duplicated:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
@@ -90,7 +90,7 @@ ast.rules[0].selectors   // => ['h1', 'h2']
 ```
 
 Apart from splitting a top-level group, the plugin never breaks a
-selector into components — the whole selector text, trimmed, is one
+selector into components: the whole selector text, trimmed, is one
 string. That keeps the output faithful to the source.
 
 ## 5. Wrap an at-rule
@@ -112,7 +112,7 @@ ast.rules[0].media                      // => 'screen'
 ast.rules[0].rules[0].selectors         // => ['a']
 ```
 
-A *statement* at-rule — one with no block, terminated by `;` — instead
+A *statement* at-rule (one with no block, terminated by `;`) instead
 becomes a leaf node. Its `type` is the at-keyword, and a field of the
 same name carries the rest of the statement (quotes and all):
 
@@ -128,7 +128,7 @@ c.parse('@import "base.css";').rules[0] // => { type: 'import', import: '"base.c
 
 CSS Nesting works too: a style rule (or at-rule) written inside another
 rule's block is appended to that rule's `declarations`, interleaved with
-declarations in source order — so `a { color: red; & b { top: 0 } }`
+declarations in source order, so `a { color: red; & b { top: 0 } }`
 gives the `a` rule a `color` declaration followed by a nested `rule`
 node for `& b`.
 
@@ -158,8 +158,8 @@ options default to `false` and are listed with their defaults in the
 
 ## 7. Catch an error
 
-A malformed stylesheet — for instance a rule whose block is never
-closed — throws the engine's standard parse error:
+A malformed stylesheet, for instance a rule whose block is never
+closed, throws the engine's standard parse error:
 
 ```js
 import { Tabnas } from '@tabnas/parser'
@@ -182,8 +182,8 @@ a source location, and a formatted message you can show a user.
 
 ## Where to go next
 
-- [How-to guide](guide.md) — focused recipes for individual tasks.
-- [Reference](reference.md) — the public API, the option, and the full
+- [How-to guide](guide.md). Focused recipes for individual tasks.
+- [Reference](reference.md). The public API, the option, and the full
   AST node reference.
-- [Concepts](concepts.md) — how the plugin reshapes the engine, and
+- [Concepts](concepts.md). How the plugin reshapes the engine, and
   why.

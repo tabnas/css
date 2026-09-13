@@ -16,7 +16,7 @@ values are `string`.
 
 ## Parse a single stylesheet
 
-`tabnascss.Parse` is the simplest entry point — pass source, get the
+`tabnascss.Parse` is the simplest entry point: pass source, get the
 AST and an error:
 
 ```go
@@ -58,7 +58,7 @@ for _, n := range sheet["rules"].([]any) {
 ## Preserve declaration order and duplicates
 
 The AST keeps declarations in source order, including repeated
-properties — nothing is collapsed:
+properties; nothing is collapsed:
 
 ```go
 tabnascss.Parse(`a { color: red; color: blue }`)
@@ -88,8 +88,7 @@ tabnascss.Parse(`a { color: red !important }`)
 
 `/* ... */` comments at statement positions (the stylesheet body, a
 declaration list, a keyframe list, right after a `{`) become `comment`
-nodes holding the raw inner text. Comments seen mid-construct (e.g.
-between a property name and its `:`) are skipped.
+nodes holding the raw inner text. Comments seen mid-construct (for example between a property name and its `:`) are skipped.
 
 ```go
 tabnascss.Parse(`/* head */ a { /* c1 */ color: red; /* c2 */ }`)
@@ -106,7 +105,7 @@ tabnascss.Parse(`a /* x */ { color /* y */ : red }`)
 //   {type: "declaration", property: "color", value: "red"} ] }
 ```
 
-(Only `/* ... */` block comments exist in CSS — there are no `//` line
+(Only `/* ... */` block comments exist in CSS; there are no `//` line
 comments, and `#` is not a comment.)
 
 ## Read a grouped selector
@@ -193,7 +192,7 @@ tabnascss.Parse(`@-webkit-keyframes x { to { opacity: 1 } }`)
 
 ## Read nested rules
 
-A style rule — or a block at-rule — may appear inside another rule's
+A style rule (or a block at-rule) may appear inside another rule's
 declaration block. Nested nodes are appended to the parent's
 `declarations` in source order, interleaved with the declarations
 themselves. An identifier followed by `:` is a declaration; the same
@@ -265,8 +264,8 @@ cached instance, so you do not need `MakeJsonic` for that case.)
 
 ## Handle the empty cases
 
-A zero-length source returns `nil`; any non-empty source — even pure
-whitespace or a comment — returns a `stylesheet` node:
+A zero-length source returns `nil`; any non-empty source, even pure
+whitespace or a comment, returns a `stylesheet` node:
 
 ```go
 tabnascss.Parse("")           // nil
@@ -288,8 +287,8 @@ if err != nil {
 ## Switch the CSS grammar off while the plugin is loaded
 
 Every grammar alternate the plugin adds carries the group tag `css`.
-To switch those alts off — restoring the plain jsonic grammar while the
-plugin stays registered — exclude that tag through the underlying
+To switch those alts off (restoring the plain jsonic grammar while the
+plugin stays registered) exclude that tag through the underlying
 jsonic instance:
 
 ```go
@@ -303,5 +302,5 @@ j.UseDefaults(tabnascss.Css, tabnascss.Defaults)
 j.SetOptions(jsonic.Options{Rule: &jsonic.RuleOptions{Exclude: "css"}})
 ```
 
-This is rarely useful — you would normally just not load the plugin —
-but it is the supported way to peel the CSS layer back off.
+This is rarely useful, since you would normally not load the plugin at
+all, but it is the supported way to peel the CSS layer back off.
