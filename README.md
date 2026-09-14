@@ -11,7 +11,7 @@ A grammar plugin that teaches the [Tabnas](https://github.com/tabnas/parser)
 parser to read [CSS](https://developer.mozilla.org/en-US/docs/Web/CSS)
 (Cascading Style Sheets) and produce a faithful **abstract syntax tree**:
 ordered, typed nodes that preserve declaration order, duplicate properties,
-rule types, and comments. The AST shape follows the widely-used
+rule types, and comments. The AST shape follows the widely used
 [`reworkcss/css`](https://github.com/reworkcss/css) model. Available for both
 TypeScript and Go, built on the same grammar.
 

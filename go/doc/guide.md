@@ -126,7 +126,7 @@ tabnascss.Parse(`a:not(.x, .y), b { top: 0 }`)
 ## Parse a block at-rule
 
 `@media`, `@supports`, `@document`, and `@host` become typed nodes with
-a prelude field and a recursively-parsed `rules []any` body:
+a prelude field and a recursively parsed `rules []any` body:
 
 ```go
 tabnascss.Parse(`@media screen { a { color: blue } }`)
