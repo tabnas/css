@@ -13,14 +13,18 @@ tree is the same tree and only the Rust types are new. Skip to
 
 ## 1. Install
 
-Add the crate:
+The crate is not on crates.io yet, so the dependency is the repository.
+Add it to `Cargo.toml`:
 
-```bash
-cargo add tabnas-css
+```toml
+[dependencies]
+tabnas-css = { git = "https://github.com/tabnas/css" }
 ```
 
-That is the whole install. There is no engine to bring along, no build
-script and no optional features.
+Cargo finds the crate in `rs/`. That is the whole install: there is no
+engine to bring along, no build script and no optional features. When the
+crate is published, this line becomes `tabnas-css = "0.5"` and nothing
+else about the rest of this page changes.
 
 ## 2. Parse a rule
 

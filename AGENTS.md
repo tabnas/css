@@ -206,19 +206,35 @@ raw prelude text and Go rejected — are gone: both runtimes now raise
 
 **TS/Rust: none, with `position` off AND on.**
 `scripts/divergence-probe-rs.sh` reports NO DIVERGENCE on both passes. Beyond
-the 4000-input default, the port was checked against the TS runtime over
+the 8000-input default, the port was checked against the TS runtime over
 ~240k generated inputs across two alphabets and four option combinations,
 plus the shared fixtures and the whole reworkcss corpus.
 
-**TS/Go, with `position: true`: two shapes.** Both were found by the Rust
-probe, which turns positions on; the Go probe does not, so it cannot see
-them. The Rust port follows TS on both, per rule 1 below.
+**TS/Go: three shapes**, all found while porting rather than by the Go probe.
+The Rust port follows TS on all three, per rule 1 below.
 
-1. **An unrecorded `position.end`.** A declaration whose value is empty never
+The first is visible with the DEFAULT options and the Go probe still misses
+it, because its alphabet has no such character. The other two need
+`position: true`, which the Go probe never sets.
+
+1. **Whitespace trimming is ECMAScript's, not Unicode's.** Selectors, values
+   and at-rule preludes are trimmed with JavaScript `String.prototype.trim`,
+   whose set is ECMAScript WhiteSpace plus LineTerminator. Go's
+   `strings.TrimSpace` uses the Unicode `White_Space` property. The two
+   differ by exactly two code points, and both change the AST:
+   **U+FEFF** (the byte-order mark) is ECMAScript whitespace and is not
+   Unicode `White_Space`, so `\ufeffa{b:c}` has selector `a` in TS and
+   `\ufeffa` in Go; **U+0085** (next line) is the reverse, so
+   `@media x \u0085{…}` keeps that character in its prelude in TS and loses
+   it in Go. The same split governs `@custom-media`, where a JavaScript
+   regex `\s` is that same ECMAScript set. Rust's `char::is_whitespace` is
+   the Unicode set, so `rs/src/lex.rs` carries `es_is_whitespace` /
+   `es_trim` and uses them at every site that produces AST text.
+2. **An unrecorded `position.end`.** A declaration whose value is empty never
    runs the action that records an end. TS writes `end: undefined`, which
    `JSON.stringify` omits, so `p { color:; }` yields
    `"position":{"start":{"line":1,"column":5}}`. Go emits `"end": null`.
-2. **The end-of-input overshoot.** A `\` at the last character of the source
+3. **The end-of-input overshoot.** A `\` at the last character of the source
    is an escape whose escaped character is not there, and the scanners' `i +=
    2` steps one past the end. TS counts that step in the column (`advance`
    adds `end - sI`) while taking the CLAMPED substring for the token, so
@@ -228,10 +244,10 @@ them. The Rust port follows TS on both, per rule 1 below.
    "reproduces the JS result rather than inventing a new one", and for the
    substring it does; for the column it does not.
 
-Neither is pinned by a fixture, and neither can be: `test/spec/*.tsv` runs in
-every runtime and a row for either would be red in Go by construction. Both
-are asserted in `rs/tests/css.rs` instead, where the divergence is named.
-Deciding the intended TS behaviour is the fix for both, not making the other
+None is pinned by a fixture, and none can be: `test/spec/*.tsv` runs in every
+runtime and a row for any of them would be red in Go by construction. All
+three are asserted in `rs/tests/css.rs` instead, where the divergence is
+named. Deciding the intended TS behaviour is the fix, not making the other
 ports match as-is.
 
 ## Authority and alignment rules
@@ -304,11 +320,16 @@ ports match as-is.
   returns it or delivers its own node as the parent's `child`. Only the top
   frame ever runs, so this is safe; it is also why `set_node` touches
   `stack[top - 1]`.
-- **Rust: dropping and serialising an AST are iterative.** A tree is as deep
-  as its source, and a derived `Drop` would recurse once per level and abort
-  the process on untrusted input. `value.rs` dismantles a `Node` with an
-  explicit stack and writes JSON with one. `Clone` and `PartialEq` still
-  recurse; `rs/tests/css.rs` pins 20,000 levels of nesting.
+- **Rust: NOTHING reachable from a parse result recurses per level.** A tree
+  is as deep as its source, so a derived implementation would abort the
+  process on untrusted input. `value.rs` therefore writes `Drop`, `Clone`,
+  `PartialEq`, `Debug` and the JSON output as explicit stack machines; none
+  of the five is derived. `Debug` is the one that is easy to forget, because
+  it is what a caller reaches for while debugging, and it is the one a
+  review caught. `rs/tests/css.rs` pins all of them at 20,000 levels.
+- **Rust: `str::trim` is NOT `String.prototype.trim`.** Use `es_trim` and
+  `es_is_whitespace` from `lex.rs` at every site that produces AST text. See
+  the divergence section above for the two code points and what each does.
 - **Comments are nodes only at list positions.** The matcher checks the active
   rule name against `COMMENT_NODE_RULES`. The block wrappers
   (`declbody`/`rulesbody`/`kfbody`) are included because their empty-block

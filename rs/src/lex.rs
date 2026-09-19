@@ -474,7 +474,7 @@ impl Lex {
             let raw = safe_slice(&self.src, s_i, end);
             let tok = self.make(
                 Tin::Vl,
-                strip_comments(raw).trim().to_string(),
+                es_trim(&strip_comments(raw)).to_string(),
                 raw.to_string(),
                 String::new(),
             );
@@ -509,7 +509,7 @@ impl Lex {
             let raw = safe_slice(&self.src, s_i, end);
             let tok = self.make(
                 Tin::Tx,
-                strip_comments(raw).trim().to_string(),
+                es_trim(&strip_comments(raw)).to_string(),
                 raw.to_string(),
                 String::new(),
             );
@@ -558,7 +558,7 @@ impl Lex {
             // Block at-rule: the prelude is the text between the keyword and
             // `{`. At-rule preludes KEEP their comments (they are only
             // trimmed), matching reworkcss.
-            let prelude = safe_slice(&self.src, k_end, index).trim().to_string();
+            let prelude = es_trim(safe_slice(&self.src, k_end, index)).to_string();
             let tin = if is_keyframes_kw(&kw) {
                 Tin::Atk
             } else if DECLS_KW.contains(&kw.as_str()) {
@@ -580,7 +580,7 @@ impl Lex {
         // `;` is consumed (it terminates the statement); a `}` or end of
         // input is left for the enclosing rule.
         let p_end = self.scan_or_bad(scan_value_end(&self.bytes, k_end))?;
-        let params = safe_slice(&self.src, k_end, p_end).trim().to_string();
+        let params = es_trim(safe_slice(&self.src, k_end, p_end)).to_string();
         let end = if self.bytes.get(p_end) == Some(&b';') {
             p_end + 1
         } else {
@@ -606,6 +606,34 @@ impl Lex {
         }
         Ok(index)
     }
+}
+
+/// Whether `c` is whitespace as ECMAScript defines it, which is NOT what
+/// [`char::is_whitespace`] answers.
+///
+/// The canonical port trims with JavaScript's `String.prototype.trim`, whose
+/// set is ECMAScript WhiteSpace plus LineTerminator. Rust's set is the Unicode
+/// `White_Space` property. They differ by exactly two code points, and both
+/// differences change the AST:
+///
+/// - **U+FEFF** (zero-width no-break space, the byte-order mark) is
+///   ECMAScript whitespace and is not Unicode `White_Space`. A stylesheet that
+///   opens with a byte-order mark yields the selector `a` in the canonical
+///   port and would yield `\u{feff}a` under [`str::trim`].
+/// - **U+0085** (next line) is Unicode `White_Space` and is not ECMAScript
+///   whitespace. `@media x \u{85}{…}` keeps that character in its prelude in
+///   the canonical port and would lose it under [`str::trim`].
+///
+/// Everything else in either set is in both: the ASCII controls, U+0020, the
+/// `Zs` category, and the two line separators U+2028 and U+2029.
+pub fn es_is_whitespace(c: char) -> bool {
+    ('\u{feff}' == c) || (c.is_whitespace() && '\u{85}' != c)
+}
+
+/// Trim as JavaScript's `String.prototype.trim` does. See
+/// [`es_is_whitespace`] for why this is not [`str::trim`].
+pub fn es_trim(s: &str) -> &str {
+    s.trim_matches(es_is_whitespace)
 }
 
 /// The column width of `s`: its length in UTF-16 code units, which is what a
@@ -907,9 +935,7 @@ pub fn split_selectors(prelude: &str) -> Vec<String> {
             // rest" so a sentinel can never index or spin.
             end = src.len();
         }
-        let one = strip_comments(safe_slice(prelude, i, end))
-            .trim()
-            .to_string();
+        let one = es_trim(&strip_comments(safe_slice(prelude, i, end))).to_string();
         if !one.is_empty() {
             out.push(one);
         }

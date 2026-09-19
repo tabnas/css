@@ -19,7 +19,14 @@ categories = ["parser-implementations", "web-programming"]
 # `doc/` ships with the crate. The Markdown pages are included by the
 # `#[cfg(doctest)]` module in src/lib.rs, so a published crate without
 # them is one whose own test suite cannot build.
-include = ["src/**", "tests/**", "examples/**", "doc/**", "README.md", "LICENSE"]
+# `doc/` ships because the `#[cfg(doctest)]` module in src/lib.rs includes
+# those pages, so a crate without them is one whose own doctests cannot
+# build. `tests/` does NOT ship: every integration test reads something
+# from the repository (the shared test/spec fixtures, css-grammar.jsonic,
+# ts/package.json), none of which can be included from outside rs/, so
+# shipping them would leave `cargo test` on the unpacked crate failing on
+# a missing repository root.
+include = ["src/**", "examples/**", "doc/**", "README.md", "LICENSE"]
 
 # No dependencies, by design. The TypeScript and Go ports sit on the tabnas
 # engine; there is no Rust engine to sit on, so this port carries the grammar

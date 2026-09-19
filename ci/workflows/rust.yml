@@ -78,10 +78,15 @@ jobs:
       # The probe runs the TS port from ts/dist, so it needs a real build, not
       # just an install. A stale dist would compare the previous commit's
       # TypeScript against this commit's Rust.
+      #
+      # `npm install`, not `npm ci`: this repository tracks no lockfile and
+      # gitignores `package-lock.json`, so `npm ci` exits with EUSAGE before
+      # it installs anything. A probe job that dies there reports a red gate
+      # that compared no runtimes at all.
       - name: build ts
         working-directory: ts
         run: |
-          npm ci
+          npm install
           npm run build
 
       - name: probe

@@ -26,8 +26,8 @@ npm install @tabnas/parser @tabnas/jsonic @tabnas/css
 # Go
 go get github.com/tabnas/css/go@latest
 
-# Rust
-cargo add tabnas-css
+# Rust (not on crates.io yet; the dependency is this repository)
+cargo add --git https://github.com/tabnas/css tabnas-css
 ```
 
 ## One tiny example

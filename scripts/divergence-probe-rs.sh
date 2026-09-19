@@ -61,6 +61,11 @@ const toks = [
   "url(x)","(",")","[","]","!important","--v","&",">","+","~",
   "<!--","-->","\\","\\3A ","1px","red","e:f","g:h;","opacity[sqrt]",
   "//x","#h","*p","©","\u{1d11e}","--test","url-prefix()","::before",
+  // The code points where char::is_whitespace in Rust and
+  // String.prototype.trim in JavaScript disagree, plus the ones they agree
+  // on. A trim written against the wrong set is invisible without them, and
+  // it silently changes the AST.
+  "\ufeff","\u0085","\u00a0","\u2028","\u2029",
 ]
 const out = []
 for (let i = 0; i < Number(process.argv[2]); i++) {

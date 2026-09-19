@@ -13,11 +13,20 @@ same stylesheet gives the same tree in every one.
 
 ## Install
 
-```bash
-cargo add tabnas-css
+The crate is not on crates.io yet. This repository's release workflow
+publishes the npm package and tags the Go module; putting a crate on
+crates.io is a separate decision with its own trusted-publishing setup, and
+until that happens the dependency is the repository:
+
+```toml
+[dependencies]
+tabnas-css = { git = "https://github.com/tabnas/css" }
 ```
 
-The crate has no dependencies.
+Cargo finds the crate in `rs/`. Once it is published, `cargo add tabnas-css`
+replaces that line and nothing else changes.
+
+The crate has no dependencies of its own.
 
 ## One example
 

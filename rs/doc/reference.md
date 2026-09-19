@@ -8,7 +8,8 @@ pages link back to this one rather than restating it.
 
 ```toml
 [dependencies]
-tabnas-css = "0.5"
+# Not on crates.io yet; `tabnas-css = "0.5"` once it is.
+tabnas-css = { git = "https://github.com/tabnas/css" }
 ```
 
 ```rust

@@ -584,16 +584,18 @@ fn make_at_stmt(tok: &Token) -> Node {
 
 /// `^(--\S+)\s*([\s\S]*)$` — the `@custom-media` params split, without a
 /// regex engine.
+///
+/// The boundary is ECMAScript whitespace, not Rust's: a JavaScript regex `\s`
+/// matches the same set `String.prototype.trim` strips, so `--n\u{85}(x)` is
+/// ONE `\S+` run there and must be one name here. See
+/// [`lex::es_is_whitespace`].
 fn split_custom_media(params: &str) -> Option<(&str, &str)> {
     if !params.starts_with("--") {
         return None;
     }
-    let name_end = params.find(char::is_whitespace).unwrap_or(params.len());
+    let name_end = params.find(lex::es_is_whitespace).unwrap_or(params.len());
     if name_end <= 2 {
         return None;
     }
-    Some((
-        &params[..name_end],
-        params[name_end..].trim_start().trim_end(),
-    ))
+    Some((&params[..name_end], lex::es_trim(&params[name_end..])))
 }

@@ -207,6 +207,17 @@ fn deep_nesting_does_not_exhaust_the_stack() {
     let ast = Css::new()
         .parse(&src)
         .expect("deeply nested CSS must parse");
+
+    // Serialising, formatting, cloning and comparing are iterative too, and
+    // each of them would abort the process here if it were derived. They are
+    // exercised on the same tree rather than in tests of their own, because
+    // what is being pinned is that NOTHING reachable from a parse result
+    // recurses once per level.
+    assert!(ast.to_json().starts_with(r#"{"type":"stylesheet""#));
+    assert!(format!("{ast:?}").starts_with(r#"{"type":"stylesheet""#));
+    let copy = ast.clone();
+    assert!(copy == ast, "a deep clone compares equal to its source");
+
     let mut node = ast.as_node().expect("a stylesheet node");
     let mut depth = 0;
     while let Some(Value::List(children)) = node.get("rules").or_else(|| node.get("declarations")) {
@@ -220,6 +231,71 @@ fn deep_nesting_does_not_exhaust_the_stack() {
         depth += 1;
     }
     assert_eq!(DEPTH, depth, "every nesting level should be in the tree");
+}
+
+#[test]
+fn the_debug_view_shows_an_undefined_key_that_the_json_drops() {
+    // The debug view exists to show what is there, so it keeps a key the
+    // JSON output omits. That is the one place the two writers differ.
+    let ast = Css::with_options(Options {
+        position: true,
+        ..Options::default()
+    })
+    .parse("p { color:; }")
+    .expect("must parse");
+    assert!(
+        format!("{ast:?}").contains(r#""end":undefined"#),
+        "the debug view should show the unrecorded end: {ast:?}"
+    );
+    // The same declaration serialises with a `start` and nothing after it.
+    // (Its rule and the stylesheet DO have ends, so this looks at the one
+    // node that does not rather than at the word "end" anywhere.)
+    let json = ast.to_json();
+    assert!(
+        json.contains(r#""value":"","position":{"start":{"line":1,"column":5}}}"#),
+        "the JSON should drop the key entirely: {json}"
+    );
+    assert!(
+        !json.contains("undefined") && !json.contains("null"),
+        "and should render no placeholder for it: {json}"
+    );
+}
+
+#[test]
+fn text_is_trimmed_the_way_javascript_trims_it() {
+    // `str::trim` is NOT `String.prototype.trim`. The two sets differ by
+    // exactly two code points, and both change the AST:
+    //
+    //   U+FEFF is ECMAScript whitespace and not Unicode White_Space;
+    //   U+0085 is Unicode White_Space and not ECMAScript whitespace.
+    //
+    // The canonical TypeScript port trims the first and keeps the second, so
+    // this port does too. The Go port uses strings.TrimSpace, which is the
+    // Unicode set, so it does the opposite on both. That is a third TS/Go
+    // divergence, and the reason these cannot be shared fixtures.
+    let cases: [(&str, &str); 4] = [
+        // A byte-order mark before a selector is trimmed away,
+        ("\u{feff}a{b:c}", r#""selectors":["a"]"#),
+        // and after a value.
+        ("a{b:c\u{feff}}", r#""value":"c""#),
+        // U+0085 is not whitespace here, so it stays in the value,
+        ("a{b:c\u{85}}", "\"value\":\"c\u{85}\""),
+        // and in an at-rule prelude.
+        ("@media x \u{85}{a{b:c}}", "\"media\":\"x \u{85}\""),
+    ];
+    for (src, want) in cases {
+        let out = ast(src).to_json();
+        assert!(out.contains(want), "{src:?} should contain {want:?}: {out}");
+    }
+
+    // `@custom-media` splits its params at the first whitespace after the
+    // name, and a JavaScript regex's whitespace class is that same set
+    // again, so U+0085 does not end the name.
+    let out = ast("@custom-media --n\u{85}(x);").to_json();
+    assert!(
+        out.contains("\"name\":\"--n\u{85}(x)\",\"media\":\"\""),
+        "the name should run through U+0085: {out}"
+    );
 }
 
 #[test]

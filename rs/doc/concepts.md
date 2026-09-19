@@ -145,12 +145,15 @@ The rule machine keeps its own stack rather than recursing, so a
 stylesheet nested twenty thousand rules deep parses. That promise has a
 second half that is easy to miss: the tree it produces is as deep as the
 source, so a derived drop would recurse once per level and abort the
-process the moment the value went out of scope. Dropping a `Value` and
-writing one as JSON are both iterative for that reason.
+process the moment the value went out of scope.
 
-Cloning and comparing are not. They walk the tree the way the derived
-implementations do, which is fine for any stylesheet a person wrote and
-worth knowing before cloning one an attacker sent.
+So nothing reachable from a parse result recurses per level. Dropping a
+`Value`, cloning one, comparing two, writing one as JSON and formatting
+one for `Debug` are all explicit stack machines, and none of the five is
+derived. `Debug` is the one that is easy to forget, because it is not
+part of the parse at all: it is what a caller reaches for while looking
+at a tree, which makes it the likeliest of the five to meet a hostile
+one.
 
 ## Why reuse one parser
 
@@ -191,6 +194,23 @@ it in later, and `JSON.stringify` omits a key whose value is
 `undefined`. A node whose end is never recorded therefore serialises
 with a `start` and no `end`, and `Undefined` is how a key can exist in
 order and still serialise to nothing.
+
+### Trimming is ECMAScript's, not Unicode's
+
+Selectors, values and at-rule preludes are trimmed. The canonical port
+trims with JavaScript `String.prototype.trim`, whose set is ECMAScript
+WhiteSpace plus LineTerminator; `str::trim` uses the Unicode
+`White_Space` property. They differ by exactly two code points, and both
+differences change the tree.
+
+U+FEFF, the byte-order mark, is ECMAScript whitespace and is not Unicode
+`White_Space`, so a stylesheet that opens with one yields the selector
+`a` rather than a selector with an invisible character on the front.
+U+0085, next line, is the reverse: Unicode calls it whitespace and
+ECMAScript does not, so it stays where the author put it. This crate
+carries `es_trim` and `es_is_whitespace` and uses them at every site
+that produces text for the tree, including the `@custom-media` split,
+where a JavaScript regex matches the same set.
 
 ### Columns are UTF-16 code units
 
