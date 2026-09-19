@@ -16,14 +16,20 @@ const PAGES = [
   "go/doc/guide.md",
   "go/doc/reference.md",
   "go/doc/tutorial.md",
+  "rs/doc/concepts.md",
+  "rs/doc/guide.md",
+  "rs/doc/reference.md",
+  "rs/doc/tutorial.md",
   "README.md",
   "ts/README.md",
-  "go/README.md"
+  "go/README.md",
+  "rs/README.md"
 ]
 
 const TUTORIALS = [
   "ts/doc/tutorial.md",
-  "go/doc/tutorial.md"
+  "go/doc/tutorial.md",
+  "rs/doc/tutorial.md"
 ]
 
 

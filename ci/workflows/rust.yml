@@ -1,0 +1,88 @@
+# Staged workflow — builds and tests the Rust port.
+# Promoted by a maintainer via tabnas/admin rollout/apply-ci-folders.sh
+# (session credentials cannot write .github/workflows/*; admin DECISIONS.md ADR-8).
+#
+# WHY THIS IS SEPARATE FROM ci.yml
+#
+# ci.yml is the org-standard thin caller into the shared polyglot workflow,
+# and that workflow knows about the TypeScript and Go halves of a repository.
+# It has no Rust step. Teaching it one would put a Rust job in every repo's
+# matrix, including the repos that have no crate, so the job lives here until
+# the shared workflow grows a Rust half.
+#
+# UNTIL THIS IS PROMOTED, NOTHING IN CI RUNS `cargo test`. The crate's suite
+# holds the shared fixtures and the reworkcss corpus for a third runtime, and
+# a runtime nothing runs is a runtime nobody is measuring.
+name: rust
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The shared fixtures and the conformance corpus are read as text, so a
+      # checkout that rewrote line endings would test inputs the fixtures do
+      # not describe. Matches the shared workflow, which sets this for the
+      # same reason.
+      - name: no autocrlf
+        run: git config --global core.autocrlf false
+
+      - name: install rust
+        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+
+      # No dependency cache: the crate declares no dependencies, so there is
+      # nothing to restore and a cache step would only be a lie about what it
+      # saves.
+      - name: build
+        working-directory: rs
+        run: cargo build --verbose
+
+      # The conformance suite fetches the pinned reworkcss corpus for itself
+      # (rs/tests/reworkcss.rs), and FAILS rather than skipping if the fetch
+      # did not produce one. Do not add a skip here to make a red run green.
+      - name: test
+        working-directory: rs
+        run: cargo test --verbose
+
+      - name: clippy
+        working-directory: rs
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: rustfmt
+        working-directory: rs
+        run: cargo fmt --check
+
+  # The TS/Rust differential probe. Separate job because it needs the
+  # TypeScript port built, which the job above does not.
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: no autocrlf
+        run: git config --global core.autocrlf false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: install rust
+        run: rustup toolchain install stable --profile minimal
+
+      # The probe runs the TS port from ts/dist, so it needs a real build, not
+      # just an install. A stale dist would compare the previous commit's
+      # TypeScript against this commit's Rust.
+      - name: build ts
+        working-directory: ts
+        run: |
+          npm ci
+          npm run build
+
+      - name: probe
+        run: bash scripts/divergence-probe-rs.sh 4000

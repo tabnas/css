@@ -12,8 +12,8 @@ parser to read [CSS](https://developer.mozilla.org/en-US/docs/Web/CSS)
 (Cascading Style Sheets) and produce a faithful **abstract syntax tree**:
 ordered, typed nodes that preserve declaration order, duplicate properties,
 rule types, and comments. The AST shape follows the widely used
-[`reworkcss/css`](https://github.com/reworkcss/css) model. Available for both
-TypeScript and Go, built on the same grammar.
+[`reworkcss/css`](https://github.com/reworkcss/css) model. Available for
+TypeScript, Go and Rust, built on the same grammar.
 
 Docs, guides, the error reference and the playground: **[tabnas.dev](https://tabnas.dev)**.
 
@@ -25,6 +25,9 @@ npm install @tabnas/parser @tabnas/jsonic @tabnas/css
 
 # Go
 go get github.com/tabnas/css/go@latest
+
+# Rust
+cargo add tabnas-css
 ```
 
 ## One tiny example
@@ -62,6 +65,16 @@ ast, _ := tabnascss.Parse(`a { color: red }`)
 //     map[string]any{"type":"declaration","property":"color","value":"red"}}}}}
 ```
 
+**Rust.** `tabnas_css::parse` is the one-call entry point, and the crate has
+no dependencies:
+
+```rust
+let ast = tabnas_css::parse("a { color: red }").unwrap();
+// ast.to_json() is
+// {"type":"stylesheet","rules":[{"type":"rule","selectors":["a"],
+//   "declarations":[{"type":"declaration","property":"color","value":"red"}]}]}
+```
+
 ## The AST
 
 A stylesheet is `{ type: 'stylesheet', rules: [ ...nodes ] }`. Each node has a
@@ -91,8 +104,8 @@ c.parse('@media screen { a { color: blue } }')
 The AST is measured against the
 [`reworkcss/css`](https://github.com/reworkcss/css) test corpus (pinned at
 `ae6a6f9`): **45 of its 46 cases are compared tree-for-tree** against
-upstream's own `ast.json`, with and without source positions, in both
-TypeScript and Go, and all six of its non-`silent` accept/reject assertions
+upstream's own `ast.json`, with and without source positions, in all three
+runtimes, and all six of its non-`silent` accept/reject assertions
 hold. There are no known divergences. The forty-sixth case, a zero-length source, is
 asserted explicitly rather than skipped, because it used to be one: `''` now
 yields `{ type: 'stylesheet', rules: [] }`, as upstream does, and so does any
@@ -117,7 +130,9 @@ c.parse('a { color: red; & b { top: 0 } }')
 
 ## Options
 
-Pass options as the third `use` argument (TS) or to `Parse`/`MakeJsonic` (Go):
+Pass options as the third `use` argument (TS), to `Parse`/`MakeJsonic` (Go),
+or as an `Options` struct (Rust, where the field names are
+`lowercase_properties` and `position`):
 
 | Option | Default | Effect |
 |---|---|---|
@@ -135,24 +150,25 @@ new Tabnas().use(jsonic).use(Css, { position: true })
 Full documentation follows the [Diátaxis](https://diataxis.fr)
 framework: one file per quadrant, per language:
 
-| | TypeScript | Go |
-|---|---|---|
-| **Tutorial** (learning) | [ts/doc/tutorial.md](ts/doc/tutorial.md) | [go/doc/tutorial.md](go/doc/tutorial.md) |
-| **How-to guide** (tasks) | [ts/doc/guide.md](ts/doc/guide.md) | [go/doc/guide.md](go/doc/guide.md) |
-| **Reference** (API + options + AST) | [ts/doc/reference.md](ts/doc/reference.md) | [go/doc/reference.md](go/doc/reference.md) |
-| **Concepts** (explanation) | [ts/doc/concepts.md](ts/doc/concepts.md) | [go/doc/concepts.md](go/doc/concepts.md) |
+| | TypeScript | Go | Rust |
+|---|---|---|---|
+| **Tutorial** (learning) | [ts/doc/tutorial.md](ts/doc/tutorial.md) | [go/doc/tutorial.md](go/doc/tutorial.md) | [rs/doc/tutorial.md](rs/doc/tutorial.md) |
+| **How-to guide** (tasks) | [ts/doc/guide.md](ts/doc/guide.md) | [go/doc/guide.md](go/doc/guide.md) | [rs/doc/guide.md](rs/doc/guide.md) |
+| **Reference** (API + options + AST) | [ts/doc/reference.md](ts/doc/reference.md) | [go/doc/reference.md](go/doc/reference.md) | [rs/doc/reference.md](rs/doc/reference.md) |
+| **Concepts** (explanation) | [ts/doc/concepts.md](ts/doc/concepts.md) | [go/doc/concepts.md](go/doc/concepts.md) | [rs/doc/concepts.md](rs/doc/concepts.md) |
 
 Per-language hubs: [`ts/README.md`](ts/README.md),
-[`go/README.md`](go/README.md).
+[`go/README.md`](go/README.md), [`rs/README.md`](rs/README.md).
 
 ## Grammar diagram
 
 The grammar is defined once in the top-level
-[`css-grammar.jsonic`](css-grammar.jsonic) and embedded into both
-implementations, TypeScript ([`ts/src/css.ts`](ts/src/css.ts)) and Go
-([`go/css.go`](go/css.go)), by [`ts/embed-grammar.js`](ts/embed-grammar.js)
-during the TypeScript build. Edit the grammar there, not in the generated
-sources.
+[`css-grammar.jsonic`](css-grammar.jsonic) and embedded into all three
+implementations, TypeScript ([`ts/src/css.ts`](ts/src/css.ts)), Go
+([`go/css.go`](go/css.go)) and Rust
+([`rs/src/grammar.rs`](rs/src/grammar.rs)), by
+[`ts/embed-grammar.js`](ts/embed-grammar.js) during the TypeScript build. Edit
+the grammar there, not in the generated sources.
 
 As a railroad/syntax diagram, generated from the live grammar with
 [`@tabnas/railroad`](https://github.com/tabnas/railroad):

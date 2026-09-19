@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// Embed css-grammar.jsonic into TypeScript and Go source files.
+// Embed css-grammar.jsonic into the TypeScript, Go and Rust source files.
 // Run via: npm run embed  (or:  node embed-grammar.js)
 
 const fs = require('fs')
@@ -9,6 +9,7 @@ const path = require('path')
 const GRAMMAR_FILE = path.join(__dirname, '..', 'css-grammar.jsonic')
 const TS_FILE = path.join(__dirname, 'src', 'css.ts')
 const GO_FILE = path.join(__dirname, '..', 'go', 'css.go')
+const RS_FILE = path.join(__dirname, '..', 'rs', 'src', 'grammar.rs')
 
 const BEGIN = '// --- BEGIN EMBEDDED css-grammar.jsonic ---'
 const END = '// --- END EMBEDDED css-grammar.jsonic ---'
@@ -72,5 +73,35 @@ function embedGo() {
   console.log('Embedded grammar into', GO_FILE)
 }
 
+// --- Rust embedding ---
+function embedRs() {
+  let src = fs.readFileSync(RS_FILE, 'utf8')
+  const startIdx = src.indexOf(BEGIN)
+  const endIdx = src.indexOf(END)
+  if (startIdx === -1 || endIdx === -1) {
+    console.error('Rust markers not found in', RS_FILE)
+    process.exit(1)
+  }
+
+  // A Rust raw string takes no escapes at all, so the only thing that can
+  // end it early is its own delimiter.
+  if (grammar.includes('"##')) {
+    console.error('Grammar contains \'"##\', incompatible with the r##"..."## literal')
+    process.exit(1)
+  }
+
+  const replacement =
+    BEGIN +
+    '\nconst GRAMMAR_TEXT: &str = r##"\n' +
+    grammar +
+    '"##;\n' +
+    END
+
+  src = src.substring(0, startIdx) + replacement + src.substring(endIdx + END.length)
+  fs.writeFileSync(RS_FILE, src)
+  console.log('Embedded grammar into', RS_FILE)
+}
+
 embedTS()
 embedGo()
+embedRs()
