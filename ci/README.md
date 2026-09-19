@@ -13,8 +13,11 @@ This directory exists because session credentials cannot write
 
 - **`workflows/divergence.yml`** — runs `scripts/divergence-probe.sh` as a
   gate on every push and pull request.
+- **`workflows/rust.yml`** — builds and tests the Rust port (`rs/`), runs
+  clippy and rustfmt, and runs `scripts/divergence-probe-rs.sh` as a gate.
 
-### Why this is worth a CI job
+
+### Why the divergence probe is worth a CI job
 
 The probe generates a deterministic pseudo-random corpus of CSS-ish inputs,
 parses each with both runtimes, and reports every input they classify or
@@ -53,3 +56,19 @@ the fix restored it reports NO DIVERGENCE and exits 0.
 A fixture. When the probe finds something, pin it in `test/spec/` once both
 runtimes agree on the answer: a fixture names the case forever and is read
 by a human, while the probe only says that one seed found it once.
+
+### Why the Rust job is worth a workflow
+
+The shared `polyglot-ci.yml` knows about a repository's TypeScript and Go
+halves and has no Rust step, so **nothing in CI runs `cargo test` until this
+is promoted**. What goes unmeasured in the meantime is not a small thing: the
+Rust suite runs the shared `test/spec/*.tsv` fixtures and the whole pinned
+reworkcss corpus, which is the parity contract and the conformance bar for a
+third runtime. A runtime nothing runs is a runtime nobody is measuring, and
+the README claims the tree is the same in all three.
+
+The probe half is a separate job because it needs the TypeScript port built,
+which the build-and-test job does not. It runs the generated corpus twice,
+with `position` off and on: the two TS/Go divergences recorded in the root
+`AGENTS.md` are position-only, and a probe that never turns positions on
+cannot see the class of bug that it is most likely to catch.

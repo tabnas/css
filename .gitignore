@@ -50,3 +50,9 @@ test/css-parsing-tests
 
 # Written by the counts script while measuring, removed after.
 .vale-counts.ini
+
+# Rust build output and lockfile (a library crate; the lockfile is not the
+# dependency contract — Cargo.toml is, and this crate declares no
+# dependencies at all).
+rs/target
+rs/Cargo.lock

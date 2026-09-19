@@ -8,6 +8,8 @@
 # Vale enforce one spelling over the other, and it then reports the
 # other as a misspelling.
 
+[Aa]ccessor
+[Aa]ccessors
 [Cc]ombinator
 [Cc]ombinators
 [Cc]ss
@@ -30,6 +32,7 @@
 [Pp]arse
 [Rr]ecurse
 [Rr]ecurses
+[Rr]ecursing
 [Rr]eworkcss
 [Rr]uleset
 [Rr]ulesets
@@ -37,4 +40,5 @@
 [Tt]abnas
 [Tt]okenization
 [Uu]nprefixed
+[Uu]ntrusted
 [Uu]pstream

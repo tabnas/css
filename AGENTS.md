@@ -29,6 +29,13 @@ and supplies its own grammar that builds the AST. Install on a jsonic engine —
 `new Tabnas().use(jsonic).use(Css)` (TS) / `jsonic.Make()` then
 `UseDefaults(Css, ...)` (Go).
 
+The **Rust port is not a plugin**, because there is no Rust build of the
+engine to plug into. `rs/` carries a lexer and a rule machine of its own and
+runs the SAME `css-grammar.jsonic`, embedded verbatim like the other two:
+`tabnas_css::parse(src)` / `Css::with_options(..).parse(src)`. Everything
+below about the grammar, the token set and the AST contract applies to all
+three runtimes; where the Rust port differs, it says so.
+
 ### Node types (the output contract)
 
 | `type` | Fields |
@@ -98,15 +105,18 @@ array.
 |---|---|
 | [`ts/`](ts/) | **Canonical** TypeScript implementation — the `@tabnas/css` package (version in `ts/package.json`). Plugin in `src/css.ts`. Peer-depends on `@tabnas/jsonic` and `@tabnas/parser`. No CLI. |
 | [`go/`](go/) | Go port — `github.com/tabnas/css/go` (`const VERSION` in `go/css.go`). Plugin `Css` plus `MakeJsonic` / `Parse`. Depends on `github.com/tabnas/jsonic/go`. |
+| [`rs/`](rs/) | Rust port — the `tabnas-css` crate (`version` in `rs/Cargo.toml`, `VERSION` in `rs/src/lib.rs`). `parse` / `parse_with` / `Css`. **No dependencies**: with no Rust engine to plug into, it carries `lex.rs` (the `cssToken` matcher and scanners), `machine.rs` (the rule machine) and `grammar.rs` (the embedded grammar plus a reader for the jsonic subset it is written in). |
 | [`css-grammar.jsonic`](css-grammar.jsonic) | **Single source of truth** for the grammar rules, authored in jsonic syntax. |
-| [`ts/embed-grammar.js`](ts/embed-grammar.js) | Embeds `css-grammar.jsonic` into **both** `src/css.ts` and `go/css.go` (between `BEGIN/END EMBEDDED` markers). Runs first in `npm run build`. |
+| [`ts/embed-grammar.js`](ts/embed-grammar.js) | Embeds `css-grammar.jsonic` into **all three** of `src/css.ts`, `go/css.go` and `rs/src/grammar.rs` (between `BEGIN/END EMBEDDED` markers). Runs first in `npm run build`. |
 | [`ts/test/`](ts/test/) | TS tests (compiled to `dist-test/`): `css.test.ts` (AST parse cases), `parity.test.ts` (the shared `test/spec/*.tsv` fixtures), `reworkcss.test.ts` (the external conformance corpus), `debug-model.test.ts` (`@tabnas/debug` composition / model), `doc-examples.test.ts` (`// =>` assertions in README/doc fences), `leniency.test.ts` (jsonic-leak guard), `perf.test.ts` (instance-reuse guard), `version.test.ts` (exported `VERSION` vs `package.json`). |
 | [`test/spec/`](test/spec/) | Shared `.tsv` conformance fixtures, auto-discovered and run by **both** runtimes. See [`test/AGENTS.md`](test/AGENTS.md). |
 | [`go/css_test.go`](go/css_test.go), [`go/perf_test.go`](go/perf_test.go), [`go/parity_test.go`](go/parity_test.go), [`go/reworkcss_test.go`](go/reworkcss_test.go), [`go/version_test.go`](go/version_test.go) | Go suite — the remaining in-language AST cases, the perf guard, the shared-fixture runner, the external conformance corpus runner, and the `VERSION` vs `ts/package.json` drift check. |
 | [`go/conformance_test.go`](go/conformance_test.go) | `TestMain` — fetches the pinned corpus before any Go test runs, so the Go conformance runner is never left without one. |
-| [`scripts/divergence-probe.sh`](scripts/divergence-probe.sh), [`go/divergence_probe_test.go`](go/divergence_probe_test.go) | TS/Go differential probe over a deterministic generated corpus. An instrument, not a test: nothing in CI runs it, and the Go half is inert unless `CSS_DUMP_IN`/`CSS_DUMP_OUT` are set. |
+| [`rs/tests/`](rs/tests/) | Rust suite: `parity.rs` (the shared `test/spec/*.tsv` fixtures), `reworkcss.rs` (the external conformance corpus, with its own fetch), `css.rs` (what a fixture cannot express, plus the crate's API), `grammar.rs` (the embed vs the file on disk, and the subset reader), `perf.rs` (instance-reuse guard), `version.rs` (`VERSION` vs `Cargo.toml` and `ts/package.json`), `support/mod.rs` (the fixture loader, a JSON reader and the canonical compare, standing in for `@tabnas/support`). The doc examples run as doctests via `#[cfg(doctest)]` in `rs/src/lib.rs`. |
+| [`scripts/divergence-probe.sh`](scripts/divergence-probe.sh), [`go/divergence_probe_test.go`](go/divergence_probe_test.go) | TS/Go differential probe over a deterministic generated corpus. A GATE (exits non-zero on divergence); `ci/workflows/divergence.yml` is staged to run it. The Go half is inert unless `CSS_DUMP_IN`/`CSS_DUMP_OUT` are set. Runs with the default options only. |
+| [`scripts/divergence-probe-rs.sh`](scripts/divergence-probe-rs.sh), [`scripts/probe-lines.cjs`](scripts/probe-lines.cjs) | TS/Rust differential probe, same contract. It runs the corpus TWICE, with `position` off and on, and carries newlines as the fixtures' `\n` escape rather than dropping them — the two TS/Go divergences recorded below are position-only and multi-line, and are invisible to a probe that does neither. |
 | [`ts/doc/grammar.svg`](ts/doc/grammar.svg), [`ts/doc/grammar.txt`](ts/doc/grammar.txt) | Railroad / ASCII diagram of the live grammar, generated by `@tabnas/railroad`. |
-| [`ts/doc/`](ts/doc/), [`go/doc/`](go/doc/) | Per-runtime 4-quadrant Diataxis docs. |
+| [`ts/doc/`](ts/doc/), [`go/doc/`](go/doc/), [`rs/doc/`](rs/doc/) | Per-runtime 4-quadrant Diataxis docs. All three sets are in the prose gate (`ts/scripts/gated-docs.cjs`). |
 | [`scripts/fetch-reworkcss-tests.sh`](scripts/fetch-reworkcss-tests.sh) | Fetches the pinned third-party reworkcss/css conformance corpus into `test/reworkcss-css/` (gitignored, never committed). Also `npm run install-reworkcss-tests` from `ts/`. |
 | [`ts/test/reworkcss.test.ts`](ts/test/reworkcss.test.ts), [`go/reworkcss_test.go`](go/reworkcss_test.go) | The conformance runners over that corpus — see **Conformance** below. |
 
@@ -119,8 +129,9 @@ accept/reject assertions in its `test/parse.js`.**
 
 That corpus is the *authoritative expected value* for a parse, not merely an
 accept/reject oracle: the runners compare the whole tree. Measured status:
-**45/46 cases pass** on both metrics in both runtimes; **6/6** accept/reject
-assertions hold in both runtimes.
+**45/46 cases pass** on both metrics in all three runtimes, with the 46th
+(`cases/empty`) asserted explicitly rather than compared in the loop;
+**6/6** accept/reject assertions hold in all three runtimes.
 
 There are no known divergences. `cases/empty` used to be one and is still
 asserted explicitly (never skipped) in both runners so it cannot silently
@@ -131,8 +142,9 @@ regress:
   the engine short-circuits `''` and returns `lex.emptyResult` before the
   rule loop is reachable (`parser.ts` / `parser.go` `Start`). The real cause
   was that this plugin declared no `emptyResult`. It now declares
-  `{ type: 'stylesheet', rules: [] }` in `ts/src/css.ts` and `go/css.go`, so
-  `''` matches reworkcss, as does any non-empty source.
+  `{ type: 'stylesheet', rules: [] }` in `ts/src/css.ts`, `go/css.go` and
+  `rs/src/machine.rs`, so `''` matches reworkcss, as does any non-empty
+  source.
 
 What this plugin does **not** claim, deliberately:
 
@@ -155,10 +167,11 @@ value in them was generated from the upstream parser itself.
 
 Two rules hold the measurement honest, and neither may be relaxed:
 
-- **The corpus is fetched, not skipped around.** `pretest` (TS) and `TestMain`
-  in [`go/conformance_test.go`](go/conformance_test.go) both run
+- **The corpus is fetched, not skipped around.** `pretest` (TS), `TestMain`
+  in [`go/conformance_test.go`](go/conformance_test.go), and `fetch_corpus()`
+  in [`rs/tests/reworkcss.rs`](rs/tests/reworkcss.rs) all run
   `scripts/fetch-reworkcss-tests.sh` before any test. If the corpus is still
-  absent the runners **fail loudly** in both runtimes. Do not restore a
+  absent the runners **fail loudly** in all three runtimes. Do not restore a
   `t.Skip` / `{ skip }` there: until this was added the Go conformance tests
   skipped on every CI run, so half the conformance claim was reported green
   while measuring nothing.
@@ -173,47 +186,108 @@ Two rules hold the measurement honest, and neither may be relaxed:
 probe in [`ts/test/leniency.test.ts`](ts/test/leniency.test.ts) identically,
 values included: jsonic's relaxed-JSON base does not leak through this plugin,
 because the option overrides are applied atomically with the rule alts. The
-verdicts themselves are pinned for both runtimes in
-[`test/spec/leniency.tsv`](test/spec/leniency.tsv). That file is a guard, not a
+verdicts themselves are pinned for all three runtimes in
+[`test/spec/leniency.tsv`](test/spec/leniency.tsv). The Rust port passes the
+same rows for a simpler reason: there is no relaxed-JSON base underneath it
+to leak, so `{a:1}` is rejected because it is not CSS. That file is a guard, not a
 wish-list — if a relaxed-JSON document ever starts parsing, it is a defect.
 
-### Known TS/Go divergence
+### Known cross-runtime divergence
 
-`scripts/divergence-probe.sh` runs both runtimes over a deterministic generated
-corpus and diffs the verdicts. As last run (1686 distinct inputs) it reports
-**27 divergences, all of one shape**: an *unterminated* `/*` inside an at-rule
-prelude, which TS accepts as raw prelude text and Go rejects
-(`@import/*red`, `@media screen/*y`, `@font-face/*a`). Note that TS *does*
-reject a bare unterminated `/*` at top level, as the reworkcss oracle requires
-— so the at-rule path is the inconsistent one, and per rule 1 below the fix is
-to decide the intended TS behaviour first, not to make Go match as-is. No
-fixture pins this yet: `test/spec/*.tsv` runs in both runtimes and a fixture
-here would be red in one of them by construction. Re-run the probe rather than
-trusting this paragraph — it is a measurement, and it goes stale.
+Every number here is a measurement and goes stale. Re-run the probes rather
+than trusting the paragraphs.
+
+**TS/Go, default options: none.** `scripts/divergence-probe.sh` reports NO
+DIVERGENCE over 1686 distinct inputs. The 27 divergences this section used to
+record — an unterminated `/*` inside an at-rule prelude, which TS accepted as
+raw prelude text and Go rejected — are gone: both runtimes now raise
+`unterminated_comment`, and `test/spec/comments.tsv` pins `@import/*red`,
+`@media/*x` and `@font-face/*a` so it cannot come back.
+
+**TS/Rust: none, with `position` off AND on.**
+`scripts/divergence-probe-rs.sh` reports NO DIVERGENCE on both passes. Beyond
+the 8000-input default, the port was checked against the TS runtime over
+~240k generated inputs across two alphabets and four option combinations,
+plus the shared fixtures and the whole reworkcss corpus.
+
+**TS/Go: three shapes**, all found while porting rather than by the Go probe.
+The Rust port follows TS on all three, per rule 1 below.
+
+The first is visible with the DEFAULT options and the Go probe still misses
+it, because its alphabet has no such character. The other two need
+`position: true`, which the Go probe never sets.
+
+1. **Whitespace trimming is ECMAScript's, not Unicode's.** Selectors, values
+   and at-rule preludes are trimmed with JavaScript `String.prototype.trim`,
+   whose set is ECMAScript WhiteSpace plus LineTerminator. Go's
+   `strings.TrimSpace` uses the Unicode `White_Space` property. The two
+   differ by exactly two code points, and both change the AST:
+   **U+FEFF** (the byte-order mark) is ECMAScript whitespace and is not
+   Unicode `White_Space`, so `\ufeffa{b:c}` has selector `a` in TS and
+   `\ufeffa` in Go; **U+0085** (next line) is the reverse, so
+   `@media x \u0085{…}` keeps that character in its prelude in TS and loses
+   it in Go. The same split governs `@custom-media`, where a JavaScript
+   regex `\s` is that same ECMAScript set. Rust's `char::is_whitespace` is
+   the Unicode set, so `rs/src/lex.rs` carries `es_is_whitespace` /
+   `es_trim` and uses them at every site that produces AST text.
+2. **An unrecorded `position.end`.** A declaration whose value is empty never
+   runs the action that records an end. TS writes `end: undefined`, which
+   `JSON.stringify` omits, so `p { color:; }` yields
+   `"position":{"start":{"line":1,"column":5}}`. Go emits `"end": null`.
+3. **The end-of-input overshoot.** A `\` at the last character of the source
+   is an escape whose escaped character is not there, and the scanners' `i +=
+   2` steps one past the end. TS counts that step in the column (`advance`
+   adds `end - sI`) while taking the CLAMPED substring for the token, so
+   `@host\` — six characters — yields a stylesheet ending at column **8**.
+   Go's `clampLen` clamps the index before the column arithmetic sees it and
+   yields **7**. The `clampLen` comment in `go/css.go` says clamping
+   "reproduces the JS result rather than inventing a new one", and for the
+   substring it does; for the column it does not.
+
+None is pinned by a fixture, and none can be: `test/spec/*.tsv` runs in every
+runtime and a row for any of them would be red in Go by construction. All
+three are asserted in `rs/tests/css.rs` instead, where the divergence is
+named. Deciding the intended TS behaviour is the fix, not making the other
+ports match as-is.
 
 ## Authority and alignment rules
 
-1. **TypeScript is canonical.** When TS and Go disagree, TS wins; change Go.
+1. **TypeScript is canonical.** When TS disagrees with Go or with Rust, TS
+   wins; change the port. This is not advisory: the Rust port reproduces the
+   canonical end-of-input column arithmetic, overshoot and all, rather than
+   the tidier value Go produces (see the divergence section above).
 2. **The grammar is single-sourced.** `css-grammar.jsonic` is authored once;
-   `embed-grammar.js` copies it verbatim into the `grammarText` literal in both
-   `src/css.ts` and `go/css.go`. **Never hand-edit between the
+   `embed-grammar.js` copies it verbatim into the `grammarText` literal in
+   `src/css.ts` and `go/css.go`, and into `GRAMMAR_TEXT` in
+   `rs/src/grammar.rs`. **Never hand-edit between the
    `--- BEGIN/END EMBEDDED css-grammar.jsonic ---` markers** — edit the
    `.jsonic` and re-run `npm run embed` (or `npm run build`). The Go embed
    rejects backticks (Go raw strings), so the grammar comments use plain
-   quotes, never backticks.
-3. The two ports must produce the same AST for the same input. The parity
+   quotes, never backticks; the Rust embed rejects `"##`, which would end its
+   `r##"..."##` literal early. `rs/tests/grammar.rs` compares the embedded
+   copy against the file on disk, so an embed nobody re-ran cannot ship.
+3. The three ports must produce the same AST for the same input. The parity
    contract is the shared grammar plus the shared `test/spec/*.tsv`
-   fixtures, which both runtimes auto-discover. Add or change a parse case
-   there; the in-language suites keep only what a fixture cannot express.
+   fixtures, which all three runtimes auto-discover. Add or change a parse
+   case there; the in-language suites keep only what a fixture cannot
+   express.
 4. The jsonic option overrides and the `cssToken` matcher exist in **both**
-   runtimes and must stay in step (they live on the grammar object so the
-   plugin applies them atomically with its rule alts).
+   plugin runtimes and must stay in step (they live on the grammar object so
+   the plugin applies them atomically with its rule alts). Rust has no
+   engine to override, so the equivalents live in `rs/src/lex.rs` (the
+   matcher and the fixed punctuation it declines to) and `rs/src/machine.rs`
+   (the empty result for `""`). A change to either must land in all three.
 5. `Defaults` (`lowercaseProperties: false`, `position: false`) and `VERSION`
    in `go/css.go` mirror the TS `Css.defaults` and the `VERSION` exported from
-   `ts/src/css.ts`. Both `VERSION` constants MUST equal `ts/package.json`
-   "version"; `go/version_test.go` and `ts/test/version.test.ts` fail the
-   build if either drifts. Never bump one by hand — the release orchestrator
-   (`admin/publish.sh`) rewrites all three together.
+   `ts/src/css.ts`; `Options::default()` and `VERSION` in `rs/src/lib.rs`
+   mirror the same pair. Every `VERSION` MUST equal `ts/package.json`
+   "version", and `rs/Cargo.toml`'s `version` must equal `rs/src/lib.rs`'s.
+   `go/version_test.go`, `ts/test/version.test.ts` and `rs/tests/version.rs`
+   fail the build if any drifts. Never bump one by hand — the release
+   orchestrator (`admin/publish.sh`) rewrites them together. **It does not
+   know about the Rust sites yet**: until it does, a release has to bump
+   `rs/Cargo.toml` and `rs/src/lib.rs` as well, and `rs/tests/version.rs` is
+   what catches the omission.
 
 ## Repo-specific gotchas
 
@@ -227,6 +301,35 @@ trusting this paragraph — it is a measurement, and it goes stale.
   them to the matcher (an external Go package can't auto-tokenise like the TS
   `lex.token('#CC', …)` does). The Go `buildGrammarAlts` also handles an
   **array** `a:` action field (e.g. `['@reset$' '@cssX']`), not just a string.
+  The Rust `build_alts` handles the same two shapes, and its tins are a plain
+  enum because nothing external allocates them.
+- **Rust: lookahead is lazy, and that is behaviour.** `machine.rs` reads a
+  token only when the alt being tried needs one, under the rule trying it,
+  and within an alt only while it still matches. Both halves decide the tree,
+  not the speed. A comment right after `{` is a node because the block
+  wrapper's `#OB #CB` alt reads the first body token under the WRAPPER's name;
+  a comment between a property and its `:` is read under `decl` and skipped.
+  And `b{,/*!important` fails as `unexpected` rather than
+  `unterminated_comment` because `decl`'s `#TX #CL` alt fails on the first
+  token, so the unterminated comment behind it is never read. Reading a whole
+  `s:` sequence up front changes the error code.
+- **Rust: the node MOVES down the rule stack.** The canonical ports let a
+  child rule inherit its parent's node by reference. `machine.rs` has no such
+  aliasing, so a pushed child takes the node, a constructor action hands it
+  back to the parent before installing its own, and a popping rule either
+  returns it or delivers its own node as the parent's `child`. Only the top
+  frame ever runs, so this is safe; it is also why `set_node` touches
+  `stack[top - 1]`.
+- **Rust: NOTHING reachable from a parse result recurses per level.** A tree
+  is as deep as its source, so a derived implementation would abort the
+  process on untrusted input. `value.rs` therefore writes `Drop`, `Clone`,
+  `PartialEq`, `Debug` and the JSON output as explicit stack machines; none
+  of the five is derived. `Debug` is the one that is easy to forget, because
+  it is what a caller reaches for while debugging, and it is the one a
+  review caught. `rs/tests/css.rs` pins all of them at 20,000 levels.
+- **Rust: `str::trim` is NOT `String.prototype.trim`.** Use `es_trim` and
+  `es_is_whitespace` from `lex.rs` at every site that produces AST text. See
+  the divergence section above for the two code points and what each does.
 - **Comments are nodes only at list positions.** The matcher checks the active
   rule name against `COMMENT_NODE_RULES`. The block wrappers
   (`declbody`/`rulesbody`/`kfbody`) are included because their empty-block
@@ -274,7 +377,14 @@ trusting this paragraph — it is a measurement, and it goes stale.
   (what a JavaScript string index counts), so the Go port measures spans with
   `colWidth`, not `len()` and not `utf8.RuneCountInString` — a byte count is
   wrong for `#©{…}` and a rune count is wrong for astral characters such as
-  `#𝄞{…}`. `test/spec/reworkcss.tsv` pins this in both runtimes.
+  `#𝄞{…}`. `test/spec/reworkcss.tsv` pins this in all three runtimes; Rust
+  measures with `char::len_utf16`, for the same reason.
+- **`\r` resets the column; it does not start a line.** The engine's line
+  matcher sets `cI = 1` for a `\r` and increments `rI` only for a `\n`, so
+  `a{}\r` ends at column 1 and `/*x*/\r/*x*/` at column 6. A `\r` INSIDE a
+  token the matcher consumes (in a selector, a value, a comment body) is not
+  whitespace and counts as one column, which is what `advance` and `endPos`
+  do. Rust reproduces both halves in `Lex::skip_space` and `Lex::advance`.
 
 ## Build & test
 
@@ -310,9 +420,29 @@ before any test, so `go test ./...` fetches it for itself; if it is still
 absent afterwards `TestReworkcssCases` / `TestReworkcssAcceptReject`
 **fail** rather than skip.
 
-The repo-root [`Makefile`](Makefile) wraps both halves
-(`make build|test|clean`, `make reset`, `make publish-go V=x.y.z`,
-`make publish-ts`).
+Rust (from `rs/`):
+
+```bash
+cargo build
+cargo test             # unit + shared fixtures + conformance + doc examples
+cargo clippy --all-targets -- -D warnings
+cargo fmt --check
+```
+
+`rs/tests/reworkcss.rs` runs `scripts/fetch-reworkcss-tests.sh` for itself
+before any case, so `cargo test` fetches the corpus the way `go test` does;
+if it is still absent the suite **fails** rather than skipping. The crate has
+no dependencies, so `cargo test` needs no registry access once the toolchain
+is present.
+
+Every `rust` example in `rs/README.md` and `rs/doc/*.md` is a doctest
+(`#[cfg(doctest)]` in `rs/src/lib.rs` includes the Markdown), so a documented
+example that stops being true fails the build. That is the Rust counterpart
+of `ts/test/doc-examples.test.ts`.
+
+The repo-root [`Makefile`](Makefile) wraps all three
+(`make build|test|clean`, `make reset`, `make probe`, `make probe-rs`,
+`make publish-go V=x.y.z`, `make publish-ts`).
 
 ## Verify your work
 
@@ -320,7 +450,7 @@ The commands that prove a change is correct. Run them from the repo root
 unless stated; they are the same ones CI runs.
 
 ```bash
-make build && make test      # both runtimes — the check that matters
+make build && make test      # all three runtimes — the check that matters
 ```
 
 Narrower, when iterating:
@@ -328,6 +458,16 @@ Narrower, when iterating:
 ```bash
 (cd ts && npm test)                    # `pretest` builds first
 (cd go && go test ./...)               # unit tests + shared fixtures + conformance
+(cd rs && cargo test)                  # the same, plus the doc examples
+```
+
+The differential probes are gates but are NOT part of `make test`, because
+each needs the other runtime built. Run them when you change the grammar, the
+lexer or a scanner:
+
+```bash
+make probe        # TS vs Go,   default options
+make probe-rs     # TS vs Rust, default options AND position: true
 ```
 
 Each line is a subshell. `npm test` compiles first — its `pretest`
@@ -345,21 +485,23 @@ around it; the wiring is fixed instead, and
 
 What "correct" means here, in order of authority:
 
-1. **The shared fixtures pass in BOTH runtimes.** `test/spec/*.tsv` is the
-   parity contract — a row green in one runtime and red in the other is a
+1. **The shared fixtures pass in ALL THREE runtimes.** `test/spec/*.tsv` is
+   the parity contract — a row green in one runtime and red in another is a
    failure, not a discrepancy.
-2. **The reworkcss conformance bar holds.** Both runners judge the pinned
-   corpus, and the measured status under "Conformance" is a claim about
-   this package — changing behaviour means re-measuring and updating it in
-   the same commit, not later.
-3. **The three version constants agree** — `ts/package.json` `"version"`,
-   `VERSION` in `ts/src/css.ts`, and `const VERSION` in `go/css.go`.
-   `ts/test/version.test.ts` and `go/version_test.go` fail the build if
-   either drifts.
+2. **The reworkcss conformance bar holds.** All three runners judge the
+   pinned corpus, and the measured status under "Conformance" is a claim
+   about this package — changing behaviour means re-measuring and updating
+   it in the same commit, not later.
+3. **The version sites agree** — `ts/package.json` `"version"`, `VERSION` in
+   `ts/src/css.ts`, `const VERSION` in `go/css.go`, `VERSION` in
+   `rs/src/lib.rs`, and `version` in `rs/Cargo.toml`.
+   `ts/test/version.test.ts`, `go/version_test.go` and `rs/tests/version.rs`
+   fail the build if any drifts.
 4. **The embedded grammar matches its source.** If you changed
    `css-grammar.jsonic`, run `npm run embed` from `ts/` (or `npm run
    build`, which embeds first) — never hand-edit between the `BEGIN/END
-   EMBEDDED` markers.
+   EMBEDDED` markers. `rs/tests/grammar.rs` compares the Rust copy against
+   the file, so a missed embed is caught rather than silently parsed against.
 
 ## Releasing
 
@@ -384,9 +526,20 @@ accepts the publish. Pushing a tag by hand is the orchestrator's path
 
 The steps, in order:
 
-1. Bump all **three** version sites together — `ts/package.json`, `VERSION`
-   in `ts/src/css.ts` and `const VERSION` in `go/css.go`. Drift is caught by
-   `ts/test/version.test.ts` and `go/version_test.go`.
+1. Bump every version site together — `ts/package.json`, `VERSION` in
+   `ts/src/css.ts`, `const VERSION` in `go/css.go`, and the Rust pair
+   (`version` in `rs/Cargo.toml`, `VERSION` in `rs/src/lib.rs`). Drift is
+   caught by `ts/test/version.test.ts`, `go/version_test.go` and
+   `rs/tests/version.rs`. `admin/publish.sh` rewrites the first three; bump
+   the Rust pair by hand until it learns about them.
+
+   **The Rust crate is not published by `release.yml`.** The workflow
+   publishes the npm package and tags the Go module; nothing in it runs
+   `cargo publish`, and no `rs/v*` tag convention exists yet. The crate is
+   part of the repository and part of CI, and shipping it to crates.io is a
+   separate decision with its own trusted-publishing setup. Do not paper over
+   that with a local `cargo publish`, for the same reason a local `npm
+   publish` is not the release path.
 2. Verify against the **published** dependencies rather than your checkout.
    The release runner installs fresh from the registry; a working tree
    usually does not, so reproduce that before believing anything:
@@ -611,7 +764,8 @@ The machine-readable list is [`tabnas.plugin.json`](tabnas.plugin.json)
 (`errorCodes`) — empty, correctly, since nothing is declared. Keep it in
 step if a code is ever added: the code is the contract a fixture pins with
 `ERROR:<code>`, and two runtimes that reject the same input with different
-codes have agreed on nothing.
+codes have agreed on nothing. The Rust port raises the same two inherited
+codes and declares none of its own.
 
 ## Untrusted input
 
@@ -653,17 +807,26 @@ siblings, builds each, then runs `npm test` here (the composition test runs
 because `@tabnas/debug` is a devDependency) and `go build` / `go test` for the
 Go module.
 
-**Both** runtimes fetch the reworkcss corpus for themselves, so the
-conformance suites really run in CI rather than skipping: the `pretest` npm
-script on the TS side, and `TestMain` in
-[`go/conformance_test.go`](go/conformance_test.go) on the Go side. If a fetch
-fails, the suites **fail loudly** — they do not skip. `pretest` swallows the
+The shared workflow does not know about Rust. A staged
+[`ci/workflows/rust.yml`](ci/workflows/rust.yml) builds and tests the crate,
+runs clippy and rustfmt, and runs the TS/Rust differential probe; like every
+workflow here it needs a maintainer to promote it, because session
+credentials cannot write `.github/workflows/*`. **Until it is promoted, no CI
+job runs `cargo test`** — run it locally before merging anything that touches
+`rs/`, the grammar, or a fixture.
+
+**All three** runtimes fetch the reworkcss corpus for themselves, so the
+conformance suites really run rather than skipping: the `pretest` npm script
+on the TS side, `TestMain` in
+[`go/conformance_test.go`](go/conformance_test.go) on the Go side, and
+`fetch_corpus()` in [`rs/tests/reworkcss.rs`](rs/tests/reworkcss.rs) on the
+Rust side. If a fetch fails, the suites **fail loudly** — they do not skip. `pretest` swallows the
 script's exit status so the failure is reported by the suites (which name the
 missing corpus and how to get it) rather than as an opaque npm error, but the
 build still goes red either way.
 
-Do **not** restore a skip in either runtime, and do not remove the fetch from
-`go test`. Until `TestMain` was added the Go conformance tests skipped on
+Do **not** restore a skip in any runtime, and do not remove the fetch from
+`go test` or `cargo test`. Until `TestMain` was added the Go conformance tests skipped on
 every CI run, so half the conformance claim was reported green while
 measuring nothing. `test/spec/reworkcss.tsv` — the offline pins of the
 behaviours the corpus exercises — is run unconditionally by the shared-fixture

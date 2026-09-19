@@ -1,20 +1,21 @@
-# Build, test and publish both the TypeScript (ts/) and Go (go/)
-# implementations. ts/ is canonical; go/ tracks it.
+# Build, test and publish the TypeScript (ts/), Go (go/) and Rust (rs/)
+# implementations. ts/ is canonical; go/ and rs/ track it.
 #
 # Local build/test resolve the unpublished @tabnas siblings via the
 # repo-set go.work + node_modules symlinks (admin/scripts/link.sh).
 
-.PHONY: all build test clean build-ts build-go test-ts test-go \
-        clean-ts clean-go publish-ts publish-go tags-go reset \
-        prose prose-counts
+.PHONY: all build test clean build-ts build-go build-rs \
+        test-ts test-go test-rs clean-ts clean-go clean-rs \
+        publish-ts publish-go tags-go reset \
+        prose prose-counts probe probe-rs
 
 all: build test
 
-build: build-ts build-go
+build: build-ts build-go build-rs
 
-test: test-ts test-go
+test: test-ts test-go test-rs
 
-clean: clean-ts clean-go
+clean: clean-ts clean-go clean-rs
 
 # --- TypeScript (package in ts/) ---
 build-ts:
@@ -57,9 +58,33 @@ publish-go: test-go
 tags-go:
 	git tag -l 'go/v*' --sort=-version:refname
 
+# --- Rust (crate in rs/) ---
+#
+# There is no publish target. The crate is released by the same dispatch
+# that publishes the other two; a local `cargo publish` is not the
+# release path, for the same reason a local `npm publish` is not.
+build-rs:
+	cd rs && cargo build
+
+test-rs:
+	cd rs && cargo test
+
+clean-rs:
+	cd rs && cargo clean
+
+# The differential probes: both are GATES and exit non-zero on a
+# divergence. Not part of `test` because each needs the other runtime
+# built; run them when changing the grammar or porting a fix.
+probe:
+	bash scripts/divergence-probe.sh 4000
+
+probe-rs:
+	bash scripts/divergence-probe-rs.sh 4000
+
 reset:
 	cd ts && npm run reset
 	cd go && go clean -cache && go build ./... && go test -v ./...
+	cd rs && cargo clean && cargo test
 
 # The prose gate (see docs/STYLE-GUIDE.md). Vale over the reader-facing
 # pages, at the levels set in .vale.ini, on the same file list

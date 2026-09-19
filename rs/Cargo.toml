@@ -1,0 +1,39 @@
+# The Rust port of @tabnas/css. ts/ is canonical; this module tracks it.
+#
+# `version` MUST equal ts/package.json "version" and the VERSION constants in
+# ts/src/css.ts and go/css.go — tests/version.rs fails the build if it drifts.
+
+[package]
+name = "tabnas-css"
+version = "0.5.6"
+edition = "2021"
+rust-version = "1.74"
+license = "MIT"
+description = "Parse CSS into a reworkcss-style abstract syntax tree."
+repository = "https://github.com/tabnas/css"
+homepage = "https://github.com/tabnas/css"
+documentation = "https://docs.rs/tabnas-css"
+readme = "README.md"
+keywords = ["css", "stylesheet", "parser", "ast", "tabnas"]
+categories = ["parser-implementations", "web-programming"]
+# `doc/` ships with the crate. The Markdown pages are included by the
+# `#[cfg(doctest)]` module in src/lib.rs, so a published crate without
+# them is one whose own test suite cannot build.
+# `doc/` ships because the `#[cfg(doctest)]` module in src/lib.rs includes
+# those pages, so a crate without them is one whose own doctests cannot
+# build. `tests/` does NOT ship: every integration test reads something
+# from the repository (the shared test/spec fixtures, css-grammar.jsonic,
+# ts/package.json), none of which can be included from outside rs/, so
+# shipping them would leave `cargo test` on the unpacked crate failing on
+# a missing repository root.
+include = ["src/**", "examples/**", "doc/**", "README.md", "LICENSE"]
+
+# No dependencies, by design. The TypeScript and Go ports sit on the tabnas
+# engine; there is no Rust engine to sit on, so this port carries the grammar
+# machine itself (src/machine.rs) rather than depending on one. See
+# "Why this port is self-contained" in README.md.
+[dependencies]
+
+[lib]
+name = "tabnas_css"
+path = "src/lib.rs"
