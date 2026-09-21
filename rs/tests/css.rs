@@ -330,6 +330,36 @@ fn pathological_escapes_and_unterminated_strings_do_not_panic() {
 }
 
 #[test]
+fn a_parser_and_its_results_can_cross_threads() {
+    // README.md, doc/guide.md and doc/reference.md all say a `Css` is
+    // immutable once built and can be shared behind a reference across
+    // threads. That is a `Send + Sync` claim, and until now it was pinned
+    // only by the OnceLock in `parse` happening to need it — a refactor of
+    // that one function could have dropped the auto-trait without any test
+    // noticing. Pin it directly, and the types a parse hands back with it.
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Css>();
+    assert_send_sync::<Options>();
+    assert_send_sync::<Value>();
+    assert_send_sync::<tabnas_css::Node>();
+    assert_send_sync::<tabnas_css::Error>();
+
+    // And the shape the docs describe: one `Css`, shared by reference.
+    let css = Css::with_options(Options {
+        position: true,
+        ..Options::default()
+    });
+    std::thread::scope(|scope| {
+        for _ in 0..4 {
+            scope.spawn(|| {
+                let ast = css.parse("a { color: red }").expect("shared parse failed");
+                assert!(ast.to_json().contains(r#""position""#));
+            });
+        }
+    });
+}
+
+#[test]
 fn the_cached_parser_is_shared_safely_across_threads() {
     const SRC: &str = "a { color: red } @media x { b { c: d } }";
     let want = canonical(&ast(SRC));
