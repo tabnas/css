@@ -20,9 +20,11 @@ on:
   push:
     paths:
       - 'go/doc/**'
+      - 'rs/doc/**'
       - 'ts/doc/**'
       - 'README.md'
       - 'go/README.md'
+      - 'rs/README.md'
       - 'ts/README.md'
       - 'docs/STYLE-GUIDE.md'
       - 'ts/scripts/gated-docs.cjs'
@@ -33,9 +35,11 @@ on:
   pull_request:
     paths:
       - 'go/doc/**'
+      - 'rs/doc/**'
       - 'ts/doc/**'
       - 'README.md'
       - 'go/README.md'
+      - 'rs/README.md'
       - 'ts/README.md'
       - 'docs/STYLE-GUIDE.md'
       - 'ts/scripts/gated-docs.cjs'

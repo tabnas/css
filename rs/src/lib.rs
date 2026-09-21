@@ -52,6 +52,10 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+// A link in the public documentation that points at nothing, or at a
+// private item, renders as dead text on docs.rs. Nothing in the test gate
+// runs rustdoc, so the pin lives here, where `cargo doc` cannot miss it.
+#![deny(rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links)]
 
 pub mod grammar;
 pub mod lex;

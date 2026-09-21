@@ -260,7 +260,8 @@ pub struct RuleDef {
     pub close: Vec<Alt>,
 }
 
-/// The rule table read out of [`GRAMMAR_TEXT`].
+/// The rule table read out of the embedded grammar text (see
+/// [`grammar_text`]).
 #[derive(Clone, Debug, Default)]
 pub struct Grammar {
     rules: HashMap<String, RuleDef>,

@@ -104,9 +104,10 @@ order, but is absent from the serialised JSON. The canonical port writes
 later, so a node whose end is never recorded serialises with a `start`
 and no `end` at all.
 
-Dropping a `Value` and writing one as JSON are both iterative, so an AST
-as deep as its source cannot exhaust the stack on either. Cloning and
-comparing walk the tree recursively.
+Dropping a `Value`, cloning one, comparing two, writing one as JSON and
+formatting one for `Debug` are all iterative, so an AST as deep as its
+source cannot exhaust the stack on any of them. None of the five is
+derived.
 
 ### `struct Node`
 
