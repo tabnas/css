@@ -1,7 +1,7 @@
 /* Copyright (c) 2025 Richard Rodger, MIT License */
 
 //! The rule machine: it runs the rule table read out of
-//! [`grammar`](crate::grammar) over the tokens [`lex`](crate::lex) produces,
+//! [`grammar`](crate::grammar) over the tokens [`lex`] produces,
 //! and the grammar-local actions build the AST as it goes.
 //!
 //! The canonical TypeScript port and the Go port hand this job to the tabnas
