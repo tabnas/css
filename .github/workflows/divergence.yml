@@ -1,0 +1,58 @@
+# Staged workflow — arms scripts/divergence-probe.sh as a GATE.
+# Promoted by a maintainer via tabnas/admin rollout/apply-ci-folders.sh
+# (session credentials cannot write .github/workflows/*; admin DECISIONS.md ADR-8).
+#
+# WHY THIS IS SEPARATE FROM ci.yml
+#
+# ci.yml is the org-standard thin caller into the shared polyglot workflow.
+# This job needs BOTH runtimes built and running against each other in one
+# step, which is not something the shared workflow expresses, and pushing a
+# css-specific job upstream would put it in every repo's matrix.
+#
+# WHY IT RUNS ONE OS
+#
+# The probe compares the two runtimes to EACH OTHER, not to a golden file, so
+# a second OS re-answers a question the first already answered. The corpus is
+# generated from a fixed seed in the script, so a run is reproducible without
+# vendoring anything and without a matrix.
+name: divergence
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The probe reads the two runtimes' results as text, so a checkout that
+      # rewrote line endings would compare inputs neither runtime was given.
+      # Matches the shared workflow, which sets this for the same reason.
+      - name: no autocrlf
+        run: git config --global core.autocrlf false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: false
+
+      # The probe runs the TS port from ts/dist, so it needs a real build —
+      # not just an install. A stale dist would compare the previous commit's
+      # TypeScript against this commit's Go and report a divergence that is
+      # an artefact of the build, or miss one that is real.
+      - name: build ts
+        working-directory: ts
+        run: |
+          npm ci
+          npm run build
+
+      - name: probe
+        run: bash scripts/divergence-probe.sh 4000
