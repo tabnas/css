@@ -779,12 +779,14 @@ is exercised by fixtures here
 are not redeclared; overriding one means adding an `error` table to the
 grammar, which is a deliberate behaviour change.
 
-The other rejection rows are a weaker contract:
-[`test/spec/leniency.tsv`](test/spec/leniency.tsv) (and some rows of
-`reworkcss.tsv`) pin a bare `ERROR` cell, which asserts that a document is
-rejected but not with which code — either runtime could change the code it
-raises without a test going red. Tightening those rows to `ERROR:<code>`
-is an A3/A4 conversion target.
+The other rejection rows used to be a weaker contract: a bare `ERROR` cell
+asserts that a document is rejected but not with which code, so a runtime
+could change the code it raises without a test going red. Every such row now
+pins a code. All 24 rows of
+[`test/spec/leniency.tsv`](test/spec/leniency.tsv) and the two bare rows of
+`reworkcss.tsv` raise `unexpected`, measured in all three runtimes, and they
+say so. The two codes reachable from this plugin are therefore both pinned:
+`unexpected` and `unterminated_comment`.
 
 The machine-readable list is [`tabnas.plugin.json`](tabnas.plugin.json)
 (`errorCodes`) — empty, correctly, since nothing is declared. Keep it in

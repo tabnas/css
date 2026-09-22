@@ -19,6 +19,6 @@ p { color:; }	{"type":"stylesheet","rules":[{"type":"rule","selectors":["p"],"de
 @import url(a) /*x*/;	{"type":"stylesheet","rules":[{"type":"import","import":"url(a) /*x*/"}]}
 /*	ERROR:unterminated_comment
 thing { color: red; } /* b { color: blue; }	ERROR:unterminated_comment
-{size: large}	ERROR
-b { color: red; }\n{ color: green; }\na { color: blue; }	ERROR
+{size: large}	ERROR:unexpected
+b { color: red; }\n{ color: green; }\na { color: blue; }	ERROR:unexpected
 #©{background:lime}\n#𝄞♪♩♫♬{background:lime}\n.x{y:z}	{"type":"stylesheet","rules":[{"type":"rule","selectors":["#©"],"declarations":[{"type":"declaration","property":"background","value":"lime","position":{"start":{"line":1,"column":4},"end":{"line":1,"column":19}}}],"position":{"start":{"line":1,"column":1},"end":{"line":1,"column":20}}},{"type":"rule","selectors":["#𝄞♪♩♫♬"],"declarations":[{"type":"declaration","property":"background","value":"lime","position":{"start":{"line":2,"column":9},"end":{"line":2,"column":24}}}],"position":{"start":{"line":2,"column":1},"end":{"line":2,"column":25}}},{"type":"rule","selectors":[".x"],"declarations":[{"type":"declaration","property":"y","value":"z","position":{"start":{"line":3,"column":4},"end":{"line":3,"column":7}}}],"position":{"start":{"line":3,"column":1},"end":{"line":3,"column":8}}}],"position":{"start":{"line":1,"column":1},"end":{"line":3,"column":8}}}	{"position":true}
