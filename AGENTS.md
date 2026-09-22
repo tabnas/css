@@ -284,6 +284,14 @@ match as-is.
    quotes, never backticks; the Rust embed rejects `"##`, which would end its
    `r##"..."##` literal early. `rs/tests/grammar.rs` compares the embedded
    copy against the file on disk, so an embed nobody re-ran cannot ship.
+   The Rust reader also REJECTS any grammar field it does not implement
+   (`s`, `b`, `p`, `r`, `a`, `g` on an alt; `open`/`close` on a rule; `rule`
+   at the top). The other two ports hand the document to an engine that
+   understands the whole jsonic surface, so a new field there just works;
+   here it would be read as absent and this runtime would run a different
+   grammar with every suite green. Adding a field to `css-grammar.jsonic`
+   therefore means teaching `rs/src/grammar.rs` and `rs/src/machine.rs` what
+   it does, in the same change.
 3. The three ports must produce the same AST for the same input. The parity
    contract is the shared grammar plus the shared `test/spec/*.tsv`
    fixtures, which all three runtimes auto-discover. Add or change a parse

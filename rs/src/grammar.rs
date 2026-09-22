@@ -280,17 +280,27 @@ impl Grammar {
     }
 
     /// Read a grammar document in the jsonic subset described above.
+    ///
+    /// A key this reader does not implement is an ERROR, at every level.
+    /// The canonical ports hand the whole document to an engine that
+    /// understands the full jsonic grammar surface; this port implements the
+    /// part `css-grammar.jsonic` uses, and the two can only stay in step if
+    /// the grammar growing a field the machine does not run stops the build.
+    /// Ignoring it would leave the Rust port parsing a DIFFERENT grammar from
+    /// the one the other two runtimes run, with every suite green.
     pub fn parse(text: &str) -> Result<Grammar, String> {
         let root = Reader::new(text).document()?;
+        unknown(&root, &["rule"], "the grammar document")?;
         let mut rules = HashMap::new();
         if let Some(GVal::Map(rule_map)) = root.get("rule") {
             for (name, def) in rule_map {
                 let GVal::Map(def) = def else { continue };
+                unknown(def, &["open", "close"], &format!("rule {name:?}"))?;
                 rules.insert(
                     name.clone(),
                     RuleDef {
-                        open: build_alts(def.get("open")),
-                        close: build_alts(def.get("close")),
+                        open: build_alts(def.get("open"), name, "open")?,
+                        close: build_alts(def.get("close"), name, "close")?,
                     },
                 );
             }
@@ -326,31 +336,50 @@ pub fn grammar_text() -> &'static str {
     GRAMMAR_TEXT
 }
 
-fn build_alts(def: Option<&GVal>) -> Vec<Alt> {
+/// The alt fields this port implements. A grammar using any other one is
+/// rejected rather than read with that field dropped.
+const ALT_FIELDS: [&str; 6] = ["s", "b", "p", "r", "a", "g"];
+
+fn build_alts(def: Option<&GVal>, rule: &str, phase: &str) -> Result<Vec<Alt>, String> {
     let Some(GVal::List(items)) = def else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    items
-        .iter()
-        .map(|item| {
-            let GVal::Map(m) = item else {
-                return Alt::default();
-            };
-            Alt {
-                s: string_list(m.get("s")),
-                // A non-integer `b` is not something this grammar writes; read
-                // it as "push nothing back" rather than failing the build.
-                b: m.get("b").and_then(GVal::as_num).unwrap_or(0.0).max(0.0) as usize,
-                p: m.get("p").and_then(GVal::as_str).map(str::to_string),
-                r: m.get("r").and_then(GVal::as_str).map(str::to_string),
-                a: string_list(m.get("a")),
-                g: m.get("g")
-                    .and_then(GVal::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-            }
-        })
-        .collect()
+    let mut alts = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        let GVal::Map(m) = item else {
+            alts.push(Alt::default());
+            continue;
+        };
+        unknown(m, &ALT_FIELDS, &format!("rule {rule:?} {phase} alt {i}"))?;
+        alts.push(Alt {
+            s: string_list(m.get("s")),
+            // A non-integer `b` is not something this grammar writes; read
+            // it as "push nothing back" rather than failing the build.
+            b: m.get("b").and_then(GVal::as_num).unwrap_or(0.0).max(0.0) as usize,
+            p: m.get("p").and_then(GVal::as_str).map(str::to_string),
+            r: m.get("r").and_then(GVal::as_str).map(str::to_string),
+            a: string_list(m.get("a")),
+            g: m.get("g")
+                .and_then(GVal::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
+    }
+    Ok(alts)
+}
+
+/// Reject a key this reader does not implement, naming where it was found.
+fn unknown(map: &GMap, known: &[&str], where_: &str) -> Result<(), String> {
+    for (key, _) in map {
+        if !known.contains(&key.as_str()) {
+            return Err(format!(
+                "{where_}: unknown field {key:?}. This port implements {known:?}; \
+                 a grammar field the rule machine does not run must fail the \
+                 build rather than be read as absent."
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Read a field that is either one string or a list of them.
