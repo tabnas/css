@@ -147,26 +147,54 @@ fn divergence_register() {
             continue;
         }
 
-        // 3. When it does not, and it now produces what ANOTHER runtime's
-        //    cell says, the divergence is CLOSED and the row must go —
-        //    reporting that as a regression would be the wrong conclusion.
-        match cells
+        // 3. When it does not, the row has MOVED, and there are two ways
+        //    it can have moved. It is CLOSED only when this runtime now
+        //    agrees with EVERY other cell.
+        //
+        //    Agreeing with ONE of several is not a repair. With three
+        //    runtimes registered, a row that moves from its own value to
+        //    the value in the `go` cell has this runtime crossing from one
+        //    side of a three-way split to another, with the canonical
+        //    runtime still alone on the far side -- which is a regression,
+        //    and reporting it as closed would tell the reader to delete the
+        //    row that had just caught it.
+        let others: Vec<&(&str, String)> = cells.iter().filter(|cell| cell.0 != MINE).collect();
+        let agree: Vec<&str> = others
             .iter()
-            .find(|(name, value)| *name != MINE && *value == got)
-        {
-            Some((name, _)) => failures.push(format!(
-                "{}: input {:?}\n  DIVERGENCE CLOSED: {MINE} now agrees with {name}.\n  \
-                 both produce {got}\n  Delete this row — a register that outlives its \
-                 own repair is the failure this file exists to prevent.",
+            .filter(|cell| cell.1 == got)
+            .map(|cell| cell.0)
+            .collect();
+        if agree.len() == others.len() {
+            failures.push(format!(
+                "{}: input {:?}\n  DIVERGENCE CLOSED: {MINE} now agrees with every other \
+                 runtime ({}).\n  all produce {got}\n  Delete this row — a register that \
+                 outlives its own repair is the failure this file exists to prevent.",
                 row.label(),
-                row.input
-            )),
-            None => failures.push(format!(
+                row.input,
+                agree.join(", "),
+            ));
+        } else {
+            let differ: Vec<String> = others
+                .iter()
+                .filter(|cell| cell.1 != got)
+                .map(|cell| format!("{} {}", cell.0, cell.1))
+                .collect();
+            let crossed = if agree.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "\n  it now matches {}, which is NOT this divergence closing: \
+                     the row still records a split",
+                    agree.join(", "),
+                )
+            };
+            failures.push(format!(
                 "{}: input {:?}\n  register says {MINE} produces {mine}\n  \
-                 it produced           {got}",
+                 it produced           {got}{crossed}\n  still differing: {}",
                 row.label(),
-                row.input
-            )),
+                row.input,
+                differ.join("; "),
+            ));
         }
     }
 
