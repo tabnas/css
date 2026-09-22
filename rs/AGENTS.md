@@ -103,15 +103,20 @@ because it needs the TypeScript port built:
 bash ../scripts/divergence-probe-rs.sh 4000    # or `make probe-rs`
 ```
 
-It runs the corpus once per option combination, all four of them, and
-resolves the `parse` example through `cargo metadata` rather than assuming
-`rs/target`, so a shared target directory does not break it.
+It runs the corpus once per option combination, all four of them, and asks
+cargo for the `parse` example it just built rather than deriving a path, so
+a shared target directory or a configured target triple does not break it.
+It also refuses a combination whose output matches the default mode: an
+option the corpus never reaches is a run that reports coverage it does not
+have.
 
-**No GitHub workflow runs any of this yet.** `ci/workflows/rust.yml` is
-staged and needs a maintainer to promote it (session credentials cannot
-write `.github/workflows/*`), so until then the Rust gates run locally or
-not at all. Run them before merging anything that touches `rs/`, the
-grammar, or a fixture.
+**`.github/workflows/rust.yml` runs all of this on every push and pull
+request.** Two jobs: `rust` does `cargo build`, `cargo test`,
+`cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` on the
+`stable` toolchain the runner installs with `rustup`; `probe` builds the
+TypeScript port and runs `scripts/divergence-probe-rs.sh 4000`. Run them
+locally before pushing anything that touches `rs/`, the grammar, or a
+fixture -- the workflow is the gate, not the first place to find out.
 
 ## Versions and releasing
 
