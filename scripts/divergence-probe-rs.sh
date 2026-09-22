@@ -111,8 +111,17 @@ console.error("probe: generated " + out.length + " inputs")
 # just wrote. `--message-format=json` emits a `compiler-artifact` line per
 # built target, and the `executable` field of the one whose target is our
 # example is the answer under every profile, target-dir and triple.
+# BUILT FOR THE HOST, explicitly. Finding the artifact is not the same as
+# being able to run it: a `build.target` or CARGO_BUILD_TARGET naming a
+# foreign triple produces a binary this machine cannot execute, and the
+# probe would die on exec having compared nothing. `--target` on the
+# command line overrides both, so the example is always host-runnable
+# whatever the checkout is configured to cross-compile.
+HOST="$(rustc -vV | sed -n 's/^host: //p')"
+[ -n "$HOST" ] || { echo "probe: rustc did not report a host triple" >&2; exit 2; }
+
 PARSE="$(cargo build --quiet --manifest-path "$HERE/rs/Cargo.toml" --example parse \
-  --message-format=json-render-diagnostics |
+  --target "$HOST" --message-format=json-render-diagnostics |
   node -e 'let s = ""
 process.stdin.on("data", (d) => (s += d))
 process.stdin.on("end", () => {
