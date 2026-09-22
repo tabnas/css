@@ -12,13 +12,15 @@
 #
 # TWO DIFFERENCES FROM THE GO PROBE, both deliberate:
 #
-#   1. It runs the corpus TWICE, once with the `position` option off and once
-#      with it on. Positions are where the ports are most easily and most
-#      invisibly wrong, and every divergence found while writing the Rust port
-#      was position-only — so a probe that never turns them on cannot see the
-#      class of bug it is most likely to catch. (The Go probe does not, which
-#      is why the TS/Go position divergences recorded in AGENTS.md went
-#      unreported by it.)
+#   1. It runs the corpus once per OPTION COMBINATION — all four of them,
+#      since the option surface is two booleans. Positions are where the ports
+#      are most easily and most invisibly wrong, and every divergence found
+#      while writing the Rust port was position-only — so a probe that never
+#      turns them on cannot see the class of bug it is most likely to catch.
+#      (The Go probe does not, which is why the TS/Go position divergences
+#      recorded in AGENTS.md went unreported by it.) `lowercaseProperties`
+#      is in for the same reason, one path lower: it rewrites the property
+#      name, and nothing else the probe runs exercises that rewrite.
 #
 #   2. Newlines ride in the corpus as the `\n` escape the shared fixtures use,
 #      rather than being dropped. Line and column tracking is only exercised
@@ -99,7 +101,12 @@ if [ ! -x "$PARSE" ]; then
 fi
 
 STATUS=0
-for MODE in "" "--position"; do
+# EVERY option combination, not just the two the header used to describe.
+# `lowercaseProperties` rewrites the property name, which is a text path of
+# its own, and a probe that never turns an option on cannot see a port that
+# implements it differently. Four combinations of two booleans is the whole
+# option surface (AGENTS.md, "Defaults").
+for MODE in "" "--position" "--lowercase-properties" "--position --lowercase-properties"; do
   LABEL="${MODE:-default options}"
 
   node "$HERE/scripts/probe-lines.cjs" $MODE < "$WORK/in.txt" > "$WORK/ts.out"
