@@ -11,6 +11,12 @@ the Go module tracks it, and so does this crate. All three read the same
 grammar file and are held to the same shared conformance fixtures, so the
 same stylesheet gives the same tree in every one.
 
+Where a port does differ, the difference is a row of
+[`../test/divergent.tsv`](../test/divergent.tsv) with a cell per runtime, and
+each suite asserts its own cell. The four rows there today are all Go against
+TypeScript; this crate follows TypeScript on every one, including the column
+arithmetic it would be tidier to round off.
+
 ## Install
 
 The crate is not on crates.io yet. This repository's release workflow

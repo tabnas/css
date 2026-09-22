@@ -106,7 +106,10 @@ The AST is measured against the
 `ae6a6f9`): **45 of its 46 cases are compared tree-for-tree** against
 upstream's own `ast.json`, with and without source positions, in all three
 runtimes, and all six of its non-`silent` accept/reject assertions
-hold. There are no known divergences. The forty-sixth case, a zero-length source, is
+hold. No case in that corpus is parsed differently by the three runtimes.
+Four inputs outside it are, all four in the Go port, and each one is pinned as
+a row of [`test/divergent.tsv`](test/divergent.tsv), read by all three suites,
+rather than described in prose. The forty-sixth case, a zero-length source, is
 asserted explicitly rather than skipped, because it used to be one: `''` now
 yields `{ type: 'stylesheet', rules: [] }`, as upstream does, and so does any
 non-empty source with no rules.
