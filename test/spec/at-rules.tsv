@@ -10,3 +10,9 @@ input	expected	opts
 @-moz-document url(x) { a { c: 1 } }	{"type":"stylesheet","rules":[{"type":"document","document":"url(x)","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"c","value":"1"}]}],"vendor":"-moz-"}]}
 @layer base { a { c: 1 } }	{"type":"stylesheet","rules":[{"type":"layer","layer":"base","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"c","value":"1"}]}]}]}
 @media print {\n      a { color: black }\n      .b, .c { margin: 0 }\n    }	{"type":"stylesheet","rules":[{"type":"media","media":"print","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"color","value":"black"}]},{"type":"rule","selectors":[".b",".c"],"declarations":[{"type":"declaration","property":"margin","value":"0"}]}]}]}
+@host { a { color: red } }	{"type":"stylesheet","rules":[{"type":"host","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"color","value":"red"}]}]}]}
+@viewport { width: 100px }	{"type":"stylesheet","rules":[{"type":"viewport","declarations":[{"type":"declaration","property":"width","value":"100px"}]}]}
+@-ms-viewport { width: 100px }	{"type":"stylesheet","rules":[{"type":"-ms-viewport","declarations":[{"type":"declaration","property":"width","value":"100px"}]}]}
+@counter-style x { system: cyclic }	{"type":"stylesheet","rules":[{"type":"counter-style","declarations":[{"type":"declaration","property":"system","value":"cyclic"}]}]}
+@property --x { syntax: "<color>"; inherits: false }	{"type":"stylesheet","rules":[{"type":"property","declarations":[{"type":"declaration","property":"syntax","value":"\"<color>\""},{"type":"declaration","property":"inherits","value":"false"}]}]}
+@font-palette-values --y { font-family: A }	{"type":"stylesheet","rules":[{"type":"font-palette-values","declarations":[{"type":"declaration","property":"font-family","value":"A"}]}]}

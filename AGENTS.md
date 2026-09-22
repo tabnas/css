@@ -53,8 +53,14 @@ three runtimes; where the Rust port differs, it says so.
 Block at-rules are classified by keyword: a **rules** body (`media`,
 `supports`, `document`, `host`, and unknown block at-rules → `{ type: kw,
 [kw]: prelude, rules }`), a **declarations** body (`font-face`, `page`,
-`viewport`, `counter-style`, `property`, …), or **keyframes**. A leading `-`
-vendor prefix is split into `vendor`.
+`viewport`, `counter-style`, `property`, `font-palette-values`), or
+**keyframes**. A leading `-` vendor prefix is split into `vendor` on exactly
+two of those: `document` (where `vendor` is always present, `''` when
+unprefixed) and `keyframes` (where it is present only when there is one).
+Everywhere else the prefix stays in `type`, so `@-ms-viewport` is a node of
+type `-ms-viewport` with no `vendor` field. A declarations-body at-rule other
+than `page` drops its prelude entirely: `@counter-style x` keeps no `x`.
+`test/spec/at-rules.tsv` pins all of that in the three runtimes.
 
 ## How the parse works
 
