@@ -83,12 +83,27 @@ console.error("probe: generated " + out.length + " inputs")
 
 cargo build --quiet --manifest-path "$HERE/rs/Cargo.toml" --example parse
 
+# Where cargo PUT that binary is not always `rs/target`: CARGO_TARGET_DIR, or
+# a `build.target-dir` in any cargo config the machine carries, moves it. Ask
+# cargo rather than assuming, so the probe runs on a machine with a shared
+# target directory instead of dying with "No such file or directory".
+TARGET_DIR="$(cargo metadata --manifest-path "$HERE/rs/Cargo.toml" \
+  --format-version 1 --no-deps |
+  node -e 'let s = ""
+process.stdin.on("data", (d) => (s += d))
+process.stdin.on("end", () => console.log(JSON.parse(s).target_directory))')"
+PARSE="$TARGET_DIR/debug/examples/parse"
+if [ ! -x "$PARSE" ]; then
+  echo "probe: no parse example at $PARSE" >&2
+  exit 2
+fi
+
 STATUS=0
 for MODE in "" "--position"; do
   LABEL="${MODE:-default options}"
 
   node "$HERE/scripts/probe-lines.cjs" $MODE < "$WORK/in.txt" > "$WORK/ts.out"
-  "$HERE/rs/target/debug/examples/parse" --lines $MODE < "$WORK/in.txt" > "$WORK/rs.out"
+  "$PARSE" --lines $MODE < "$WORK/in.txt" > "$WORK/rs.out"
 
   node -e '
 const fs = require("fs")
