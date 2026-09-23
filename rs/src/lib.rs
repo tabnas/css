@@ -98,7 +98,7 @@ pub use value::{Node, Value};
 /// `ts/src/css.ts` and `const VERSION` in `go/css.go`. The release
 /// orchestrator rewrites all of them together; `tests/version.rs` (and its
 /// TypeScript and Go counterparts) fail the build if any drifts.
-pub const VERSION: &str = "0.5.6";
+pub const VERSION: &str = "0.5.7";
 
 /// A reusable CSS parser.
 ///
