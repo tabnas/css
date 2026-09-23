@@ -38,16 +38,22 @@ the `<file>:<line>` in a failure message — comes from
 [`@tabnas/support`](https://github.com/tabnas/support) and its Go half, so
 those two loaders cannot drift from each other either.
 
-There is no Rust half of `@tabnas/support`, so `rs/tests/support/mod.rs`
-stands in for one: the same fixture contract, written out again, plus a small
-JSON reader (the crate has no dependencies, and pulling one in for the test
-profile alone would be a strange price for reading these files). It is the
-one place a divergence could hide in the LOADER rather than in the parser,
-which is why it is kept small.
+`rs/tests/support/mod.rs` stands in for the third half: the same fixture
+contract, written out again, plus a small JSON reader. There IS a Rust half of
+`@tabnas/support` (the `tabnas-support` crate), and this crate deliberately
+does not take it: `rs/` declares no dependencies at all, dev ones included, so
+`cargo test` runs from a checkout of this repository alone, with no sibling
+path dependency and no registry access. That is the price paid for writing the
+loader out again, and it is the one place a divergence could hide in the
+LOADER rather than in the parser, which is why it is kept small.
 
 All three discover files by directory listing: adding a `.tsv` here runs it in
-every runtime without touching any runner. An empty fixture, and a spec
-directory with no fixtures in it, both **fail** — a runner that reports
+every runtime without touching any runner. That is also why the divergence
+register is NOT in `spec/`: [`divergent.tsv`](divergent.tsv) sits beside it,
+because every row of it is a row one runtime is expected to fail. See
+"Known cross-runtime divergence" in the root `AGENTS.md`.
+
+An empty fixture, and a spec directory with no fixtures in it, both **fail** — a runner that reports
 green having run nothing is indistinguishable from coverage that was never
 there.
 

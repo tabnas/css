@@ -51,12 +51,27 @@ pub struct Row {
     pub expected: String,
     /// The row's plugin options, as raw JSON (empty means defaults).
     pub opts: String,
+    /// Every column of the row, keyed by its header name. The register in
+    /// `tests/divergent.rs` reads one column per RUNTIME, which `input` /
+    /// `expected` / `opts` cannot name.
+    pub cells: Vec<(String, String)>,
 }
 
 impl Row {
     /// `<file>:<line>`, the label a failure is reported under.
     pub fn label(&self) -> String {
         format!("{}:{}", self.file, self.line)
+    }
+
+    /// One column by header name, or `None` when the file has no such
+    /// column. A register asks for its runtime columns this way, and a
+    /// missing one must be reported as a malformed file rather than read as
+    /// an empty expectation.
+    pub fn named(&self, key: &str) -> Option<&str> {
+        self.cells
+            .iter()
+            .find(|(name, _)| name == key)
+            .map(|(_, value)| value.as_str())
     }
 }
 
@@ -135,6 +150,11 @@ pub fn read_spec_file(path: &Path) -> Vec<Row> {
             input: decode(&named("input")),
             expected: named("expected"),
             opts: named("opts"),
+            cells: header
+                .iter()
+                .cloned()
+                .zip(cols.iter().cloned().chain(std::iter::repeat(String::new())))
+                .collect(),
         });
     }
     rows

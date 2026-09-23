@@ -21,27 +21,27 @@ input	expected	opts
 # an EMPTY prelude, while reworkcss/css - the AST model README.md claims, and
 # the bar set in AGENTS.md - throws "selector missing". This plugin follows
 # reworkcss, so ERROR is the expectation here.
-{a:1}	ERROR
-{a:1	ERROR
-[1,2,3]	ERROR
-[1,2,3	ERROR
-a:1	ERROR
-a:1,b:2	ERROR
-true	ERROR
-null	ERROR
-42	ERROR
-"str"	ERROR
-'str'	ERROR
-`str`	ERROR
-a,b,c	ERROR
-{"a":1}	ERROR
-{}	ERROR
-[]	ERROR
-a{c:1} # hash comment	ERROR
-a{c:1} // line comment	ERROR
-a{c:1}}	ERROR
-}	ERROR
-a{c:1} extra	ERROR
-a{c:1};;	ERROR
-a{c:1	ERROR
-@media screen{	ERROR
+{a:1}	ERROR:unexpected
+{a:1	ERROR:unexpected
+[1,2,3]	ERROR:unexpected
+[1,2,3	ERROR:unexpected
+a:1	ERROR:unexpected
+a:1,b:2	ERROR:unexpected
+true	ERROR:unexpected
+null	ERROR:unexpected
+42	ERROR:unexpected
+"str"	ERROR:unexpected
+'str'	ERROR:unexpected
+`str`	ERROR:unexpected
+a,b,c	ERROR:unexpected
+{"a":1}	ERROR:unexpected
+{}	ERROR:unexpected
+[]	ERROR:unexpected
+a{c:1} # hash comment	ERROR:unexpected
+a{c:1} // line comment	ERROR:unexpected
+a{c:1}}	ERROR:unexpected
+}	ERROR:unexpected
+a{c:1} extra	ERROR:unexpected
+a{c:1};;	ERROR:unexpected
+a{c:1	ERROR:unexpected
+@media screen{	ERROR:unexpected

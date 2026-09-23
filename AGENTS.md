@@ -53,8 +53,14 @@ three runtimes; where the Rust port differs, it says so.
 Block at-rules are classified by keyword: a **rules** body (`media`,
 `supports`, `document`, `host`, and unknown block at-rules → `{ type: kw,
 [kw]: prelude, rules }`), a **declarations** body (`font-face`, `page`,
-`viewport`, `counter-style`, `property`, …), or **keyframes**. A leading `-`
-vendor prefix is split into `vendor`.
+`viewport`, `counter-style`, `property`, `font-palette-values`), or
+**keyframes**. A leading `-` vendor prefix is split into `vendor` on exactly
+two of those: `document` (where `vendor` is always present, `''` when
+unprefixed) and `keyframes` (where it is present only when there is one).
+Everywhere else the prefix stays in `type`, so `@-ms-viewport` is a node of
+type `-ms-viewport` with no `vendor` field. A declarations-body at-rule other
+than `page` drops its prelude entirely: `@counter-style x` keeps no `x`.
+`test/spec/at-rules.tsv` pins all of that in the three runtimes.
 
 ## How the parse works
 
@@ -108,13 +114,15 @@ array.
 | [`rs/`](rs/) | Rust port — the `tabnas-css` crate (`version` in `rs/Cargo.toml`, `VERSION` in `rs/src/lib.rs`). `parse` / `parse_with` / `Css`. **No dependencies**: with no Rust engine to plug into, it carries `lex.rs` (the `cssToken` matcher and scanners), `machine.rs` (the rule machine) and `grammar.rs` (the embedded grammar plus a reader for the jsonic subset it is written in). |
 | [`css-grammar.jsonic`](css-grammar.jsonic) | **Single source of truth** for the grammar rules, authored in jsonic syntax. |
 | [`ts/embed-grammar.js`](ts/embed-grammar.js) | Embeds `css-grammar.jsonic` into **all three** of `src/css.ts`, `go/css.go` and `rs/src/grammar.rs` (between `BEGIN/END EMBEDDED` markers). Runs first in `npm run build`. |
-| [`ts/test/`](ts/test/) | TS tests (compiled to `dist-test/`): `css.test.ts` (AST parse cases), `parity.test.ts` (the shared `test/spec/*.tsv` fixtures), `reworkcss.test.ts` (the external conformance corpus), `debug-model.test.ts` (`@tabnas/debug` composition / model), `doc-examples.test.ts` (`// =>` assertions in README/doc fences), `leniency.test.ts` (jsonic-leak guard), `perf.test.ts` (instance-reuse guard), `version.test.ts` (exported `VERSION` vs `package.json`). |
+| [`ts/test/`](ts/test/) | TS tests (compiled to `dist-test/`): `css.test.ts` (AST parse cases), `parity.test.ts` (the shared `test/spec/*.tsv` fixtures), `divergent.test.ts` (the divergence register), `reworkcss.test.ts` (the external conformance corpus), `debug-model.test.ts` (`@tabnas/debug` composition / model), `doc-examples.test.ts` (`// =>` assertions in README/doc fences), `leniency.test.ts` (jsonic-leak guard), `perf.test.ts` (instance-reuse guard), `version.test.ts` (exported `VERSION` vs `package.json`). |
 | [`test/spec/`](test/spec/) | Shared `.tsv` conformance fixtures, auto-discovered and run by **both** runtimes. See [`test/AGENTS.md`](test/AGENTS.md). |
-| [`go/css_test.go`](go/css_test.go), [`go/perf_test.go`](go/perf_test.go), [`go/parity_test.go`](go/parity_test.go), [`go/reworkcss_test.go`](go/reworkcss_test.go), [`go/version_test.go`](go/version_test.go) | Go suite — the remaining in-language AST cases, the perf guard, the shared-fixture runner, the external conformance corpus runner, and the `VERSION` vs `ts/package.json` drift check. |
+| [`go/css_test.go`](go/css_test.go), [`go/perf_test.go`](go/perf_test.go), [`go/parity_test.go`](go/parity_test.go), [`go/divergent_test.go`](go/divergent_test.go), [`go/reworkcss_test.go`](go/reworkcss_test.go), [`go/version_test.go`](go/version_test.go) | Go suite — the remaining in-language AST cases, the perf guard, the shared-fixture runner, the divergence register, the external conformance corpus runner, and the `VERSION` vs `ts/package.json` drift check. |
 | [`go/conformance_test.go`](go/conformance_test.go) | `TestMain` — fetches the pinned corpus before any Go test runs, so the Go conformance runner is never left without one. |
-| [`rs/tests/`](rs/tests/) | Rust suite: `parity.rs` (the shared `test/spec/*.tsv` fixtures), `reworkcss.rs` (the external conformance corpus, with its own fetch), `css.rs` (what a fixture cannot express, plus the crate's API), `grammar.rs` (the embed vs the file on disk, and the subset reader), `perf.rs` (instance-reuse guard), `version.rs` (`VERSION` vs `Cargo.toml` and `ts/package.json`), `support/mod.rs` (the fixture loader, a JSON reader and the canonical compare, standing in for `@tabnas/support`). The doc examples run as doctests via `#[cfg(doctest)]` in `rs/src/lib.rs`. |
-| [`scripts/divergence-probe.sh`](scripts/divergence-probe.sh), [`go/divergence_probe_test.go`](go/divergence_probe_test.go) | TS/Go differential probe over a deterministic generated corpus. A GATE (exits non-zero on divergence); `ci/workflows/divergence.yml` is staged to run it. The Go half is inert unless `CSS_DUMP_IN`/`CSS_DUMP_OUT` are set. Runs with the default options only. |
-| [`scripts/divergence-probe-rs.sh`](scripts/divergence-probe-rs.sh), [`scripts/probe-lines.cjs`](scripts/probe-lines.cjs) | TS/Rust differential probe, same contract. It runs the corpus TWICE, with `position` off and on, and carries newlines as the fixtures' `\n` escape rather than dropping them — the two TS/Go divergences recorded below are position-only and multi-line, and are invisible to a probe that does neither. |
+| [`rs/AGENTS.md`](rs/AGENTS.md) | The crate's own agents guide: what is specific to the Rust port (no engine under it, the four behaviours that follow from that, its gates, and the version sites the release orchestrator does not rewrite). |
+| [`rs/tests/`](rs/tests/) | Rust suite: `parity.rs` (the shared `test/spec/*.tsv` fixtures), `divergent.rs` (the divergence register), `reworkcss.rs` (the external conformance corpus, with its own fetch), `css.rs` (what a fixture cannot express, plus the crate's API), `grammar.rs` (the embed vs the file on disk, and the subset reader), `perf.rs` (instance-reuse guard), `version.rs` (`VERSION` vs `Cargo.toml` and `ts/package.json`), `support/mod.rs` (the fixture loader, a JSON reader and the canonical compare, standing in for `@tabnas/support`). The doc examples run as doctests via `#[cfg(doctest)]` in `rs/src/lib.rs`. |
+| [`test/divergent.tsv`](test/divergent.tsv) | The executable divergence register (ADR-14): one row per input the three ports disagree on, one cell per runtime, read by `ts/test/divergent.test.ts`, `go/divergent_test.go` and `rs/tests/divergent.rs`. It sits BESIDE `test/spec/` because every runtime runs everything in that directory. |
+| [`scripts/divergence-probe.sh`](scripts/divergence-probe.sh), [`go/divergence_probe_test.go`](go/divergence_probe_test.go) | TS/Go differential probe over a deterministic generated corpus. A GATE (exits non-zero on divergence); `.github/workflows/divergence.yml` (job `ts-go-probe`) runs it, and is the only CI job that does. The Go half is inert unless `CSS_DUMP_IN`/`CSS_DUMP_OUT` are set. Runs with the default options only. |
+| [`scripts/divergence-probe-rs.sh`](scripts/divergence-probe-rs.sh), [`scripts/probe-lines.cjs`](scripts/probe-lines.cjs) | TS/Rust differential probe, same contract. It runs the corpus once per OPTION COMBINATION, all four of them, and carries newlines as the fixtures' `\n` escape rather than dropping them — the two TS/Go divergences recorded below are position-only and multi-line, and are invisible to a probe that does neither. |
 | [`ts/doc/grammar.svg`](ts/doc/grammar.svg), [`ts/doc/grammar.txt`](ts/doc/grammar.txt) | Railroad / ASCII diagram of the live grammar, generated by `@tabnas/railroad`. |
 | [`ts/doc/`](ts/doc/), [`go/doc/`](go/doc/), [`rs/doc/`](rs/doc/) | Per-runtime 4-quadrant Diataxis docs. All three sets are in the prose gate (`ts/scripts/gated-docs.cjs`). |
 | [`scripts/fetch-reworkcss-tests.sh`](scripts/fetch-reworkcss-tests.sh) | Fetches the pinned third-party reworkcss/css conformance corpus into `test/reworkcss-css/` (gitignored, never committed). Also `npm run install-reworkcss-tests` from `ts/`. |
@@ -204,9 +212,10 @@ raw prelude text and Go rejected — are gone: both runtimes now raise
 `unterminated_comment`, and `test/spec/comments.tsv` pins `@import/*red`,
 `@media/*x` and `@font-face/*a` so it cannot come back.
 
-**TS/Rust: none, with `position` off AND on.**
-`scripts/divergence-probe-rs.sh` reports NO DIVERGENCE on both passes. Beyond
-the 8000-input default, the port was checked against the TS runtime over
+**TS/Rust: none, under every option combination.**
+`scripts/divergence-probe-rs.sh` reports NO DIVERGENCE on all four passes
+(`position` and `lowercaseProperties`, off and on). Beyond the 4000 inputs
+`make probe-rs` generates, the port was checked against the TS runtime over
 ~240k generated inputs across two alphabets and four option combinations,
 plus the shared fixtures and the whole reworkcss corpus.
 
@@ -244,11 +253,21 @@ it, because its alphabet has no such character. The other two need
    "reproduces the JS result rather than inventing a new one", and for the
    substring it does; for the column it does not.
 
-None is pinned by a fixture, and none can be: `test/spec/*.tsv` runs in every
-runtime and a row for any of them would be red in Go by construction. All
-three are asserted in `rs/tests/css.rs` instead, where the divergence is
-named. Deciding the intended TS behaviour is the fix, not making the other
-ports match as-is.
+None belongs in `test/spec/*.tsv`: that directory runs in every runtime, and a
+row for any of these would be red in Go by construction. They are pinned in
+[`test/divergent.tsv`](test/divergent.tsv) instead — the executable register
+ADR-14 asks for, one column per runtime, with a fourth row for the BOM half of
+item 1. All three columns are EXECUTED: `ts/test/divergent.test.ts` reads
+`ts`, `go/divergent_test.go` reads `go` and `rs/tests/divergent.rs` reads
+`rust`, so a row states what each port does today rather than what someone
+measured once. The register fails BOTH ways — a row whose runtimes have come
+to agree reports the divergence CLOSED and names itself for deletion — which
+is what prose cannot do and why the paragraphs above are the explanation and
+not the record. `rs/tests/css.rs` additionally asserts the Rust side of each,
+where the canonical behaviour is named in words.
+
+Deciding the intended TS behaviour is the fix, not making the other ports
+match as-is.
 
 ## Authority and alignment rules
 
@@ -266,6 +285,14 @@ ports match as-is.
    quotes, never backticks; the Rust embed rejects `"##`, which would end its
    `r##"..."##` literal early. `rs/tests/grammar.rs` compares the embedded
    copy against the file on disk, so an embed nobody re-ran cannot ship.
+   The Rust reader also REJECTS any grammar field it does not implement
+   (`s`, `b`, `p`, `r`, `a`, `g` on an alt; `open`/`close` on a rule; `rule`
+   at the top). The other two ports hand the document to an engine that
+   understands the whole jsonic surface, so a new field there just works;
+   here it would be read as absent and this runtime would run a different
+   grammar with every suite green. Adding a field to `css-grammar.jsonic`
+   therefore means teaching `rs/src/grammar.rs` and `rs/src/machine.rs` what
+   it does, in the same change.
 3. The three ports must produce the same AST for the same input. The parity
    contract is the shared grammar plus the shared `test/spec/*.tsv`
    fixtures, which all three runtimes auto-discover. Add or change a parse
@@ -467,7 +494,7 @@ lexer or a scanner:
 
 ```bash
 make probe        # TS vs Go,   default options
-make probe-rs     # TS vs Rust, default options AND position: true
+make probe-rs     # TS vs Rust, all four option combinations
 ```
 
 Each line is a subshell. `npm test` compiles first — its `pretest`
@@ -748,17 +775,27 @@ This package declares **no** error codes of its own — `css-grammar.jsonic`
 carries no `options: error:` table. Every error css raises is inherited
 from the engine or from `@tabnas/jsonic`; of those, `unterminated_comment`
 is exercised by fixtures here
-([`test/spec/reworkcss.tsv`](test/spec/reworkcss.tsv) pins
-`ERROR:unterminated_comment` for an unclosed `/* ... */`). Inherited codes
-are not redeclared; overriding one means adding an `error` table to the
-grammar, which is a deliberate behaviour change.
+([`test/spec/comments.tsv`](test/spec/comments.tsv) pins
+`ERROR:unterminated_comment` on five rows, each an unclosed `/* ...`).
+Inherited codes are not redeclared; overriding one means adding an `error`
+table to the grammar, which is a deliberate behaviour change.
 
-The other rejection rows are a weaker contract:
-[`test/spec/leniency.tsv`](test/spec/leniency.tsv) (and some rows of
-`reworkcss.tsv`) pin a bare `ERROR` cell, which asserts that a document is
-rejected but not with which code — either runtime could change the code it
-raises without a test going red. Tightening those rows to `ERROR:<code>`
-is an A3/A4 conversion target.
+The other rejection rows used to be a weaker contract: a bare `ERROR` cell
+asserts that a document is rejected but not with which code, so a runtime
+could change the code it raises without a test going red. Every such row in
+the plugin's own fixtures now pins a code: all 24 rows of
+[`test/spec/leniency.tsv`](test/spec/leniency.tsv) raise `unexpected`,
+measured in all three runtimes, and they say so. The two codes reachable
+from this plugin are therefore both pinned: `unexpected` and
+`unterminated_comment`.
+
+The four rejection rows of [`test/spec/reworkcss.tsv`](test/spec/reworkcss.tsv)
+stay bare `ERROR`, deliberately. That file is generated by running the
+upstream `reworkcss/css` parser (see [`test/AGENTS.md`](test/AGENTS.md)),
+which throws a `CssSyntaxError` and has no tabnas code to report, so a code
+there could only be written by hand — and it would fail an
+external-conformance row when the engine changes WHICH code it raises,
+although upstream's requirement (reject the document) is still met.
 
 The machine-readable list is [`tabnas.plugin.json`](tabnas.plugin.json)
 (`errorCodes`) — empty, correctly, since nothing is declared. Keep it in
@@ -807,13 +844,23 @@ siblings, builds each, then runs `npm test` here (the composition test runs
 because `@tabnas/debug` is a devDependency) and `go build` / `go test` for the
 Go module.
 
-The shared workflow does not know about Rust. A staged
-[`ci/workflows/rust.yml`](ci/workflows/rust.yml) builds and tests the crate,
-runs clippy and rustfmt, and runs the TS/Rust differential probe; like every
-workflow here it needs a maintainer to promote it, because session
-credentials cannot write `.github/workflows/*`. **Until it is promoted, no CI
-job runs `cargo test`** — run it locally before merging anything that touches
-`rs/`, the grammar, or a fixture.
+The shared workflow does not know about Rust, so
+[`.github/workflows/rust.yml`](.github/workflows/rust.yml) covers it: a
+`rust` job that builds and tests the crate and runs clippy `-D warnings`
+and `cargo fmt --check`, and a `probe` job that builds the TypeScript port
+and runs the TS/Rust differential probe. Both run on every push and pull
+request. Run them locally before pushing anything that touches `rs/`, the
+grammar, or a fixture — the workflow is the gate, not the first place to
+find out.
+
+The TS/Go pair has its own workflow,
+[`.github/workflows/divergence.yml`](.github/workflows/divergence.yml): a
+`ts-go-probe` job that builds the TypeScript port and runs
+`scripts/divergence-probe.sh` against the Go runtime. It is **not** a
+duplicate of `rust.yml`'s `probe` job, which runs the TS/Rust script: each
+workflow is the only CI gate for its pair, so do not delete either one as
+redundant. Both install with `npm install`, not `npm ci`, because this
+repository tracks no lockfile and `npm ci` exits with `EUSAGE` without one.
 
 **All three** runtimes fetch the reworkcss corpus for themselves, so the
 conformance suites really run rather than skipping: the `pretest` npm script

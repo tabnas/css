@@ -132,3 +132,57 @@ fn the_reader_reports_malformed_input_rather_than_panicking() {
         );
     }
 }
+
+// A field this reader does not implement is an ERROR, at every level of the
+// document.
+//
+// The canonical ports hand the grammar to an engine that understands the
+// whole jsonic alt surface; this port implements the six alt fields
+// `css-grammar.jsonic` uses. Reading an unknown one as absent would leave
+// this runtime running a DIFFERENT grammar from the other two, silently and
+// with every suite green, which is the failure mode the shared grammar file
+// exists to prevent. Grammar::load panics on such a document, so the build
+// stops instead.
+#[test]
+fn a_grammar_field_the_machine_does_not_run_is_rejected() {
+    let cases = [
+        // An alt field: `c` is jsonic's condition, which this port has no
+        // machinery for.
+        (
+            "{ rule: { r1: { open: [ { s: '#TX' c: 'cond' } ] } } }",
+            "\"c\"",
+        ),
+        // A rule-level hook: `bo` runs before the rule opens.
+        ("{ rule: { r1: { bo: '@x' open: [] } } }", "\"bo\""),
+        // A top-level section: `options` would change the lexer, not a rule.
+        (
+            "{ rule: { r1: { open: [] } } options: { x: 1 } }",
+            "\"options\"",
+        ),
+    ];
+
+    for (text, named) in cases {
+        let error = Grammar::parse(text)
+            .err()
+            .unwrap_or_else(|| panic!("{text}: read without error, so the field was DROPPED"));
+        assert!(
+            error.contains(named) && error.contains("unknown field"),
+            "{text}: the error must name {named}, got {error:?}"
+        );
+    }
+}
+
+// The fields the grammar DOES use are read, not rejected: the check above
+// must not be satisfiable by refusing everything.
+#[test]
+fn every_field_the_grammar_uses_is_implemented() {
+    Grammar::parse(
+        "{ rule: { r1: { \
+         open: [ { s: '#TX #OB' b: 1 p: sub a: '@cssRule' g: 'css' } ] \
+         close: [ { s: '#CB' r: items a: [ '@cssEnd' ] g: 'css,end' } ] } } }",
+    )
+    .expect("the six alt fields css-grammar.jsonic uses must read");
+
+    // And the grammar this crate ships reads, which is the case that matters.
+    Grammar::parse(grammar_text()).expect("the embedded grammar must read");
+}

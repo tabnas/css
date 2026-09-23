@@ -12,13 +12,15 @@
 #
 # TWO DIFFERENCES FROM THE GO PROBE, both deliberate:
 #
-#   1. It runs the corpus TWICE, once with the `position` option off and once
-#      with it on. Positions are where the ports are most easily and most
-#      invisibly wrong, and every divergence found while writing the Rust port
-#      was position-only — so a probe that never turns them on cannot see the
-#      class of bug it is most likely to catch. (The Go probe does not, which
-#      is why the TS/Go position divergences recorded in AGENTS.md went
-#      unreported by it.)
+#   1. It runs the corpus once per OPTION COMBINATION — all four of them,
+#      since the option surface is two booleans. Positions are where the ports
+#      are most easily and most invisibly wrong, and every divergence found
+#      while writing the Rust port was position-only — so a probe that never
+#      turns them on cannot see the class of bug it is most likely to catch.
+#      (The Go probe does not, which is why the TS/Go position divergences
+#      recorded in AGENTS.md went unreported by it.) `lowercaseProperties`
+#      is in for the same reason, one path lower: it rewrites the property
+#      name, and nothing else the probe runs exercises that rewrite.
 #
 #   2. Newlines ride in the corpus as the `\n` escape the shared fixtures use,
 #      rather than being dropped. Line and column tracking is only exercised
@@ -60,6 +62,12 @@ const toks = [
   "screen","from","to","0%","50%","\"s\"","'"'"'s'"'"'","\"a;b\"",
   "url(x)","(",")","[","]","!important","--v","&",">","+","~",
   "<!--","-->","\\","\\3A ","1px","red","e:f","g:h;","opacity[sqrt]",
+  // UPPERCASE property names, without which the two --lowercase-properties
+  // modes below double the runtime of this probe and exercise nothing:
+  // every other token that can become a property name here is already
+  // lowercase, so the option has no work to do, and a port that
+  // implemented it differently would go unseen.
+  "E:F;","COLOR:red;","Opacity:1","--V:2;","BACKGROUND-COLOR",
   "//x","#h","*p","©","\u{1d11e}","--test","url-prefix()","::before",
   // The code points where char::is_whitespace in Rust and
   // String.prototype.trim in JavaScript disagree, plus the ones they agree
@@ -77,18 +85,92 @@ for (let i = 0; i < Number(process.argv[2]); i++) {
   out.push(str.replace(/\\/g, "\\\\").replace(/\n/g, "\\n")
               .replace(/\t/g, "\\t").replace(/\r/g, "\\r"))
 }
+// SEEDED, not only random. The tokens above can appear in any order, so a
+// well-formed `selector{PROPERTY:value}` is vanishingly rare in 4000 draws
+// -- and without one, the two --lowercase-properties modes below run the
+// whole corpus and rewrite nothing. These few make the option do work; the
+// self-check after the loop is what keeps that true.
+out.push(
+  "a{COLOR:red;}", "a{E:F;}", ".c{Opacity:1}", "a{--V:2;}",
+  "a{BACKGROUND-COLOR:red;COLOR:blue}", "@media screen{a{Opacity:1}}",
+)
 fs.writeFileSync(process.argv[1], out.join("\n") + "\n")
 console.error("probe: generated " + out.length + " inputs")
 ' "$WORK/in.txt" "$COUNT"
 
-cargo build --quiet --manifest-path "$HERE/rs/Cargo.toml" --example parse
+# Where cargo PUTS that binary is not always `rs/target/debug/examples`.
+# CARGO_TARGET_DIR or a `build.target-dir` moves the root, and a
+# `build.target` or CARGO_BUILD_TARGET adds a TRIPLE directory under it --
+# which `cargo metadata` does not report, since it answers
+# `target_directory` and nothing about the profile or the triple. Deriving
+# the path from it was right about the root and wrong about the rest, so on
+# a machine with a configured triple (even the host's own) the probe died
+# with "no parse example at ..." before comparing anything.
+#
+# So the path is not derived at all: cargo is asked for the artifact it
+# just wrote. `--message-format=json` emits a `compiler-artifact` line per
+# built target, and the `executable` field of the one whose target is our
+# example is the answer under every profile, target-dir and triple.
+# BUILT FOR THE HOST, explicitly. Finding the artifact is not the same as
+# being able to run it: a `build.target` or CARGO_BUILD_TARGET naming a
+# foreign triple produces a binary this machine cannot execute, and the
+# probe would die on exec having compared nothing. `--target` on the
+# command line overrides both, so the example is always host-runnable
+# whatever the checkout is configured to cross-compile.
+HOST="$(rustc -vV | sed -n 's/^host: //p')"
+[ -n "$HOST" ] || { echo "probe: rustc did not report a host triple" >&2; exit 2; }
+
+PARSE="$(cargo build --quiet --manifest-path "$HERE/rs/Cargo.toml" --example parse \
+  --target "$HOST" --message-format=json-render-diagnostics |
+  node -e 'let s = ""
+process.stdin.on("data", (d) => (s += d))
+process.stdin.on("end", () => {
+  let found = ""
+  for (const line of s.split("\n")) {
+    if ("" === line.trim()) continue
+    let m
+    try { m = JSON.parse(line) } catch (e) { continue }
+    if ("compiler-artifact" !== m.reason || !m.executable) continue
+    if ("parse" !== m.target.name || !m.target.kind.includes("example")) continue
+    found = m.executable
+  }
+  console.log(found)
+})')"
+if [ -z "$PARSE" ] || [ ! -x "$PARSE" ]; then
+  echo "probe: cargo reported no parse example executable (got '${PARSE:-}')" >&2
+  exit 2
+fi
 
 STATUS=0
-for MODE in "" "--position"; do
+# EVERY option combination, not just the two the header used to describe.
+# `lowercaseProperties` rewrites the property name, which is a text path of
+# its own, and a probe that never turns an option on cannot see a port that
+# implements it differently. Four combinations of two booleans is the whole
+# option surface (AGENTS.md, "Defaults").
+for MODE in "" "--position" "--lowercase-properties" "--position --lowercase-properties"; do
   LABEL="${MODE:-default options}"
 
   node "$HERE/scripts/probe-lines.cjs" $MODE < "$WORK/in.txt" > "$WORK/ts.out"
-  "$HERE/rs/target/debug/examples/parse" --lines $MODE < "$WORK/in.txt" > "$WORK/rs.out"
+  "$PARSE" --lines $MODE < "$WORK/in.txt" > "$WORK/rs.out"
+
+  # The default mode is the baseline every other mode is measured against.
+  [ -z "$MODE" ] && cp "$WORK/ts.out" "$WORK/ts-base.out"
+
+  # AN OPTION THAT CHANGES NOTHING IS AN OPTION THIS PROBE DOES NOT COVER.
+  # Four combinations of two booleans read as four times the coverage, and
+  # for a long time --lowercase-properties was three of those runs doing
+  # exactly what the default run did: every token that could become a
+  # property name was already lowercase. The corpus is seeded now, and this
+  # asserts the seeds are still doing their job rather than trusting them.
+  if [ -n "$MODE" ]; then
+    CHANGED="$(cmp -s "$WORK/ts-base.out" "$WORK/ts.out" && echo 0 || echo 1)"
+    if [ "$CHANGED" = "0" ]; then
+      echo "probe: [$LABEL] produced output identical to the default mode," >&2
+      echo "       so this combination exercised nothing. The corpus no longer" >&2
+      echo "       reaches the option's path -- fix the corpus, not this check." >&2
+      STATUS=1
+    fi
+  fi
 
   node -e '
 const fs = require("fs")

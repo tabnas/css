@@ -1,0 +1,33 @@
+input	ts	go	rust	opts	why
+# divergent.tsv -- where this repo's THREE ports DISAGREE, executed.
+#
+#   input  CSS source. Escapes \n \r \t \\ are decoded, as in spec/.
+#   ts,go,rust
+#          what each port produces TODAY: the AST as JSON, or ERROR:<code>.
+#   opts   plugin options as JSON, empty for the defaults.
+#   why    what causes it, and which port the repair belongs to.
+#
+# NOT A FIXTURE, and deliberately NOT under spec/: all three runtimes run
+# every file in spec/ by directory listing, and every row here is a row one
+# of them is expected to fail. A fixture fails when behaviour REGRESSES;
+# this fails BOTH ways, because a port repaired to agree with the others
+# still faces a register claiming they differ, so the suite goes red and
+# names the row to delete. A divergence recorded as a passing test of
+# current behaviour survives its own repair with nothing red, which is how
+# the 2026-08 fleet audit found 29 recorded claims contradicted by
+# execution. ADR-14 is the rule; this file is the half that runs.
+#
+# Every column is EXECUTED: ts/test/divergent.test.ts reads `ts`,
+# go/divergent_test.go reads `go`, rs/tests/divergent.rs reads `rust`.
+# Until this file existed, the three rows below lived in AGENTS.md prose,
+# with only the Rust side asserted (rs/tests/css.rs) -- so the Go values,
+# which are what makes each row a divergence, were measurements nothing
+# re-took.
+#
+# TypeScript is canonical (AGENTS.md, "Authority and alignment rules"), so
+# the repair for every row here is in the Go port, and the Rust column
+# tracks `ts` by construction rather than by coincidence.
+@media x {a{b:c}}	{"type":"stylesheet","rules":[{"type":"media","media":"x \u0085","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"b","value":"c"}]}]}]}	{"type":"stylesheet","rules":[{"type":"media","media":"x","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"b","value":"c"}]}]}]}	{"type":"stylesheet","rules":[{"type":"media","media":"x \u0085","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"b","value":"c"}]}]}]}		ECMAScript trim keeps U+0085 (NEL) in a prelude; Go's strings.TrimSpace, which is Unicode White_Space, drops it. Repair: Go trims the ECMAScript set.
+﻿a{b:c}	{"type":"stylesheet","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"b","value":"c"}]}]}	{"type":"stylesheet","rules":[{"type":"rule","selectors":["\uFEFFa"],"declarations":[{"type":"declaration","property":"b","value":"c"}]}]}	{"type":"stylesheet","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"b","value":"c"}]}]}		The reverse code point: U+FEFF is ECMAScript whitespace and is not Unicode White_Space, so TS trims the BOM out of the selector and Go keeps it. Repair: Go.
+p { color:; }	{"type":"stylesheet","rules":[{"type":"rule","selectors":["p"],"declarations":[{"type":"declaration","property":"color","value":"","position":{"start":{"line":1,"column":5}}}],"position":{"start":{"line":1,"column":1},"end":{"line":1,"column":14}}}],"position":{"start":{"line":1,"column":1},"end":{"line":1,"column":14}}}	{"type":"stylesheet","rules":[{"type":"rule","selectors":["p"],"declarations":[{"type":"declaration","property":"color","value":"","position":{"start":{"line":1,"column":5},"end":null}}],"position":{"start":{"line":1,"column":1},"end":{"line":1,"column":14}}}],"position":{"start":{"line":1,"column":1},"end":{"line":1,"column":14}}}	{"type":"stylesheet","rules":[{"type":"rule","selectors":["p"],"declarations":[{"type":"declaration","property":"color","value":"","position":{"start":{"line":1,"column":5}}}],"position":{"start":{"line":1,"column":1},"end":{"line":1,"column":14}}}],"position":{"start":{"line":1,"column":1},"end":{"line":1,"column":14}}}	{"position":true}	A declaration with an empty value never runs the action that records an end. TS leaves it undefined, which JSON drops; Go emits null. Repair: Go omits the key.
+@host\\	{"type":"stylesheet","rules":[{"type":"host","host":"\\","position":{"start":{"line":1,"column":1},"end":{"line":1,"column":7}}}],"position":{"start":{"line":1,"column":1},"end":{"line":1,"column":8}}}	{"type":"stylesheet","rules":[{"type":"host","host":"\\","position":{"start":{"line":1,"column":1},"end":{"line":1,"column":7}}}],"position":{"start":{"line":1,"column":1},"end":{"line":1,"column":7}}}	{"type":"stylesheet","rules":[{"type":"host","host":"\\","position":{"start":{"line":1,"column":1},"end":{"line":1,"column":7}}}],"position":{"start":{"line":1,"column":1},"end":{"line":1,"column":8}}}	{"position":true}	A trailing backslash is an escape whose character is missing, so the scanners step one past the end. TS counts that step in the column while taking a clamped substring; Go's clampLen clamps before the column arithmetic. Repair: decide the intended TS column, then make both match it.
