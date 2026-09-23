@@ -303,9 +303,9 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 		Comment: &jsonic.CommentOptions{
 			Lex: boolPtr(true),
 			Def: map[string]*jsonic.CommentDef{
-				"hash":  {Line: true, Start: "#", Lex: boolPtr(false)},
-				"slash": {Line: true, Start: "//", Lex: boolPtr(false)},
-				"multi": {Line: false, Start: "/*", End: "*/", Lex: boolPtr(true)},
+				"hash":  {Line: boolPtr(true), Start: "#", Lex: boolPtr(false)},
+				"slash": {Line: boolPtr(true), Start: "//", Lex: boolPtr(false)},
+				"multi": {Line: boolPtr(false), Start: "/*", End: "*/", Lex: boolPtr(true)},
 			},
 		},
 		Lex: &jsonic.LexOptions{
