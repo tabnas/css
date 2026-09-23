@@ -1,6 +1,11 @@
-# Staged workflow — arms scripts/divergence-probe.sh as a GATE.
-# Promoted by a maintainer via tabnas/admin rollout/apply-ci-folders.sh
-# (session credentials cannot write .github/workflows/*; admin DECISIONS.md ADR-8).
+# The TS/Go differential probe — runs scripts/divergence-probe.sh as a GATE.
+#
+# This is the ONLY place CI runs the TS/Go probe. rust.yml's `probe` job
+# runs a different script, scripts/divergence-probe-rs.sh, which compares
+# TypeScript with RUST; neither covers the other's pair, so this workflow is
+# not a duplicate of that job and must not be deleted as one. The Go half of
+# this probe (go/divergence_probe_test.go) is inert under a plain `go test`,
+# so the polyglot ci.yml does not run it either.
 #
 # WHY THIS IS SEPARATE FROM ci.yml
 #
@@ -24,7 +29,9 @@ on:
     branches: [ main ]
 
 jobs:
-  probe:
+  # Named for the pair it compares, so its check is not a second `probe`
+  # beside rust.yml's TS/Rust job.
+  ts-go-probe:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
@@ -35,23 +42,31 @@ jobs:
       - name: no autocrlf
         run: git config --global core.autocrlf false
 
+      # ts/package.json declares engines.node >=24.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
-          node-version: '22'
+          node-version: '24'
 
+      # The Go version is the one go/go.mod declares, not a second copy of it
+      # here that can fall behind.
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5.6.0
         with:
-          go-version: '1.23'
+          go-version-file: go/go.mod
           cache: false
 
       # The probe runs the TS port from ts/dist, so it needs a real build —
       # not just an install. A stale dist would compare the previous commit's
       # TypeScript against this commit's Go and report a divergence that is
       # an artefact of the build, or miss one that is real.
+      #
+      # `npm install`, not `npm ci`: this repository tracks no lockfile and
+      # gitignores `package-lock.json`, so `npm ci` exits with EUSAGE before
+      # it installs anything. A probe job that dies there reports a red gate
+      # that compared no runtimes at all.
       - name: build ts
         working-directory: ts
         run: |
-          npm ci
+          npm install
           npm run build
 
       - name: probe
