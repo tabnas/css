@@ -26,10 +26,10 @@ cd rs && cargo build && cargo test
 ```
 
 The Rust crate has no dependencies, so it needs a toolchain and nothing
-else. CI does not run `cargo test` yet (the shared workflow has no Rust
-step; `ci/workflows/rust.yml` is staged for a maintainer to promote), so
-run it locally before opening a PR that touches `rs/`, the grammar, or a
-shared fixture.
+else. The shared workflow has no Rust step, so `cargo test` runs in CI
+from this repository's own `.github/workflows/rust.yml`; run it locally
+too before opening a PR that touches `rs/`, the grammar, or a shared
+fixture.
 
 Tabnas repos resolve their unpublished `@tabnas/*` siblings from
 **side-by-side checkouts**, so clone this repo's tabnas dependencies into the

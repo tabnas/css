@@ -22,7 +22,7 @@ tabnas-css = { git = "https://github.com/tabnas/css" }
 ```
 
 Cargo finds the crate in `rs/`. That is the whole install: there is no
-engine to bring along, no build script and no optional features. When the
+engine to bring along, no build script, and no optional features. When the
 crate is published, this line becomes `tabnas-css = "0.5"` and nothing
 else about the rest of this page changes.
 
@@ -136,7 +136,7 @@ assert_eq!(
 );
 ```
 
-An at-rule prelude keeps its comments. Selectors, values and property
+An at-rule prelude keeps its comments. Selectors, values, and property
 names do not, and that difference matches upstream rather than being a
 choice made here.
 

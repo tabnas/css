@@ -10,7 +10,7 @@
 # below, so a run is reproducible without vendoring anything.
 #
 # This is a GATE. It EXITS NON-ZERO when the two runtimes disagree, and CI
-# runs it (ci/divergence.yml, staged for maintainer promotion per ADR-8).
+# runs it (.github/workflows/divergence.yml).
 #
 # It used to end with `process.exitCode = 0` and a header saying nothing in CI
 # ran it. Wiring that version into CI would have produced a job that reported

@@ -148,7 +148,7 @@ source, so a derived drop would recurse once per level and abort the
 process the moment the value went out of scope.
 
 So nothing reachable from a parse result recurses per level. Dropping a
-`Value`, cloning one, comparing two, writing one as JSON and formatting
+`Value`, cloning one, comparing two, writing one as JSON, and formatting
 one for `Debug` are all explicit stack machines, and none of the five is
 derived. `Debug` is the one that is easy to forget, because it is not
 part of the parse at all: it is what a caller reaches for while looking

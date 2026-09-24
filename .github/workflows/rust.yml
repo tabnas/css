@@ -1,4 +1,4 @@
-# Staged workflow — builds and tests the Rust port.
+# The Rust gate — builds and tests the Rust port.
 # Promoted by a maintainer via tabnas/admin rollout/apply-ci-folders.sh
 # (session credentials cannot write .github/workflows/*; admin DECISIONS.md ADR-8).
 #
@@ -10,9 +10,9 @@
 # matrix, including the repos that have no crate, so the job lives here until
 # the shared workflow grows a Rust half.
 #
-# UNTIL THIS IS PROMOTED, NOTHING IN CI RUNS `cargo test`. The crate's suite
-# holds the shared fixtures and the reworkcss corpus for a third runtime, and
-# a runtime nothing runs is a runtime nobody is measuring.
+# THIS IS THE ONLY PLACE CI RUNS `cargo test`. The crate's suite holds the
+# shared fixtures and the reworkcss corpus for a third runtime, and a runtime
+# nothing runs is a runtime nobody is measuring.
 name: rust
 
 on:

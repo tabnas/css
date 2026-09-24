@@ -115,7 +115,7 @@ yields `{ type: 'stylesheet', rules: [] }`, as upstream does, and so does any
 non-empty source with no rules.
 
 Deliberately out of scope: CSS Syntax Level 3 *error recovery* (like
-reworkcss, this parser rejects an unclosed comment, a missing selector or an
+reworkcss, this parser rejects an unclosed comment, a missing selector, or an
 unclosed block), reworkcss's `{ silent: true }` error-collecting mode, and its
 `parent` / `source` back-references.
 
