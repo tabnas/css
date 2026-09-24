@@ -11,10 +11,16 @@ This directory exists because session credentials cannot write
 
 ## Pending
 
-- **`workflows/divergence.yml`** — runs `scripts/divergence-probe.sh` as a
-  gate on every push and pull request.
-- **`workflows/rust.yml`** — builds and tests the Rust port (`rs/`), runs
-  clippy and rustfmt, and runs `scripts/divergence-probe-rs.sh` as a gate.
+Nothing.
+
+## Promoted
+
+Both of these were staged here and now run from `.github/workflows/`:
+
+- **`divergence.yml`** — runs `scripts/divergence-probe.sh` as a gate on
+  every push to `main` and every pull request against it.
+- **`rust.yml`** — builds and tests the Rust port (`rs/`), runs clippy and
+  rustfmt, and runs `scripts/divergence-probe-rs.sh` as a gate.
 
 
 ### Why the divergence probe is worth a CI job
@@ -60,12 +66,12 @@ by a human, while the probe only says that one seed found it once.
 ### Why the Rust job is worth a workflow
 
 The shared `polyglot-ci.yml` knows about a repository's TypeScript and Go
-halves and has no Rust step, so **nothing in CI runs `cargo test` until this
-is promoted**. What goes unmeasured in the meantime is not a small thing: the
-Rust suite runs the shared `test/spec/*.tsv` fixtures and the whole pinned
-reworkcss corpus, which is the parity contract and the conformance bar for a
-third runtime. A runtime nothing runs is a runtime nobody is measuring, and
-the README claims the tree is the same in all three.
+halves and has no Rust step, so **this workflow is the only place CI runs
+`cargo test`**. What it measures is not a small thing: the Rust suite runs the
+shared `test/spec/*.tsv` fixtures and the whole pinned reworkcss corpus, which
+is the parity contract and the conformance bar for a third runtime. A runtime
+nothing runs is a runtime nobody is measuring, and the README claims the tree
+is the same in all three.
 
 The probe half is a separate job because it needs the TypeScript port built,
 which the build-and-test job does not. It runs the generated corpus twice,
