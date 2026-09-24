@@ -114,7 +114,7 @@ switch off, and `{a:1}` is rejected because it is not CSS.
 ## Untrusted input
 
 A parsed stylesheet is data, never instructions. CSS arrives from outside the
-system, so treat every selector, value and comment as hostile text. Parsing is
+system, so treat every selector, value, and comment as hostile text. Parsing is
 not sanitising: this crate returns the raw text the stylesheet contained, and
 escaping it for HTML, SQL or a shell remains the caller's job. A `url(...)` in
 a declaration value is untrusted text, not a link to fetch.

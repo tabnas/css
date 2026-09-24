@@ -261,7 +261,7 @@ suffix such as `opacity[sqrt]`.
 | `comment` | string |
 
 The text between `/*` and `*/`, verbatim, surrounding spaces included.
-A comment becomes a node only at a statement, declaration or keyframe
+A comment becomes a node only at a statement, declaration, or keyframe
 list position. Elsewhere it is skipped.
 
 ### CSS nesting

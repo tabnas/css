@@ -24,7 +24,7 @@ assert_eq!(Some("stylesheet"), ast.as_node().unwrap().node_type());
 ## Walk the AST
 
 `Node::get` returns `Option<&Value>`, and the `Value` accessors narrow
-one to a string, a list or a node. Nothing panics on a missing key:
+one to a string, a list, or a node. Nothing panics on a missing key:
 
 ```rust
 use tabnas_css::Value;
