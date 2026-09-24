@@ -942,8 +942,15 @@ runner as well, and is a complement to the corpus rather than a substitute
 for it.
 
 `.github/workflows/release.yml` publishes the npm package on a `ts/v*` tag via
-OIDC trusted publishing. The workflow files cannot be edited from a session
-credential — promotion goes through `tabnas/admin`.
+OIDC trusted publishing. Change a workflow file in `.github/workflows/`
+itself, in a reviewed pull request: session credentials can push workflow
+changes (admin `DECISIONS.md` ADR-8, as amended 2026-09-24). They still
+cannot push tags, so a release goes through `workflow_dispatch` (see
+"Releasing"). A workflow with a template in admin `rollout/workflows/`
+changes in that template too (ADR-8 as amended), and the stamped
+`clib.yml` and `clib-release.yml` change only through admin
+`tasks/clib-template/` and a re-stamp; [`ci/README.md`](ci/README.md)
+names which is which.
 
 ## Agent tooling
 

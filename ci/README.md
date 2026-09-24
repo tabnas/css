@@ -1,17 +1,27 @@
 # ci/
 
-Staging area for GitHub Actions workflow changes.
+Notes on this repository's own CI workflows. The scripts they run live
+in `scripts/` (`divergence-probe.sh` and `divergence-probe-rs.sh`), so
+this directory holds only this file.
 
-This directory exists because session credentials cannot write
-`.github/workflows/*` — see admin `DECISIONS.md` ADR-8. To change CI:
+The workflows themselves live in `.github/workflows/`. To change CI, edit
+them there in a reviewed pull request: session credentials can push
+workflow changes (admin `DECISIONS.md` ADR-8, as amended on 2026-09-24),
+so staging a workflow here for a maintainer to promote is optional.
+Sessions still cannot push tags. Releases therefore go through
+`workflow_dispatch`, and a workflow that runs only on a tag push needs a
+maintainer to push that tag.
 
-1. Put the intended workflow file in `workflows/`.
-2. A maintainer promotes it with the admin `rollout/apply-ci-folders.sh`
-   script.
-
-## Pending
-
-Nothing.
+Five of this repository's workflows also have a template in admin
+`rollout/workflows/`: `ci.yml`, `crates-release.yml`, `notify-status.yml`,
+`release.yml` and `scorecard.yml`. ADR-8 as amended says a workflow
+changed here is mirrored in its template, so change the template too, in
+admin. Otherwise admin `scripts/verify.sh` reports the drift, and the
+next `rollout/apply-workflows.sh --apply` pushes the old text back.
+`clib.yml` and `clib-release.yml` are stamped (each carries a
+`tabnas-clib-template` marker): they change only through admin
+`tasks/clib-template/` and a re-stamp with `tasks/adopt-clib.sh`, never
+by hand. The others have no template and change here alone.
 
 ## Promoted
 

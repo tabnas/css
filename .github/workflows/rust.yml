@@ -1,6 +1,7 @@
 # The Rust gate — builds and tests the Rust port.
-# Promoted by a maintainer via tabnas/admin rollout/apply-ci-folders.sh
-# (session credentials cannot write .github/workflows/*; admin DECISIONS.md ADR-8).
+# Live. Change it here, in a reviewed pull request: session credentials
+# can push .github/workflows/* (admin DECISIONS.md ADR-8, as amended
+# 2026-09-24).
 #
 # WHY THIS IS SEPARATE FROM ci.yml
 #
