@@ -56,3 +56,5 @@ test/css-parsing-tests
 # dependencies at all).
 rs/target
 rs/Cargo.lock
+
+.DS_Store
