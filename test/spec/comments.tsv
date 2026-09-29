@@ -9,3 +9,14 @@ a /* x */ { color /* y */ : red }	{"type":"stylesheet","rules":[{"type":"rule","
 a{b:c/*x	ERROR:unterminated_comment
 @keyframes--v 0%\t)/*,	ERROR:unterminated_comment
 a{b:c/*x*/;d:e}	{"type":"stylesheet","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"b","value":"c"},{"type":"declaration","property":"d","value":"e"}]}]}
+b{,/*!important	ERROR:unexpected
+a{b:c;/*	ERROR:unterminated_comment
+@media x{/*	ERROR:unterminated_comment
+a{/*	ERROR:unterminated_comment
+a{:/*	ERROR:unterminated_comment
+b\\(;/*	ERROR:unterminated_comment
+a{b\\(;/*	ERROR:unterminated_comment
+a{b\\"x;"/*	ERROR:unterminated_comment
+@media x{b\\"x;"/*	ERROR:unterminated_comment
+@keyframes k{b\\"x;"/*	ERROR:unterminated_comment
+a{b:c;d\\"x;"/*	ERROR:unterminated_comment
