@@ -254,10 +254,16 @@ pub fn grammar_text() -> &'static str {
 ///   engine returns `emptyResult` for `""` before any rule runs.
 /// - `cssToken` runs at order 1e5, ahead of every builtin matcher, and
 ///   `@css-prepare` clears the plugin's per-parse state before each parse.
+/// - `rule.history` is 1, which the canonical options do not set: a rule
+///   keeps a link to the one it replaced, and to no further back. Unbounded,
+///   the engine's default, every item of a list stays reachable until the
+///   list closes, which held a flat stylesheet of 100,000 rules at 927 MB
+///   where the bound holds it at 210 MB (`tests/memory.rs`). No alternate
+///   here reads `prev`, so no result changes.
 ///
 /// The raw-string delimiter is `##` because `"#CA"` would end `r#"…"#`.
 pub(crate) const OPTIONS_DOC: &str = r##"{"options": {
-  "rule": {"exclude": "jsonic,imp", "start": "stylesheet"},
+  "rule": {"exclude": "jsonic,imp", "start": "stylesheet", "history": 1},
   "fixed": {"token": {"#CA": ";", "#OS": null, "#CS": null}},
   "tokenSet": {"KEY": ["#TX"]},
   "string": {"chars": ""},
