@@ -4,11 +4,15 @@
 //! discriminator, and [`Value`], what a node field can hold.
 //!
 //! The TypeScript port returns plain JavaScript objects and the Go port
-//! returns `map[string]any`. Rust has no such universal value, so this module
-//! supplies one. Insertion order is preserved because the AST is usually read
-//! back as JSON and `{"type": …}` first reads better than a sorted map — the
-//! conformance runners compare key sets, not key order, so nothing depends on
-//! it.
+//! returns `map[string]any`. The engine's own value, [`tabnas::Value`], is
+//! what the plugin form returns too, but [`Css::parse`](crate::Css::parse)
+//! returns this one, for two reasons: every traversal of it is iterative, so
+//! a tree of any depth can be dropped, cloned, compared, printed and written
+//! as JSON, where the engine's recurses once per level; and it keeps
+//! JavaScript's `undefined` (below). Insertion order is preserved because the
+//! AST is usually read back as JSON and `{"type": …}` first reads better than
+//! a sorted map — the conformance runners compare key sets, not key order,
+//! so nothing depends on it.
 //!
 //! [`Value::Undefined`] is the one non-obvious variant. It is JavaScript's
 //! `undefined`: a key that EXISTS in insertion order but is absent from the
@@ -20,6 +24,9 @@
 
 use std::fmt;
 use std::fmt::Write as _;
+use std::sync::Arc;
+
+use tabnas::Value as Engine;
 
 /// A value held by an AST node field.
 ///
@@ -465,4 +472,129 @@ fn write_json_string(s: &str, out: &mut String) {
         }
     }
     out.push('"');
+}
+
+impl Value {
+    /// An engine value as this crate's, field for field.
+    ///
+    /// RECURSIVE, so only for values whose depth this crate controls: the
+    /// grammar document read from the embedded text. A parse result goes
+    /// through [`Value::from_arena`] instead.
+    pub(crate) fn from_engine(value: &Engine) -> Value {
+        match value {
+            Engine::Array(items) => Value::List(items.iter().map(Value::from_engine).collect()),
+            Engine::Object(fields) => {
+                let mut node = Node::new();
+                for (key, field) in fields.iter() {
+                    node.set(key.clone(), Value::from_engine(field));
+                }
+                Value::Node(node)
+            }
+            scalar => Value::from_scalar(scalar),
+        }
+    }
+
+    fn from_scalar(value: &Engine) -> Value {
+        match value {
+            Engine::String(s) => Value::Str(s.clone()),
+            Engine::Number(n) => Value::Num(*n),
+            Engine::Bool(b) => Value::Bool(*b),
+            Engine::Null => Value::Null,
+            _ => Value::Undefined,
+        }
+    }
+
+    /// A parse result from the plugin's node store as the tree it describes.
+    ///
+    /// [`Css::parse`](crate::Css::parse) runs the grammar with each node kept
+    /// as one flat record in a per-parse list, and a child list holding the
+    /// ids of the children (`rules`, `declarations`, `keyframes`), so the
+    /// engine never holds a nested value it would drop or copy by recursion.
+    /// Every child's constructor runs after its parent's, so a child's id is
+    /// always greater than its parent's: walking the records from the last to
+    /// the first finds each child already built, and moves it into place. No
+    /// step recurses, whatever the depth.
+    ///
+    /// A record's `position` has an `end` only once one was recorded; here an
+    /// absent `end` becomes [`Value::Undefined`], the key the canonical port
+    /// writes at construction and fills in later.
+    ///
+    /// The engine's `emptyResult` for `""` arrives as an object rather than a
+    /// list, and is converted as it is: an empty stylesheet with no position,
+    /// as in the canonical port.
+    pub(crate) fn from_arena(value: Engine) -> Value {
+        match value {
+            Engine::Array(records) => {
+                let records = Arc::try_unwrap(records).unwrap_or_else(|shared| (*shared).clone());
+                let mut built: Vec<Option<Value>> = Vec::with_capacity(records.len());
+                built.resize_with(records.len(), || None);
+                for (id, record) in records.into_iter().enumerate().rev() {
+                    let mut node = Node::new();
+                    if let Engine::Object(fields) = record {
+                        for (key, field) in fields.iter() {
+                            let field = match field {
+                                Engine::Array(items) => Value::List(
+                                    items
+                                        .iter()
+                                        .map(|item| match item {
+                                            Engine::Number(child) => built
+                                                .get_mut(*child as usize)
+                                                .and_then(Option::take)
+                                                .unwrap_or(Value::Null),
+                                            other => Value::from_scalar(other),
+                                        })
+                                        .collect(),
+                                ),
+                                Engine::Object(_) if "position" == key => position(field),
+                                other => Value::from_scalar(other),
+                            };
+                            node.set(key.clone(), field);
+                        }
+                    }
+                    built[id] = Some(Value::Node(node));
+                }
+                built
+                    .first_mut()
+                    .and_then(Option::take)
+                    .unwrap_or(Value::Undefined)
+            }
+            Engine::Object(fields) => {
+                let mut node = Node::new();
+                for (key, field) in fields.iter() {
+                    let field = match field {
+                        Engine::Array(items) => {
+                            Value::List(items.iter().map(Value::from_scalar).collect())
+                        }
+                        other => Value::from_scalar(other),
+                    };
+                    node.set(key.clone(), field);
+                }
+                Value::Node(node)
+            }
+            other => Value::from_scalar(&other),
+        }
+    }
+}
+
+/// A record's `position`, `{start, end}`, with an unrecorded `end` as
+/// [`Value::Undefined`].
+fn position(value: &Engine) -> Value {
+    let mut out = Node::new();
+    let fields = match value {
+        Engine::Object(fields) => Some(fields),
+        _ => None,
+    };
+    for key in ["start", "end"] {
+        match fields.and_then(|fields| fields.get(key)) {
+            Some(Engine::Object(point)) => {
+                let mut at = Node::new();
+                for (name, n) in point.iter() {
+                    at.set(name.clone(), Value::from_scalar(n));
+                }
+                out.set(key, Value::Node(at));
+            }
+            _ => out.set(key, Value::Undefined),
+        }
+    }
+    Value::Node(out)
 }

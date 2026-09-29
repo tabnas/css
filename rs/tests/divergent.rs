@@ -6,9 +6,9 @@
 //! ports DISAGREE, with a cell per runtime. This file reads the `rust`
 //! column; `ts/test/divergent.test.ts` and `go/divergent_test.go` read the
 //! `ts` and `go` columns of the same file through `@tabnas/support`, whose
-//! two halves cannot drift from each other. There is no Rust half of that
-//! package in this crate's dependency set (it has none, deliberately), so
-//! the three checks it applies are written out here.
+//! two halves cannot drift from each other. This crate's tests keep their
+//! own small loader (`tests/support`) rather than take that package's Rust
+//! half, so the three checks it applies are written out here.
 //!
 //! WHY THIS IS NOT A FIXTURE. A fixture fails when behaviour REGRESSES.
 //! The register fails BOTH ways: a port repaired to agree with the others
@@ -18,15 +18,18 @@
 //! the file sits beside `test/spec/` rather than in it, where all three
 //! parity runners would run every row of it.
 //!
-//! Every row records a divergence of the GO port from the canonical
-//! TypeScript one, which is why the `ts` and `rust` cells agree: AGENTS.md
-//! makes TypeScript canonical, and this port reproduces the canonical
-//! behaviour, overshoot and all. If a row's `rust` cell ever has to differ
-//! from `ts`, that is a defect in this port and not a licence to record it.
+//! The `rust` cell is what the engine's own API returns for the row: the
+//! tree form of [`make_with`]. It agrees with `ts` on every row that records
+//! a divergence of the GO port, because this port reproduces the canonical
+//! behaviour, overshoot and all, and differs on one: the tree form is
+//! bounded in depth ([`tabnas_css::TREE_RULE_DEPTH`]) where the canonical
+//! port is not. [`Css::parse`] has no such bound and is checked against the
+//! `ts` cell on EVERY row; if it ever has to differ from `ts`, that is a
+//! defect in this port and not a licence to record it.
 
 mod support;
 
-use tabnas_css::{Css, Options, Value};
+use tabnas_css::{make_with, Css, Options, Value};
 
 use support::{canonical, json, repo_root, Row};
 
@@ -44,7 +47,7 @@ const MINE: &str = "rust";
 /// not: it cannot be told apart from a loader that read nothing. Ratcheted
 /// at what AGENTS.md records, so a row that quietly disappears fails here
 /// rather than reducing the coverage in silence.
-const ROW_COUNT: usize = 4;
+const ROW_COUNT: usize = 5;
 
 fn register_rows() -> Vec<Row> {
     let path = repo_root().join("test").join("divergent.tsv");
@@ -71,10 +74,21 @@ fn meaning(cell: &str) -> Result<String, String> {
     Ok(canonical(&json(cell)?))
 }
 
-/// What this runtime produces for a row, in the same vocabulary.
+/// What this runtime produces for a row through the engine's own API, in
+/// the same vocabulary: the `rust` column.
 fn produced(row: &Row) -> String {
-    let css = Css::with_options(options(&row.opts));
-    match css.parse(&row.input) {
+    match make_with(options(&row.opts)).parse(&row.input) {
+        Ok(tree) => match json(&tree.to_json().to_string()) {
+            Ok(value) => canonical(&value),
+            Err(why) => format!("unreadable engine JSON: {why}"),
+        },
+        Err(err) => format!("ERROR:{}", err.code),
+    }
+}
+
+/// What [`Css::parse`] produces for a row, which must be the `ts` cell.
+fn produced_by_css(row: &Row) -> String {
+    match Css::with_options(options(&row.opts)).parse(&row.input) {
         Ok(value) => canonical(&value),
         Err(err) => format!("ERROR:{}", err.code),
     }
@@ -134,6 +148,22 @@ fn divergence_register() {
                 cells[0].1
             ));
             continue;
+        }
+
+        // The crate's own entry point is the canonical behaviour on every
+        // row, whatever the engine's API does.
+        let canon = &cells
+            .iter()
+            .find(|(name, _)| "ts" == *name)
+            .expect("RUNTIMES contains ts")
+            .1;
+        let by_css = produced_by_css(&row);
+        if by_css != *canon {
+            failures.push(format!(
+                "{}: input {:?}\n  Css::parse produced {by_css}\n  the ts cell says   {canon}",
+                row.label(),
+                row.input
+            ));
         }
 
         // 2. This runtime must still produce what the register says it does.
