@@ -1,8 +1,9 @@
 # ci/
 
-Notes on this repository's own CI workflows. The scripts they run live
-in `scripts/` (`divergence-probe.sh` and `divergence-probe-rs.sh`), so
-this directory holds only this file.
+Notes on this repository's own CI workflows, and the Rust gate,
+`ci/rust/run.sh`, which `rust.yml` runs and `make gate-rs` runs locally.
+The probe scripts the workflows run live in `scripts/`
+(`divergence-probe.sh` and `divergence-probe-rs.sh`).
 
 The workflows themselves live in `.github/workflows/`. To change CI, edit
 them there in a reviewed pull request: session credentials can push
@@ -29,8 +30,13 @@ Both of these were staged here and now run from `.github/workflows/`:
 
 - **`divergence.yml`** — runs `scripts/divergence-probe.sh` as a gate on
   every push to `main` and every pull request against it.
-- **`rust.yml`** — builds and tests the Rust port (`rs/`), runs clippy and
-  rustfmt, and runs `scripts/divergence-probe-rs.sh` as a gate.
+- **`rust.yml`** — checks the repository out into `css/` beside clones of
+  `tabnas/parser`, `tabnas/json`, `tabnas/jsonic` and `tabnas/debug` (their
+  `main`, since the crate takes them by path), installs the 1.85 toolchain
+  with rustup, and runs `ci/rust/run.sh`: fmt, build, tests and doctests,
+  clippy, rustdoc, and the checks that hold the committed `rs/Cargo.lock` to
+  the manifest. Its `probe` job builds against the same siblings and runs
+  `scripts/divergence-probe-rs.sh` as a gate.
 
 
 ### Why the divergence probe is worth a CI job
@@ -84,7 +90,8 @@ nothing runs is a runtime nobody is measuring, and the README claims the tree
 is the same in all three.
 
 The probe half is a separate job because it needs the TypeScript port built,
-which the build-and-test job does not. It runs the generated corpus twice,
-with `position` off and on: the two TS/Go divergences recorded in the root
-`AGENTS.md` are position-only, and a probe that never turns positions on
-cannot see the class of bug that it is most likely to catch.
+which the build-and-test job does not. It runs the generated corpus four
+times, once per option combination (`position` and `lowercaseProperties`,
+off and on): the two TS/Go divergences recorded in the root `AGENTS.md` are
+position-only, and a probe that never turns positions on cannot see the
+class of bug that it is most likely to catch.

@@ -9,88 +9,162 @@ rules. This file covers only what is specific to this crate.
 
 | Path | |
 |---|---|
-| `src/lib.rs` | the public surface: `parse`, `parse_with`, `Css`, `VERSION`, and the `#[cfg(doctest)]` module that makes every Markdown example a doctest |
-| `src/lex.rs` | the `cssToken` matcher and its scanners, the token set, `Error`, and the ECMAScript whitespace helpers |
-| `src/machine.rs` | the rule machine, `Options`, and the empty result for `""` |
-| `src/grammar.rs` | `GRAMMAR_TEXT` (the embedded `css-grammar.jsonic`) and the reader for the jsonic subset it is written in |
-| `src/value.rs` | `Value` and `Node`, with every tree walk written as a stack machine |
-| `tests/parity.rs` | the shared `../test/spec/*.tsv` fixtures |
-| `tests/divergent.rs` | the `rust` column of `../test/divergent.tsv` |
+| `src/lib.rs` | the public surface: `plugin`, `css`, `make`, `make_with`, `Options` (with `from_value` and `to_value`), `Css`, `parse`, `parse_with`, `VERSION`, and the `#[cfg(doctest)]` module that makes every Markdown example a doctest |
+| `src/plugin.rs` | the install, the actions that build the nodes, the two node stores (tree and arena), UTF-16 positions (`col16`), the `depth` guard and `TREE_RULE_DEPTH` |
+| `src/lex.rs` | the `cssToken` matcher and its scanners, the lex subscriber (end-of-input overshoot, bad-token lookahead), `Tin`, `Error` and `From<TabnasError>`, and the ECMAScript whitespace helpers |
+| `src/grammar.rs` | `GRAMMAR_TEXT` (the embedded `css-grammar.jsonic`), `OPTIONS_DOC` (the canonical option overrides, plus `rule.history: 1`), `RULES`, and `specs()`, which reads the text with jsonic once per process |
+| `src/value.rs` | `Value` and `Node`, with every tree walk written as a stack machine, and `from_arena`, which builds the tree from the arena without recursion |
+| `tests/parity.rs` | every shared `../test/spec/*.tsv` row three ways: `Css::parse`, the plugin on jsonic, and the plugin on a bare engine |
+| `tests/divergent.rs` | the `rust` column of `../test/divergent.tsv`, read through the engine's API, and `Css::parse` against the `ts` cell on every row |
+| `tests/css.rs` | what a fixture cannot express, plus the crate's API: key order, an absent `position.end`, error positions taken from the TypeScript suite, 20,000-level nesting on a 2 MiB thread |
+| `tests/grammar.rs` | the embed against the file on disk, the rules the plugin installs, and every alternate in the `css` group |
+| `tests/plugin.rs` | the engine API: the tree form against `Css::parse`, a bare engine, option truthiness, a second install and `derive`, the depth bound, recovery, a seeded context, error columns |
+| `tests/repeat.rs` | every repetition a replace loop: rule depth over 10,000 items of each, the grammar's pushes and replaces, linear parse time |
+| `tests/debug_model.rs` | the grammar composed with `tabnas-debug`, the Rust half of `ts/test/debug-model.test.ts` |
+| `tests/memory.rs` | a counting allocator holding a parse's peak memory, flat and nested, under ceilings |
 | `tests/reworkcss.rs` | the pinned reworkcss/css corpus, fetched by the test itself |
-| `tests/css.rs` | what a fixture cannot express, plus the crate's API |
-| `tests/grammar.rs` | the embed against the file on disk, and the subset reader |
 | `tests/perf.rs`, `tests/version.rs` | the instance-reuse guard and the version sites |
-| `tests/support/mod.rs` | the fixture loader, a JSON reader and the canonical compare |
+| `tests/support/mod.rs` | the crate's own fixture loader, JSON reader and canonical compare; `tabnas-support` is not a dependency |
 | `doc/*.md`, `README.md` | the four Diátaxis pages and the crate front page, all gated by the prose gate |
 | `examples/parse.rs` | the binary the TS/Rust differential probe drives |
 
-## This port has no engine under it
+## A plugin on the engine
 
-The TypeScript and Go ports are jsonic plugins: they install a grammar on a
-shared engine and borrow its lexer and rule machine. There is no Rust build
-of that engine, so this crate carries both, and it declares **no
-dependencies at all** — not even for the test profile. `@tabnas/support` has
-a Rust half (the `tabnas-support` crate) and this crate deliberately does not
-take it, so `cargo test` runs from a checkout of this repository alone, with
-no sibling path dependency and no registry access. `tests/support/mod.rs` is
-the price of that, which is why it is kept small.
+The crate is a tabnas plugin, as the TypeScript and Go ports are: it runs
+on the engine `tabnas-parser` (imported as `tabnas`), layered on
+`tabnas-jsonic`, which reads `css-grammar.jsonic` and supplies the fixed
+tokens. `install` in `src/plugin.rs` puts the canonical option overrides
+(`OPTIONS_DOC`), the 13 rules (each alternate tagged `css`), the
+`cssToken` matcher at order 1e5, the actions, a `parse.prepare` hook, a
+lex subscriber and the `depth` guard on an engine. The engine implements
+the whole alternate surface, so a field the grammar grows needs no
+teaching here; a new ACTION does, in `register_actions`.
 
-The same absence is visible to a caller: there is no relaxed-JSON base to
-switch off, so `{a:1}` is rejected because it is not CSS rather than because
-an option turned it off. `test/spec/leniency.tsv` holds the port to the same
-verdicts as the other two.
+The dependencies are sibling checkouts, the standard tabnas development
+model: clone `parser`, `json`, `jsonic` and `debug` from
+`https://github.com/tabnas/` next to this repository. `rs/Cargo.toml`
+takes the engine and jsonic by path (jsonic takes json by path in turn),
+and `tabnas-debug` as a dev-dependency the same way. Dependencies change
+only on explicit instruction from the maintainer (`../CLAUDE.md`); the
+engine switch was one.
 
-## Things this port does differently, and why
+## Rules this port keeps, and why
 
-Each of these is behaviour, not implementation detail. A change to any of
-them shows up in a parse result.
+Each is behaviour. A change to any of them shows up in a parse result, a
+memory profile or a stack overflow.
 
-- **Lookahead is lazy.** `machine.rs` reads a token only when the alt being
-  tried needs one, under the rule trying it, and within an alt only while it
-  still matches. Both halves decide the tree: a comment right after `{` is a
-  node because the block wrapper's `#OB #CB` alt reads the first body token
-  under the WRAPPER's name, and `b{,/*!important` fails as `unexpected`
-  rather than `unterminated_comment` because `decl`'s first alt fails before
-  the unterminated comment behind it is ever read. Reading a whole `s:`
-  sequence up front changes the error code.
-- **The node MOVES down the rule stack.** The canonical ports let a child
-  rule inherit its parent's node by reference. There is no such aliasing
-  here, so a pushed child takes the node, a constructor action hands it back
-  before installing its own, and a popping rule either returns it or delivers
-  its own node as the parent's `child`. Only the top frame ever runs, which
-  is what makes that safe, and why `set_node` touches `stack[top - 1]`.
-- **Nothing reachable from a parse result recurses per level.** A tree is as
-  deep as its source, so a derived `Drop`, `Clone`, `PartialEq` or `Debug`
-  would abort the process on untrusted input. All four, and the JSON output,
-  are explicit stack machines in `value.rs`; `tests/css.rs` pins them at
-  20,000 levels. `Debug` is the one that is easy to forget, because it is
-  what a caller reaches for while debugging.
+- **A node constructor installs a FRESH cell.** The engine shares one
+  node cell between a rule and the rules it pushes or replaces into, so
+  `@cssSheet`, `@cssRule`, `@cssDecl` and the other constructors set
+  `rule.node = Rc::new(RefCell::new(..))` (`install_node`). Writing the
+  new node into the cell a rule was handed overwrites its parent's node.
+  Setters and pushers write through the shared cell (`with_node`), as the
+  canonical ones mutate the shared object.
+- **`Css::parse` builds in the arena, and nothing recursive is reachable
+  from its result.** It passes the `ARENA` meta key; every node is a flat
+  record in a per-parse list in `ctx.u`, so the engine never holds a
+  nested value, and `Value::from_arena` builds the tree walking the
+  records from last to first, without recursion. `Value` and `Node` drop,
+  clone, compare, print and write JSON with explicit stacks;
+  `tests/css.rs` pins all of it at 20,000 levels, on a 2 MiB thread too.
+  `Value::from_engine` recurses and is only for the grammar document:
+  never route a parse result through it. `Debug` is the walk that is
+  easy to forget, because it is what a caller reaches for while
+  debugging.
+- **The tree form is bounded by the `depth` guard.** A parse through the
+  engine's own API (`make`, `plugin`, `Css::tabnas`) builds engine
+  objects, which drop, clone and print by recursion. The guard, named
+  `depth` so that it replaces jsonic's, refuses more than
+  `TREE_RULE_DEPTH` (768) open rules with `cancel` unless the parse is an
+  arena parse. Row 5 of `../test/divergent.tsv` registers the bound;
+  moving it means moving the constant, `tests/plugin.rs` (191 nested
+  rules and 256 nested `@media` at the bound) and that row together. The
+  repair is upstream: when the engine's value is iterative, the bound
+  and the row go.
+- **UTF-16 columns and the end-of-input overshoot are the plugin's job.**
+  The engine counts columns in Unicode scalars. Positions go through
+  `col16`, a binary search over a sorted list of the source's astral
+  characters built on the first position; errors go through
+  `From<TabnasError> for Error`. A byte count is wrong for `#©{…}` and a
+  scalar count for `#𝄞{…}`. The scanners may step one past the end
+  (`@host\`): `css_token` records the overshoot under `OVERSHOOT` in
+  `ctx.u` and the lex subscriber adds it to the end-of-source token's
+  column, so the `host` node ends at 7 and the stylesheet at 8.
 - **`str::trim` is not `String.prototype.trim`.** Use `es_trim` and
-  `es_is_whitespace` from `lex.rs` at every site that produces AST text. The
-  two sets differ by U+FEFF and U+0085, and both change the tree; see the
-  divergence register.
-- **Columns count UTF-16 code units**, measured with `char::len_utf16`,
-  because a column here is the column the canonical port reports. A byte
-  count is wrong for `#©{…}` and a `char` count is wrong for astral
-  characters such as `#𝄞{…}`.
-- **The grammar reader rejects a field it does not implement.** The other two
-  ports hand the document to an engine that understands the whole jsonic alt
-  surface; this one implements `s`, `b`, `p`, `r`, `a` and `g` on an alt,
-  `open`/`close` on a rule and `rule` at the top. Anything else is an error
-  rather than a field read as absent, so a grammar that grows a field stops
-  this build instead of silently running a different grammar here. Teaching
-  `grammar.rs` and `machine.rs` what a new field does is part of adding it.
+  `es_is_whitespace` from `lex.rs` at every site that produces AST text.
+  The two sets differ by U+FEFF and U+0085, and both change the tree; see
+  the divergence register.
+- **The lex subscriber reports a bad token fetched behind a good one.**
+  The canonical engine throws a bad token when it is fetched; this one
+  buffers it, and an error with no alternative takes its code from the
+  first lookahead token only. With recovery and relexing both off, the
+  subscriber clears the unconsumed lookahead when a bad token arrives
+  behind a good one, so `a{b\"x;"/*` fails as `unterminated_comment`, as
+  the rows in `../test/spec/comments.tsv` require. Leave the recovery and
+  relex modes alone: the engine uses the lookahead there.
+- **Lookahead is lazy, and comment nodes are keyed on the rule name.**
+  The engine reads a token only when the alternate being tried needs one,
+  under the rule trying it; `COMMENT_NODE_RULES` in `lex.rs` names the
+  rules at which the matcher makes a comment a node. A comment right
+  after `{` is a node because the block wrapper's `#OB #CB` alternate
+  reads the first body token under the wrapper's name, and
+  `b{,/*!important` fails as `unexpected` because `decl`'s alternates
+  fail on the first token before the comment behind it is read.
+- **Per-parse state lives in `ctx.u` and `@css-prepare` clears it.** The
+  arena, the astral list and the overshoot sit under `tabnas-css/…` keys,
+  and the prepare hook removes them before every parse, so a caller's
+  seeded context cannot reach them (`tests/plugin.rs`). A new key goes in
+  the hook too.
+- **A second install applies its options.** `use_plugin` again, or
+  `derive`, reruns `install`: the matcher and the actions (which capture
+  the options) are re-registered by name, and the rules in `RULES` are
+  removed and installed afresh, since installing over an existing rule
+  puts the new alternates in front of the old. The lex subscriber is
+  added by the first install only, because subscribers are not named. A
+  rule added to the grammar goes into `RULES`.
+- **`rule.history` is 1.** Rust only; the canonical options do not set
+  it. Unbounded, every item of a list stays reachable until the list
+  closes: 100,000 flat rules peaked at 927 MB, and bounded at 210 MB.
+  No alternate reads `prev`; one that must would reopen this, and
+  `tests/memory.rs` holds the ceilings.
+- **Every repetition is a replace loop, never a push chain.** The loop
+  is `r:`, the item may be `p:`; push is for structure (a block's body, a
+  list's first item, an item's parts). The five loops are `items`,
+  `decls` and `kfitems`, which replace themselves in their close, and
+  `sel` and `kfsel`, in their open. `tests/repeat.rs` is the proof: over
+  10,000 items each repetition reaches the depth one item needs, nesting
+  still grows it (four per style rule, three per `@media`), the installed
+  grammar's pushes and replaces are exactly the listed ones, and ten
+  times the rules parse in about ten times the time. The grammar is
+  shared with TypeScript and Go; write any new repetition in
+  `css-grammar.jsonic` the same way, and add a row for it to
+  `repetitions()`.
+- **The engine's debug self-check stays off.**
+  `[profile.dev.package.tabnas-parser] debug-assertions = false` in
+  `Cargo.toml`: the check compares the whole rule stack with a shadow
+  copy on every step, quadratic in depth (1,000 nested rules 8.3 s, 4,000
+  134 s in a debug build), and `cargo test` parses 20,000 levels. A
+  profile applies only to the root package, which is why the README's
+  "Untrusted input" tells consumers to set it too.
 
 ## Gates
 
 ```bash
-cargo fmt --all --check
-cargo build --all-targets
-cargo test --all-targets
-cargo test --doc          # --all-targets does NOT include doctests
-cargo clippy --all-targets --all-features -- -D warnings
-cargo doc --no-deps       # broken intra-doc links are denied in lib.rs
+ci/rust/run.sh     # the full gate, from the repository root; `make gate-rs`
+make test-rs       # the fast loop: tests, doctests and clippy
 ```
+
+`ci/rust/run.sh` checks the sibling checkouts, runs through the MSRV
+toolchain (1.85, from `rust-version`; it warns when that is not
+installed), checks the lock's entry for this crate against the
+manifest, then runs `cargo fmt --check` (not `--all`, which reaches into
+the siblings), `build --all-targets`, `test --all-targets`, `test --doc`
+(`--all-targets` does not include doctests), clippy with `-D warnings`
+and `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`. Last, it diffs the
+whole lock against the committed one with the sibling versions masked,
+and puts the lock back. It does NOT pass `--locked`, deliberately: the
+siblings are resolved from their main branches, and a sibling's version
+bump would fail every pull request here.
 
 `cargo test` fetches the reworkcss corpus for itself (`fetch_corpus()` in
 `tests/reworkcss.rs`) and **fails** rather than skipping if it is still
@@ -108,29 +182,42 @@ cargo for the `parse` example it just built rather than deriving a path, so
 a shared target directory or a configured target triple does not break it.
 It also refuses a combination whose output matches the default mode: an
 option the corpus never reaches is a run that reports coverage it does not
-have.
+have. It restores `rs/Cargo.lock` after its build.
 
 **`.github/workflows/rust.yml` runs all of this on every push and pull
-request.** Two jobs: `rust` does `cargo build`, `cargo test`,
-`cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` on the
-`stable` toolchain the runner installs with `rustup`; `probe` builds the
-TypeScript port and runs `scripts/divergence-probe-rs.sh 4000`. Run them
-locally before pushing anything that touches `rs/`, the grammar, or a
-fixture -- the workflow is the gate, not the first place to find out.
+request.** Two jobs: `rust` checks the repository out into `css/`,
+clones the four siblings beside it, installs Rust 1.85 with `rustup` and
+runs `css/ci/rust/run.sh`; `probe` builds the TypeScript port and runs
+`scripts/divergence-probe-rs.sh 4000` against the same siblings. Run the
+gate locally before pushing anything that touches `rs/`, the grammar, or
+a fixture: the workflow is the gate, not the first place to find out.
 
 ## Versions and releasing
 
 `version` in `Cargo.toml` and `VERSION` in `src/lib.rs` must both equal
 `ts/package.json` `"version"`; `tests/version.rs` reads both and fails the
 build if either drifts. The release orchestrator rewrites the TypeScript and
-Go sites and **does not know about these two**, so a release bumps them by
-hand and `tests/version.rs` is what catches the omission.
+Go sites and **does not know about these two**. `make version-rs V=x.y.z`
+bumps both and this crate's own entry in `Cargo.lock`, which the gate
+checks before anything else runs.
 
-`Cargo.lock` is gitignored: this is a library crate with no dependencies, so
-the lockfile is not the dependency contract and nothing in this repository
-reads it with `--locked`.
+`Cargo.lock` is committed. The gate holds it to the resolution cargo
+makes, sibling versions aside, so a change to `Cargo.toml` commits the
+updated lock with it.
 
-The crate is **not published by `release.yml`**, which publishes the npm
-package and tags the Go module. Putting it on crates.io is a separate
-decision with its own trusted-publishing setup; a local `cargo publish` is
-not the release path, for the same reason a local `npm publish` is not.
+crates.io has `tabnas-css` 0.5.9: the earlier crate, with its own lexer
+and rule machine and no dependencies. `.github/workflows/crates-release.yml`
+publishes `rs/` from the release tag once the `TABNAS_CRATES` variable is
+on, rewriting each sibling path dependency into a requirement on that
+crate's newest version on crates.io, where `tabnas-parser`,
+`tabnas-jsonic` and `tabnas-json` are published. The engine-based crate
+removes `mod machine`, `Css::grammar`, `grammar::{Grammar, Alt,
+RuleDef}` and `lex::{Token, Lex, Point, start_pos, end_pos}`, which is
+breaking for a Rust caller of 0.5.9; the version moves in lockstep with
+`ts/package.json`, and when to publish is the maintainer's decision. A
+local `cargo publish` is not the release path.
+
+Until then a consumer takes the crate from git, with a `[patch]` table
+per repository whose manifest names siblings by path (the README's
+Install section); `aless`'s `Cargo.toml` uses the same pattern for every
+tabnas crate it takes from git.

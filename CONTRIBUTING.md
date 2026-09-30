@@ -16,8 +16,9 @@ track it** — a behaviour change normally lands in all three, with tests in
 all three.
 
 ```bash
-make build   # builds ts/, go/ and rs/
-make test    # tests ts/, go/ and rs/
+make build     # builds ts/, go/ and rs/
+make test      # tests ts/, go/ and rs/
+make gate-rs   # the full Rust gate, ci/rust/run.sh, as CI runs it
 
 # or per stack:
 cd ts && npm install && npm run build && npm test
@@ -25,11 +26,15 @@ cd go && go build ./... && go test ./...
 cd rs && cargo build && cargo test
 ```
 
-The Rust crate has no dependencies, so it needs a toolchain and nothing
-else. The shared workflow has no Rust step, so `cargo test` runs in CI
-from this repository's own `.github/workflows/rust.yml`; run it locally
-too before opening a PR that touches `rs/`, the grammar, or a shared
-fixture.
+The Rust crate is a plugin on the engine and takes it by path from sibling
+checkouts: clone `tabnas/parser`, `tabnas/json`, `tabnas/jsonic` and
+`tabnas/debug` next to this repository, and use Rust 1.85 or newer
+(`rust-version` in `rs/Cargo.toml`). The shared workflow has no Rust step,
+so this repository's own `.github/workflows/rust.yml` clones those siblings
+and runs `ci/rust/run.sh`; run it locally too (`make gate-rs`) before
+opening a PR that touches `rs/`, the grammar, or a shared fixture.
+`rs/Cargo.lock` is committed: commit a change to it only when you meant
+one, and the gate fails a lock that no longer describes the manifest.
 
 Tabnas repos resolve their unpublished `@tabnas/*` siblings from
 **side-by-side checkouts**, so clone this repo's tabnas dependencies into the

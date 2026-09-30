@@ -49,6 +49,25 @@
 //! sanitising: this crate returns the raw text the stylesheet contained, and
 //! escaping it for HTML, SQL or a shell remains the caller's job. A `url(…)`
 //! in a declaration value is untrusted text, not a link to fetch.
+//!
+//! **Cap the input's size.** A parse holds memory in proportion to its
+//! input: measured in a release build, about 6.8 KB per open nesting level
+//! (100,000 nested rules peaked at 678 MB) and, for a flat stylesheet, 210
+//! MB for 100,000 rules. [`Css::parse`] has no depth limit; the engine's
+//! own tree form ([`plugin`], [`make`], [`Css::tabnas`]) stops at
+//! [`TREE_RULE_DEPTH`] open rules with `cancel`.
+//!
+//! **Turn the engine's debug self-check off in your debug builds.** With
+//! debug assertions on, the engine compares its whole rule stack with a
+//! shadow copy on every step, which is quadratic in nesting depth (4,000
+//! nested rules took 134 s in a debug build). This crate's manifest turns
+//! it off, but a profile applies only to the root package, so a crate that
+//! parses untrusted, possibly deep CSS sets the same key in its own:
+//!
+//! ```toml
+//! [profile.dev.package.tabnas-parser]
+//! debug-assertions = false
+//! ```
 
 #![forbid(unsafe_code)]
 // The engine's error is large, and a parse returns it by value, as every

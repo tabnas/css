@@ -7,32 +7,53 @@ nodes that preserve declaration order, duplicate properties, rule types, and
 comments.
 
 This is the Rust port of `@tabnas/css`. The TypeScript package is canonical,
-the Go module tracks it, and so does this crate. All three read the same
-grammar file and are held to the same shared conformance fixtures, so the
-same stylesheet gives the same tree in every one.
+the Go module tracks it, and so does this crate. All three are plugins on
+the tabnas engine, read the same grammar file and are held to the same
+shared conformance fixtures, so the same stylesheet gives the same tree in
+every one.
 
 Where a port does differ, the difference is a row of
 [`../test/divergent.tsv`](../test/divergent.tsv) with a cell per runtime, and
-each suite asserts its own cell. The four rows there today are all Go against
-TypeScript; this crate follows TypeScript on every one, including the column
-arithmetic it would be tidier to round off.
+each suite asserts its own cell. There are five rows. Four are Go against
+TypeScript, and this crate follows TypeScript on every one, including the
+column arithmetic it would be tidier to round off. The fifth is this crate's
+own: the engine's tree form (see [the engine's own API](#the-engines-own-api))
+refuses nesting deeper than `TREE_RULE_DEPTH` open rules, where TypeScript
+and Go have no limit. `parse` and `Css::parse` have no limit either.
 
 ## Install
 
-The crate is not on crates.io yet. This repository's release workflow
-publishes the npm package and tags the Go module; putting a crate on
-crates.io is a separate decision with its own trusted-publishing setup, and
-until that happens the dependency is the repository:
+The `tabnas-css` 0.5.9 on crates.io is the earlier build of this crate,
+which carried a lexer and a rule machine of its own and had no
+dependencies. The crate this repository builds is the plugin on the engine,
+and it is not on crates.io yet, so the dependency is the repository.
+
+Its own dependencies are named by relative path to sibling checkouts
+(`path = "../../parser/rs"`). Inside a git source, cargo resolves such a
+path within that same repository, where it does not exist, so a crate
+taken from git needs a `[patch]` table for each repository that carries
+one, pointing it at its own repository:
 
 ```toml
 [dependencies]
 tabnas-css = { git = "https://github.com/tabnas/css" }
+
+[patch."https://github.com/tabnas/css"]
+tabnas = { package = "tabnas-parser", git = "https://github.com/tabnas/parser" }
+tabnas-jsonic = { git = "https://github.com/tabnas/jsonic" }
+
+[patch."https://github.com/tabnas/jsonic"]
+tabnas = { package = "tabnas-parser", git = "https://github.com/tabnas/parser" }
+tabnas-json = { git = "https://github.com/tabnas/json" }
+
+[patch."https://github.com/tabnas/json"]
+tabnas = { package = "tabnas-parser", git = "https://github.com/tabnas/parser" }
 ```
 
-Cargo finds the crate in `rs/`. Once it is published, `cargo add tabnas-css`
-replaces that line and nothing else changes.
+Cargo finds the crate in `rs/`. Once the engine-based crate is published,
+a version requirement replaces all of this.
 
-The crate has no dependencies of its own.
+The crate needs Rust 1.85 or later, the engine's own floor.
 
 ## One example
 
@@ -61,9 +82,9 @@ assert_eq!(Some("rule"), rule.node_type());
 ```
 
 `parse` reuses one process-wide parser and is safe to call from several
-threads. Building a parser reads the grammar, which costs more than a parse
-does, so a hot loop that needs options should hold a `Css` rather than call
-`parse_with` each time.
+threads. Building a parser installs the grammar on a new engine, which costs
+more than a parse does, so a hot loop that needs options should hold a `Css`
+rather than call `parse_with` each time.
 
 ## Options
 
@@ -100,16 +121,43 @@ tabnas_css::parse("a { color: red; & b { top: 0 } }").unwrap();
 //     {"type":"declaration","property":"top","value":"0"}]}]
 ```
 
-## Why this crate has no dependencies
+## A plugin on the tabnas engine
 
-The TypeScript and Go ports are plugins: they install a grammar on a shared
-parsing engine and borrow its lexer, its rule machine and its relaxed-JSON
-base. There is no Rust build of that engine, so this crate carries a lexer and
-a rule machine of its own, reading the same grammar file the other two embed.
+The TypeScript and Go ports install the grammar on the tabnas engine, layered
+on the relaxed-JSON grammar jsonic, and this crate does the same in Rust: it
+runs on `tabnas-parser` (imported as `tabnas`) and `tabnas-jsonic`. jsonic
+reads `css-grammar.jsonic`, and the plugin installs its rules with the
+canonical option overrides and the `cssToken` lex matcher. Those overrides
+switch jsonic's own rules and value matchers off, so `{a:1}` is refused here
+as it is in the other two ports.
 
-One consequence is visible to a caller. Those ports have to switch the
-relaxed-JSON base off so that `{a:1}` is rejected; here there is no base to
-switch off, and `{a:1}` is rejected because it is not CSS.
+### The engine's own API
+
+`plugin()` is the grammar as an engine plugin, `make()` builds a jsonic
+engine with it installed, and `Css::tabnas()` is the engine a `Css` runs.
+Their parse returns the engine's own `tabnas::Value`, the same tree as the
+canonical port's plain objects, with three differences from `Css::parse`:
+
+- the engine writes a whole number, such as a line in a `position`, as `1.0`
+  in JSON;
+- an engine error's column counts Unicode scalars, where this crate's
+  `Error` counts UTF-16 code units (`tabnas_css::Error::from` converts one);
+- the tree is bounded at `TREE_RULE_DEPTH` (768) open rules, and one level
+  more fails with `cancel`.
+
+The [how-to guide](doc/guide.md#use-the-plugin-on-your-own-engine) has the
+recipe, and the [reference](doc/reference.md#the-two-result-forms) the
+details.
+
+### Building from a checkout
+
+The engine, jsonic, the strict-JSON grammar jsonic takes, and the debug
+plugin the tests use are sibling checkouts, the standard tabnas development
+model. Clone [parser](https://github.com/tabnas/parser),
+[json](https://github.com/tabnas/json),
+[jsonic](https://github.com/tabnas/jsonic) and
+[debug](https://github.com/tabnas/debug) next to this repository, and
+`cargo test` in `rs/` builds against them.
 
 ## Untrusted input
 
@@ -118,6 +166,29 @@ system, so treat every selector, value, and comment as hostile text. Parsing is
 not sanitising: this crate returns the raw text the stylesheet contained, and
 escaping it for HTML, SQL or a shell remains the caller's job. A `url(...)` in
 a declaration value is untrusted text, not a link to fetch.
+
+A parse holds memory in proportion to its input. Measured in a release
+build, 100,000 flat rules (1.7 MB of CSS) peaked at 210 MB, and 100,000
+nested rules (1.2 MB) at 678 MB, about 6.8 KB per open level. A host that
+parses untrusted CSS should cap the input's size.
+
+`parse` and `Css::parse` have no depth limit: 20,000 nested rules parse, and
+the result drops, clones, compares and prints without recursion, on a 2 MiB
+thread. The engine's tree form stops at `TREE_RULE_DEPTH` open rules, as
+described above.
+
+When debug assertions are on, the engine checks its whole rule stack against
+a shadow copy on every step, which makes a debug build's parse quadratic in
+nesting depth. Measured in a debug build, 1,000 nested rules took 8.3 s,
+2,000 took 32.9 s and 4,000 took 134 s. This crate's manifest turns the
+check off for its own builds, but a profile setting applies only to the
+root package, so a crate that parses untrusted, possibly deep CSS in its own
+debug builds sets the same key in its own manifest:
+
+```toml
+[profile.dev.package.tabnas-parser]
+debug-assertions = false
+```
 
 ## Documentation
 
@@ -128,7 +199,7 @@ Full documentation follows the [Diátaxis](https://diataxis.fr) framework:
 - [Reference](doc/reference.md). The public API, every option, and the
   complete AST node reference.
 - [Concepts](doc/concepts.md). How the parser is built, and how the Rust
-  version differs from TypeScript.
+  port differs from TypeScript.
 
 For the canonical TypeScript implementation, see
 [`../ts/README.md`](../ts/README.md). For the Go port, see

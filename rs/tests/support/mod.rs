@@ -4,10 +4,12 @@
 //! fixtures, reading JSON, and comparing two ASTs by value.
 //!
 //! The TypeScript and Go runners get all of this from `@tabnas/support`,
-//! whose two halves cannot drift from each other. There is no Rust half, so
-//! this module is it — deliberately small, and written to the SAME fixture
-//! contract `test/AGENTS.md` sets out, so a row means the same thing in all
-//! three runtimes.
+//! whose two halves cannot drift from each other. That package has a Rust
+//! half too (the `tabnas-support` crate), which this crate does not take:
+//! a new dependency needs the maintainer's instruction, and this module
+//! predates the crate's first ones. So this module is it — deliberately
+//! small, and written to the SAME fixture contract `test/AGENTS.md` sets
+//! out, so a row means the same thing in all three runtimes.
 
 #![allow(dead_code)]
 
