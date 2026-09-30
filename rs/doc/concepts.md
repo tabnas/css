@@ -144,7 +144,7 @@ at the property rather than `unterminated_comment`. The plugin's lex
 subscriber closes that gap: when a bad token arrives behind an
 unconsumed good one, it drops the unconsumed lookahead, so the bad token
 comes first and is the one the error reports, as the throw reports it.
-It does so only with the engine's recovery and relexing off; in those
+It does so only with the engine's `parse.recover` and `lex.relex` off; in those
 modes the lookahead is left as the engine keeps it. The shared comment
 fixtures pin the reported code for inputs of this shape.
 
@@ -214,7 +214,7 @@ Length does not cost depth. Every repetition in the grammar, the items
 of a stylesheet or a block, the declarations of a rule, the selectors of
 a group, is a replace loop: the rule that reads one item replaces itself
 with the reader of the next, in the same frame, rather than pushing a
-new one. So the rule stack follows a stylesheet's nesting and never its
+new one. So the rule stack follows the nesting of a stylesheet and never its
 length, and a test holds each repetition, over ten thousand items, to
 the depth one item needs.
 
@@ -246,7 +246,7 @@ needs no lock.
 The engine's generality has a price per parse, too. Measured in a
 release build, 100,000 flat rules took 1.71 s to parse and write as
 JSON; the `tabnas-css` 0.5.9 on crates.io, which carries a parser
-written for this grammar alone, took 0.40 s. A callgrind profile puts
+written for this grammar alone, took 0.40 s. A `callgrind` profile puts
 about 85% of the work in the engine's own parse loop.
 
 ## Differences from the TypeScript version

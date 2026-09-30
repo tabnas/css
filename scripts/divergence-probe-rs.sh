@@ -132,7 +132,7 @@ console.error("probe: generated " + out.length + " inputs")
 HOST="$(rustc -vV | sed -n 's/^host: //p')"
 [ -n "$HOST" ] || { echo "probe: rustc did not report a host triple" >&2; exit 2; }
 
-PARSE="$(cargo build --quiet --manifest-path "$HERE/rs/Cargo.toml" --example parse \
+PARSE="$(cargo build --manifest-path "$HERE/rs/Cargo.toml" --example parse \
   --target "$HOST" --message-format=json-render-diagnostics |
   node -e 'let s = ""
 process.stdin.on("data", (d) => (s += d))

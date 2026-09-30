@@ -524,10 +524,17 @@ fn register_actions(parser: &mut Tabnas, position: bool) {
 /// otherwise run twice.
 pub(crate) fn install(parser: &mut Tabnas, options: &Options) -> Result<(), PluginError> {
     let specs = specs().map_err(PluginError)?;
-    let first = parser
-        .rule_specs()
-        .iter()
-        .all(|spec| "stylesheet" != spec.name);
+    // Installed before on THIS instance when its `stylesheet` rule runs this
+    // grammar's `@cssSheet`. A rule of that name from another grammar is not
+    // this one, and the lex subscriber must still be added. The rule table
+    // is rebuilt on `derive`, as the subscribers are, so the two agree there.
+    let first = !parser.rule_specs().iter().any(|spec| {
+        "stylesheet" == spec.name
+            && spec
+                .open
+                .iter()
+                .any(|alt| alt.a.iter().any(|action| "@cssSheet" == action))
+    });
 
     let tins = Tins {
         cc: parser.token("#CC"),

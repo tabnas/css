@@ -91,12 +91,20 @@ clean-rs:
 # against the manifest before anything else runs. The release orchestrator
 # rewrites the TypeScript and Go sites and does not know about these;
 # rs/tests/version.rs fails a release that forgets them.
+#
+# The lock entry is edited in place rather than by running cargo: any cargo
+# command resolves the whole graph against the sibling checkouts, and would
+# re-pin whatever they have moved, which is a dependency change a version
+# bump must not make.
 version-rs:
 	@test -n "$(V)" || (echo "Usage: make version-rs V=x.y.z" && exit 1)
 	sed -i.bak 's/^version = ".*"/version = "$(V)"/' rs/Cargo.toml
 	sed -i.bak 's/^pub const VERSION: &str = ".*";/pub const VERSION: \&str = "$(V)";/' rs/src/lib.rs
 	rm -f rs/Cargo.toml.bak rs/src/lib.rs.bak
-	cd rs && cargo metadata --format-version 1 --offline >/dev/null
+	awk -v v="$(V)" '$$0 == "name = \"tabnas-css\"" { f = 1; print; next } \
+	  f && /^version = / { print "version = \"" v "\""; f = 0; next } { print }' \
+	  rs/Cargo.lock > rs/Cargo.lock.tmp
+	mv rs/Cargo.lock.tmp rs/Cargo.lock
 
 # The differential probes: both are GATES and exit non-zero on a
 # divergence. Not part of `test` because each needs the other runtime

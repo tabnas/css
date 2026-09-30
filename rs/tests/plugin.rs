@@ -111,6 +111,28 @@ fn a_second_use_applies_its_options_and_a_derived_instance_agrees() {
 }
 
 #[test]
+fn a_rule_of_the_same_name_from_another_grammar_is_not_this_install() {
+    // An engine that already has a `stylesheet` rule of its own gets the
+    // whole plugin, lex subscriber included: the end-of-input overshoot and
+    // the bad-token lookahead both depend on it.
+    let mut parser = Tabnas::new();
+    parser
+        .grammar_json(r##"{"rule":{"stylesheet":{"open":[{"s":"#ZZ"}]}}}"##)
+        .expect("a foreign stylesheet rule installs");
+    css(&mut parser, &POSITIONED).expect("installs");
+    let tree = from_tree(&parser.parse("@host\\").expect("parses"));
+    assert!(
+        tree.to_json().ends_with(
+            r#""position":{"start":{"line":1,"column":1},"end":{"line":1,"column":8}}}"#
+        ),
+        "{}",
+        tree.to_json()
+    );
+    let err = parser.parse("a{b\\\"x;\"/*").expect_err("unclosed comment");
+    assert_eq!("unterminated_comment", err.code);
+}
+
+#[test]
 fn a_direct_install_is_kept_by_a_derived_instance() {
     let mut parser = Tabnas::new();
     css(&mut parser, &POSITIONED).expect("installs");

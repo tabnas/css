@@ -153,10 +153,10 @@ details.
 
 The engine, jsonic, the strict-JSON grammar jsonic takes, and the debug
 plugin the tests use are sibling checkouts, the standard tabnas development
-model. Clone [parser](https://github.com/tabnas/parser),
-[json](https://github.com/tabnas/json),
-[jsonic](https://github.com/tabnas/jsonic) and
-[debug](https://github.com/tabnas/debug) next to this repository, and
+model. Clone [`parser`](https://github.com/tabnas/parser),
+[`json`](https://github.com/tabnas/json),
+[`jsonic`](https://github.com/tabnas/jsonic) and
+[`debug`](https://github.com/tabnas/debug) next to this repository, and
 `cargo test` in `rs/` builds against them.
 
 ## Untrusted input

@@ -95,7 +95,7 @@ to `false`, and `Options` implements `Default`, `Clone`, `Copy`,
 | Method | Returns | What it does |
 |---|---|---|
 | `Options::from_value(&tabnas::Value)` | `Options` | Reads an engine option bag: the keys `lowercaseProperties` and `position`. |
-| `options.to_value()` | `tabnas::Value` | An engine option bag holding both keys as booleans, for `use_plugin`. |
+| `options.to_value()` | `tabnas::Value` | An engine option bag holding both keys as `true` or `false`, for `use_plugin`. |
 
 `from_value` reads each key for its JavaScript truthiness, as
 `!!options.position` does in the canonical port: an absent key,
