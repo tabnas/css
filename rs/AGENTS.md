@@ -9,17 +9,17 @@ rules. This file covers only what is specific to this crate.
 
 | Path | |
 |---|---|
-| `src/lib.rs` | the public surface: `plugin`, `css`, `make`, `make_with`, `Options` (with `from_value` and `to_value`), `Css`, `parse`, `parse_with`, `VERSION`, and the `#[cfg(doctest)]` module that makes every Markdown example a doctest |
-| `src/plugin.rs` | the install, the actions that build the nodes, the two node stores (tree and arena), UTF-16 positions (`col16`), the `depth` guard and `TREE_RULE_DEPTH` |
-| `src/lex.rs` | the `cssToken` matcher and its scanners, the lex subscriber (end-of-input overshoot, bad-token lookahead), `Tin`, `Error` and `From<TabnasError>`, and the ECMAScript whitespace helpers |
-| `src/grammar.rs` | `GRAMMAR_TEXT` (the embedded `css-grammar.jsonic`), `OPTIONS_DOC` (the canonical option overrides, plus `rule.history: 1`), `RULES`, and `specs()`, which reads the text with jsonic once per process |
+| `src/lib.rs` | the public surface: `plugin`, `css`, `make`, `make_with`, `Options` (with `from_value` and `to_value`), `Css`, `parse`, `parse_with`, `VERSION`, the re-exports of `tabnas` and `tabnas_jsonic`, and the `#[cfg(doctest)]` module that makes every Markdown example a doctest |
+| `src/plugin.rs` | the install, the actions that build the nodes, the two node stores (tree and arena), UTF-16 positions (`col16`), the arena meta, the `tabnas-css/depth` guard and `TREE_RULE_DEPTH` |
+| `src/lex.rs` | the `cssToken` matcher and its scanners (with `BraceScans`, a group scanned once), the lex subscriber (end-of-input overshoot, bad-token lookahead), `Tin`, `Error` and `From<TabnasError>`, and the ECMAScript whitespace helpers |
+| `src/grammar.rs` | `GRAMMAR_TEXT` (the embedded `css-grammar.jsonic`), `OPTIONS_DOC` (the canonical option overrides, plus `rule.history: 1` and the `@css-prepare` hook), `RULES`, and `specs()`, which reads the text with jsonic once per process |
 | `src/value.rs` | `Value` and `Node`, with every tree walk written as a stack machine, and `from_arena`, which builds the tree from the arena without recursion |
 | `tests/parity.rs` | every shared `../test/spec/*.tsv` row three ways: `Css::parse`, the plugin on jsonic, and the plugin on a bare engine |
 | `tests/divergent.rs` | the `rust` column of `../test/divergent.tsv`, read through the engine's API, and `Css::parse` against the `ts` cell on every row |
 | `tests/css.rs` | what a fixture cannot express, plus the crate's API: key order, an absent `position.end`, error positions taken from the TypeScript suite, 20,000-level nesting on a 2 MiB thread |
 | `tests/grammar.rs` | the embed against the file on disk, the rules the plugin installs, and every alternate in the `css` group |
-| `tests/plugin.rs` | the engine API: the tree form against `Css::parse`, a bare engine, option truthiness, a second install and `derive`, the depth bound, recovery, a seeded context, error columns |
-| `tests/repeat.rs` | every repetition a replace loop: rule depth over 10,000 items of each, the grammar's pushes and replaces, linear parse time |
+| `tests/plugin.rs` | the engine API: the tree form against `Css::parse`, a bare engine, option truthiness, a second install and `derive`, `merge`, the depth bound and a later `depth` guard, recovery and relexing, a caller's meta, a seeded context, error columns |
+| `tests/repeat.rs` | every repetition a replace loop: rule depth over 10,000 items of each, the grammar's pushes and replaces, linear parse time for rules and for selector and keyframe groups |
 | `tests/debug_model.rs` | the grammar composed with `tabnas-debug`, the Rust half of `ts/test/debug-model.test.ts` |
 | `tests/memory.rs` | a counting allocator holding a parse's peak memory, flat and nested, under ceilings |
 | `tests/reworkcss.rs` | the pinned reworkcss/css corpus, fetched by the test itself |
@@ -36,7 +36,7 @@ on the engine `tabnas-parser` (imported as `tabnas`), layered on
 tokens. `install` in `src/plugin.rs` puts the canonical option overrides
 (`OPTIONS_DOC`), the 13 rules (each alternate tagged `css`), the
 `cssToken` matcher at order 1e5, the actions, a `parse.prepare` hook, a
-lex subscriber and the `depth` guard on an engine. The engine implements
+lex subscriber and the `tabnas-css/depth` guard on an engine. The engine implements
 the whole alternate surface, so a field the grammar grows needs no
 teaching here; a new ACTION does, in `register_actions`.
 
@@ -70,20 +70,24 @@ memory profile or a stack overflow.
   Setters and pushers write through the shared cell (`with_node`), as the
   canonical ones mutate the shared object.
 - **`Css::parse` builds in the arena, and nothing recursive is reachable
-  from its result.** It passes the `ARENA` meta key; every node is a flat
+  from its result.** It passes `arena_meta()`, one object the plugin
+  recognises by its address, so a caller's own meta cannot select the
+  arena or lift the tree form's bound; every node is a flat
   record in a per-parse list in `ctx.u`, so the engine never holds a
   nested value, and `Value::from_arena` builds the tree walking the
   records from last to first, without recursion. `Value` and `Node` drop,
   clone, compare, print and write JSON with explicit stacks;
-  `tests/css.rs` pins all of it at 20,000 levels, on a 2 MiB thread too.
+  `tests/css.rs` pins all of it at 20,000 levels, on the `Value` and on
+  the `Node`, on a 2 MiB thread too.
   `Value::from_engine` recurses and is only for the grammar document:
   never route a parse result through it. `Debug` is the walk that is
   easy to forget, because it is what a caller reaches for while
   debugging.
-- **The tree form is bounded by the `depth` guard.** A parse through the
-  engine's own API (`make`, `plugin`, `Css::tabnas`) builds engine
-  objects, which drop, clone and print by recursion. The guard, named
-  `depth` so that it replaces jsonic's, refuses more than
+- **The tree form is bounded by the `tabnas-css/depth` guard.** A parse
+  through the engine's own API (`make`, `plugin`, `Css::tabnas`) builds
+  engine objects, which drop, clone and print by recursion. The guard has
+  a name of its own, since jsonic and the grammars on it each install
+  theirs as `depth`, replacing the last; it refuses more than
   `TREE_RULE_DEPTH` (768) open rules with `cancel` unless the parse is an
   arena parse. Row 5 of `../test/divergent.tsv` registers the bound;
   moving it means moving the constant, `tests/plugin.rs` (191 nested
@@ -110,7 +114,28 @@ memory profile or a stack overflow.
   subscriber clears the unconsumed lookahead when a bad token arrives
   behind a good one, so `a{b\"x;"/*` fails as `unterminated_comment`, as
   the rows in `../test/spec/comments.tsv` require. Leave the recovery and
-  relex modes alone: the engine uses the lookahead there.
+  relex modes alone: with relexing on the canonical engine reports the
+  good token too, and under recovery the engine's recovery reads the
+  lookahead (dropping it there doubled the recovered values that differ
+  from the canonical port's). `tests/plugin.rs` pins both.
+- **The matcher emits the grammar's own tokens by name.** `#CC`, `#GC`
+  and the at-rule tokens carry `lex::BY_NAME` (-1), which the engine
+  resolves as it lexes. Never capture a token number at install:
+  `Tabnas::merge` renumbers custom tokens without running the plugin, and
+  a captured number names another token there. `tests/plugin.rs` merges
+  both ways.
+- **A child that built no node is not pushed.** `push_child` skips a
+  child whose `child_node` is undefined: it failed before its
+  constructor ran (only recovery gets past that) and still shares the
+  parent's cell, where `child_value()` answers with the parent's own node.
+  The canonical port pushes the parent into itself there, a cycle.
+- **A selector group is scanned once.** `BraceScans` keeps the first
+  item's `{`-before-`;` answer with a cursor that moves forward, and
+  gives it to a later item's start the cursor reaches at bracket depth 0;
+  any other start scans afresh. The scan's whole state is its position
+  and its depth, so the answer is exact; without the cache a group's
+  items each scanned to its `{`, and 200 KB of selectors took 9 s.
+  `tests/repeat.rs` pins linear time for both kinds of group.
 - **Lookahead is lazy, and comment nodes are keyed on the rule name.**
   The engine reads a token only when the alternate being tried needs one,
   under the rule trying it; `COMMENT_NODE_RULES` in `lex.rs` names the
@@ -120,20 +145,23 @@ memory profile or a stack overflow.
   `b{,/*!important` fails as `unexpected` because `decl`'s alternates
   fail on the first token before the comment behind it is read.
 - **Per-parse state lives in `ctx.u` and `@css-prepare` clears it.** The
-  arena, the astral list and the overshoot sit under `tabnas-css/…` keys,
-  and the prepare hook removes them before every parse, so a caller's
-  seeded context cannot reach them (`tests/plugin.rs`). A new key goes in
-  the hook too.
+  arena, the astral list, the overshoot and the group scan sit under
+  `tabnas-css/…` keys, and the prepare hook removes them before every
+  parse, so a caller's seeded context cannot reach them
+  (`tests/plugin.rs` seeds each; the arena is read only by `Css::parse`,
+  which takes no seed, so its clear is a guard the test cannot observe).
+  A new key goes in the hook too.
 - **A second install applies its options.** `use_plugin` again, or
   `derive`, reruns `install`: the matcher and the actions (which capture
   the options) are re-registered by name, and the rules in `RULES` are
   removed and installed afresh, since installing over an existing rule
-  puts the new alternates in front of the old. The lex subscriber is
+  puts the new alternates in front of the old (`tests/plugin.rs` compares
+  every rule's alternate counts with a fresh instance's). The lex subscriber is
   added by the first install only, because subscribers are not named. A
   rule added to the grammar goes into `RULES`.
 - **`rule.history` is 1.** Rust only; the canonical options do not set
   it. Unbounded, every item of a list stays reachable until the list
-  closes: 100,000 flat rules peaked at 927 MB, and bounded at 210 MB.
+  closes: 100,000 flat rules peaked at 927 MiB, and bounded at 210 MiB.
   No alternate reads `prev`; one that must would reopen this, and
   `tests/memory.rs` holds the ceilings.
 - **Every repetition is a replace loop, never a push chain.** The loop
@@ -193,8 +221,8 @@ It also refuses a combination whose output matches the default mode: an
 option the corpus never reaches is a run that reports coverage it does not
 have. It restores `rs/Cargo.lock` after its build.
 
-**`.github/workflows/rust.yml` runs all of this on every push and pull
-request.** Two jobs: `rust` checks the repository out into `css/`,
+**`.github/workflows/rust.yml` runs all of this on every push to `main`
+and every pull request.** Two jobs: `rust` checks the repository out into `css/`,
 clones the four siblings beside it, installs Rust 1.85 with `rustup` and
 runs `css/ci/rust/run.sh`; `probe` builds the TypeScript port and runs
 `scripts/divergence-probe-rs.sh 4000` against the same siblings. Run the
@@ -215,7 +243,9 @@ makes, sibling versions aside, so a change to `Cargo.toml` commits the
 updated lock with it.
 
 crates.io has `tabnas-css` 0.5.9: the earlier crate, with its own lexer
-and rule machine and no dependencies. `.github/workflows/crates-release.yml`
+and rule machine and no dependencies. The published pages (README and
+`doc/`) call it a different implementation and carry no history, since
+they ship in the package. `.github/workflows/crates-release.yml`
 publishes `rs/` from the release tag once the `TABNAS_CRATES` variable is
 on, rewriting each sibling path dependency into a requirement on that
 crate's newest version on crates.io, where `tabnas-parser`,

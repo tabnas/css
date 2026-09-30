@@ -97,8 +97,8 @@ cp Cargo.lock "$LOCK_BEFORE"
 # rewrote it, then drop the snapshot: the tree is left as it was found.
 trap 'if [ -f "$LOCK_BEFORE" ] && ! cmp -s "$LOCK_BEFORE" Cargo.lock; then cp "$LOCK_BEFORE" Cargo.lock; fi; rm -f "$LOCK_BEFORE"' EXIT
 
-# NOT `--locked`, deliberately, and this is the one place the plugin gate
-# differs from the engine's own (parser ci/rust/run.sh does pass it).
+# NOT `--locked`, deliberately, where the engine's own gate passes it
+# (parser ci/rust/run.sh).
 #
 # Cargo.lock records the siblings by version, and each is resolved from a
 # sibling checkout of MAIN. So the day one of them bumps its crate
@@ -124,14 +124,21 @@ trap 'if [ -f "$LOCK_BEFORE" ] && ! cmp -s "$LOCK_BEFORE" Cargo.lock; then cp "$
 RUSTDOCFLAGS="-D warnings" "${CARGO[@]}" doc --no-deps
 
 # Now that cargo has had every chance to rewrite it, the lock must still
-# describe the same resolution it did when committed.
+# describe the same resolution it did when committed. The masking above
+# covers a sibling's VERSION only: a sibling whose main adds, drops or
+# re-pins a dependency of its own rewrites that sibling's entry and the
+# third-party ones, and this fails every pull request here, Rust or not,
+# until the committed lock is updated. That is the cost of checking the
+# lock at all against moving siblings, and the message says so.
 if ! diff -q <(lock_without_sibling_versions "$LOCK_BEFORE") \
              <(lock_without_sibling_versions Cargo.lock) >/dev/null; then
-  echo "rs/Cargo.lock does not match rs/Cargo.toml -- cargo rewrote it:" >&2
+  echo "rs/Cargo.lock does not match the resolution cargo makes -- cargo rewrote it:" >&2
   diff <(lock_without_sibling_versions "$LOCK_BEFORE") \
        <(lock_without_sibling_versions Cargo.lock) >&2 || true
   echo >&2
-  echo "run a cargo command and commit the updated rs/Cargo.lock" >&2
+  echo "Either rs/Cargo.toml changed, or a sibling checkout's main changed its own" >&2
+  echo "dependencies; the diff names the entries. The fix is the updated" >&2
+  echo "rs/Cargo.lock, committed: a dependency change, so see CLAUDE.md first." >&2
   cp "$LOCK_BEFORE" Cargo.lock   # leave the tree as it was found
   exit 1
 fi

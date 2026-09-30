@@ -5,8 +5,8 @@
 //! The engine keeps a snapshot per rule, and by default every rule keeps
 //! the links to the rules it replaced, so a list's items were all held
 //! until the list closed: a flat stylesheet of 100,000 rules (1.7 MB) peaked
-//! at 927 MB. The grammar's options bound that history (`rule.history: 1`
-//! in `src/grammar.rs`), which brought it to 210 MB. Nesting is bounded by
+//! at 927 MiB. The grammar's options bound that history (`rule.history: 1`
+//! in `src/grammar.rs`), which brought it to 210 MiB. Nesting is bounded by
 //! nothing but memory, and costs the engine's frames for every open level.
 //! The ceilings below are about twice what each case measured when they were
 //! set, so a return of per-item retention fails here, and ordinary noise
@@ -57,19 +57,19 @@ fn a_parse_holds_memory_in_proportion_to_its_input() {
     let css = tabnas_css::Css::new();
     let flat = "a { color: red }\n".repeat(10_000);
     let nested = format!("{}color: red{}", "a { ".repeat(2_000), " }".repeat(2_000));
-    // Measured when set: 19.6 MB flat (87 MB with the history unbounded)
-    // and 12.8 MB nested.
-    const MB: usize = 1024 * 1024;
+    // Measured when set: 18.7 MiB flat (83 MiB with the history unbounded)
+    // and 12.2 MiB nested.
+    const MIB: usize = 1024 * 1024;
     let flat_peak = peak_of(&css, &flat);
     assert!(
-        flat_peak < 40 * MB,
-        "10,000 flat rules held {} MB at once",
-        flat_peak / MB
+        flat_peak < 40 * MIB,
+        "10,000 flat rules held {} MiB at once",
+        flat_peak / MIB
     );
     let nested_peak = peak_of(&css, &nested);
     assert!(
-        nested_peak < 26 * MB,
-        "2,000 nested rules held {} MB at once",
-        nested_peak / MB
+        nested_peak < 26 * MIB,
+        "2,000 nested rules held {} MiB at once",
+        nested_peak / MIB
     );
 }

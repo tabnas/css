@@ -127,6 +127,53 @@ fn emitted_json_puts_type_first_and_keeps_source_order() {
         out.contains(r#"{"type":"keyframes","name":"x","vendor":"-webkit-","keyframes":["#),
         "keyframes key order changed: {out}"
     );
+    // An at-keyword is a key, and JavaScript enumerates an array-index key
+    // before every other, ascending; `JSON.stringify` writes them so. The
+    // outputs are the canonical port's, byte for byte, and the tree form
+    // has the same order.
+    for (src, expected) in [
+        (
+            "@0 x;",
+            r#"{"type":"stylesheet","rules":[{"0":"x","type":"0"}]}"#,
+        ),
+        (
+            "@1 x{a{}}",
+            r#"{"type":"stylesheet","rules":[{"1":"x","type":"1","rules":[{"type":"rule","selectors":["a"],"declarations":[]}]}]}"#,
+        ),
+        (
+            "@4294967294 x;",
+            r#"{"type":"stylesheet","rules":[{"4294967294":"x","type":"4294967294"}]}"#,
+        ),
+        // Not array indices: past the largest, and not in canonical form.
+        (
+            "@4294967295 x;",
+            r#"{"type":"stylesheet","rules":[{"type":"4294967295","4294967295":"x"}]}"#,
+        ),
+        (
+            "@01 x;",
+            r#"{"type":"stylesheet","rules":[{"type":"01","01":"x"}]}"#,
+        ),
+    ] {
+        assert_eq!(expected, json(src), "{src:?}");
+        let tree = tabnas_css::make().parse(src).expect("parses");
+        let keys = first_rule_keys(&tree);
+        let first = &expected[expected.find(r#"[{""#).expect("a rule") + 3..];
+        assert!(first.starts_with(keys[0].as_str()), "{src:?}: {keys:?}");
+    }
+}
+
+/// The keys of the first rule of an engine tree, in its order.
+fn first_rule_keys(tree: &tabnas::Value) -> Vec<String> {
+    let tabnas::Value::Object(sheet) = tree else {
+        panic!("a stylesheet object");
+    };
+    let Some(tabnas::Value::Array(rules)) = sheet.get("rules") else {
+        panic!("a rules list");
+    };
+    let Some(tabnas::Value::Object(rule)) = rules.first() else {
+        panic!("a rule object");
+    };
+    rule.keys().cloned().collect()
 }
 
 #[test]
@@ -217,6 +264,11 @@ fn errors_stop_where_the_canonical_port_stops() {
         ("@media x{b\\\"x;\"/*", "unterminated_comment", 1, 12),
         ("@keyframes k{b\\\"x;\"/*", "unterminated_comment", 1, 16),
         ("a{b:c;d\\\"x;\"/*", "unterminated_comment", 1, 9),
+        // An astral character on an earlier line moves no column on a later
+        // one: the count starts at the error's own line.
+        ("a{b:\u{1D11E}}\n}", "unexpected", 2, 1),
+        ("/*\u{1D11E}*/\n}", "unexpected", 2, 1),
+        ("a{b:\u{1D11E};\nc:\u{1D11E}\\", "unexpected", 2, 7),
     ] {
         let err = Css::new().parse(src).expect_err(src);
         assert_eq!(
@@ -249,6 +301,16 @@ fn deep_nesting_does_not_exhaust_the_stack() {
     assert!(format!("{ast:?}").starts_with(r#"{"type":"stylesheet""#));
     let copy = ast.clone();
     assert!(copy == ast, "a deep clone compares equal to its source");
+
+    // The same walks on the `Node` a caller holds, which are impls of
+    // their own: `Value`'s Debug never reaches `Node`'s.
+    let root = ast.as_node().expect("a stylesheet node");
+    assert!(format!("{root:?}").starts_with(r#"{"type":"stylesheet""#));
+    assert!(root.to_json().starts_with(r#"{"type":"stylesheet""#));
+    let root_copy = root.clone();
+    assert!(&root_copy == root, "a deep node clone compares equal");
+    drop(root_copy);
+    drop(copy);
 
     let mut node = ast.as_node().expect("a stylesheet node");
     let mut depth = 0;

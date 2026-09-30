@@ -13,10 +13,9 @@ tree is the same tree and only the Rust types are new. Skip to
 ## 1. Install
 
 This page uses the crate this repository builds, a plugin on the tabnas
-engine, which is not on crates.io yet (the `tabnas-css` there is an
-earlier build). So the dependency is the repository. Add it to
-`Cargo.toml`, with the `[patch]` tables that point the crate's own
-dependencies at their repositories:
+engine, taken from the repository (the `tabnas-css` on crates.io is a
+different implementation). Add it to `Cargo.toml`, with the `[patch]`
+tables that point the crate's own dependencies at their repositories:
 
 ```toml
 [dependencies]

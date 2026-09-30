@@ -322,44 +322,154 @@ fn skip_string(src: &[u8], mut i: usize) -> usize {
 /// Scan a key prelude: where it ends, and whether it is a selector (a
 /// top-level `{` comes first) or a declaration (a top-level `;`/`}` or end of
 /// input comes first). Strings, `()`, `[]` and comments are skipped.
-fn scan_to_brace_or_end(src: &[u8], mut i: usize) -> (Kind, usize) {
-    let mut depth = 0usize;
-    while i < src.len() {
-        let c = src[i];
-        if c == b'"' || c == b'\'' {
-            i = skip_string(src, i);
-            continue;
+fn scan_to_brace_or_end(src: &[u8], i: usize) -> (Kind, usize) {
+    let mut scan = Scan { i, depth: 0 };
+    loop {
+        if let Some(found) = scan.step(src) {
+            return found;
         }
-        if c == b'/' && src.get(i + 1) == Some(&b'*') {
-            let n = skip_comment(src, i);
+    }
+}
+
+/// [`scan_to_brace_or_end`] one step at a time. The position and the
+/// bracket depth are its whole state, so two scans in the same state go on
+/// to the same answer: what [`BraceScans`] relies on.
+#[derive(Clone, Copy, Debug)]
+struct Scan {
+    i: usize,
+    depth: usize,
+}
+
+impl Scan {
+    /// Take one step: past a string, a comment, an escape or one byte.
+    /// `Some` is the scan's answer.
+    fn step(&mut self, src: &[u8]) -> Option<(Kind, usize)> {
+        let Some(&c) = src.get(self.i) else {
+            // i may be one past the end; see skip_string.
+            return Some((Kind::Decl, self.i));
+        };
+        if c == b'"' || c == b'\'' {
+            self.i = skip_string(src, self.i);
+            return None;
+        }
+        if c == b'/' && src.get(self.i + 1) == Some(&b'*') {
+            let n = skip_comment(src, self.i);
             if UNTERMINATED == n {
-                return (Kind::Decl, UNTERMINATED);
+                return Some((Kind::Decl, UNTERMINATED));
             }
-            i = n;
-            continue;
+            self.i = n;
+            return None;
         }
         // A CSS escape (`\(`, `\'`, `\3A `, …) hides the next character from
         // the structural scan.
         if c == b'\\' {
-            i += 2;
-            continue;
+            self.i += 2;
+            return None;
         }
         if c == b'(' || c == b'[' {
-            depth += 1;
+            self.depth += 1;
         } else if c == b')' || c == b']' {
-            depth = depth.saturating_sub(1);
-        } else if 0 == depth {
+            self.depth = self.depth.saturating_sub(1);
+        } else if 0 == self.depth {
             if c == b'{' {
-                return (Kind::Selector, i);
+                return Some((Kind::Selector, self.i));
             }
             if c == b';' || c == b'}' {
-                return (Kind::Decl, i);
+                return Some((Kind::Decl, self.i));
             }
         }
-        i += 1;
+        self.i += 1;
+        None
     }
-    // i may be one past the end; see skip_string.
-    (Kind::Decl, i)
+}
+
+/// [`scan_to_brace_or_end`] for every token of a parse, in linear time.
+///
+/// Each selector of a group, and each value of a keyframe-selector group,
+/// is classified by scanning to the group's `{`, so a group of `k` items
+/// scanned from each item's start costs `k` times the group's length: a
+/// 200 KB list of selectors took 9 s. The scan from an item's start is the
+/// scan from the group's first item, resumed there, whenever that scan
+/// passes the item's start at bracket depth 0 (the state [`Scan`] carries,
+/// outside any string, comment or escape, which it steps over whole). So
+/// the answer is kept with a cursor that follows the tokens forward, and a
+/// later start the cursor reaches in that state takes the kept answer. Any
+/// other start scans afresh and becomes the one kept. The cursor only moves
+/// forward, so a parse's scanning is linear in its length.
+#[derive(Clone, Copy, Debug)]
+struct BraceScans {
+    from: usize,
+    found: (Kind, usize),
+    cursor: Scan,
+}
+
+/// The `ctx.u` key [`BraceScans`] is kept under, for the parse.
+pub(crate) const BRACE_SCAN: &str = "tabnas-css/brace-scan";
+
+impl BraceScans {
+    fn scan(ctx: &mut Context, src: &[u8], s_i: usize) -> (Kind, usize) {
+        if let Some(mut kept) = BraceScans::read(ctx) {
+            if kept.from <= s_i && s_i < kept.found.1 && kept.cursor.i <= s_i {
+                while kept.cursor.i < s_i && kept.cursor.step(src).is_none() {}
+                let reached = kept.cursor.i == s_i && 0 == kept.cursor.depth;
+                kept.write(ctx);
+                if reached {
+                    return kept.found;
+                }
+            }
+        }
+        let found = scan_to_brace_or_end(src, s_i);
+        if UNTERMINATED != found.1 {
+            let cursor = Scan { i: s_i, depth: 0 };
+            BraceScans {
+                from: s_i,
+                found,
+                cursor,
+            }
+            .write(ctx);
+        }
+        found
+    }
+
+    fn read(ctx: &Context) -> Option<BraceScans> {
+        let Some(Value::Array(fields)) = ctx.u.get(BRACE_SCAN) else {
+            return None;
+        };
+        let at = |n: usize| match fields.get(n) {
+            Some(Value::Number(v)) => Some(*v as usize),
+            _ => None,
+        };
+        let kind = if 0 == at(1)? {
+            Kind::Selector
+        } else {
+            Kind::Decl
+        };
+        Some(BraceScans {
+            from: at(0)?,
+            found: (kind, at(2)?),
+            cursor: Scan {
+                i: at(3)?,
+                depth: at(4)?,
+            },
+        })
+    }
+
+    fn write(&self, ctx: &mut Context) {
+        let kind = match self.found.0 {
+            Kind::Selector => 0,
+            Kind::Decl => 1,
+        };
+        let fields = [
+            self.from,
+            kind,
+            self.found.1,
+            self.cursor.i,
+            self.cursor.depth,
+        ]
+        .map(|n| Value::Number(n as f64));
+        ctx.u
+            .insert(BRACE_SCAN.to_string(), Value::array(fields.to_vec()));
+    }
 }
 
 /// Scan a single selector: to the next top-level `,` (a group separator) or
@@ -545,20 +655,17 @@ pub fn split_selectors(prelude: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 // The `cssToken` matcher, as the engine runs it.
 
-/// The engine's numbers for the tokens this grammar names itself, which
-/// `Tabnas::token` allocates at install.
+/// The token number a matcher gives a token the engine is to resolve by
+/// NAME, as it lexes: the six this grammar names itself (`#CC`, `#GC` and
+/// the four at-rule tokens).
 ///
-/// Captured by value in the matcher: resolving a name per token would go
-/// through `Lexer::token_tin`, which clones the engine's options each time.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct Tins {
-    pub(crate) cc: EngineTin,
-    pub(crate) atr: EngineTin,
-    pub(crate) atd: EngineTin,
-    pub(crate) atk: EngineTin,
-    pub(crate) ats: EngineTin,
-    pub(crate) gc: EngineTin,
-}
+/// The engine numbers a name when it is first registered, and
+/// [`Tabnas::merge`](tabnas::Tabnas::merge) renumbers every custom name in
+/// the merged instance without running the plugin again, so a number
+/// captured at install names another token there. The canonical port's
+/// `lex.token('#CC', …)` resolves the name on every call for the same
+/// reason. `#TX` and `#VL` are the engine's own, with fixed numbers.
+const BY_NAME: EngineTin = -1;
 
 /// Where a scan ran past the end of the source, and by how much: the
 /// `ctx.u` key [`css_token`] records it under and [`lex_subscriber`] reads.
@@ -596,7 +703,13 @@ enum Plan {
 /// `}` under `declval`, a top-level `,` separates a selector group, `@`
 /// starts an at-rule, `{` `}` `;` are the grammar's, and anything else is a
 /// selector or a property name by `{`-before-`;` lookahead.
-fn plan_token(src: &str, s_i: usize, rule: &str, lower: bool, tins: Tins) -> Plan {
+fn plan_token(
+    src: &str,
+    s_i: usize,
+    rule: &str,
+    lower: bool,
+    brace: &mut dyn FnMut(usize) -> (Kind, usize),
+) -> Plan {
     let bytes = src.as_bytes();
     let Some(&c) = bytes.get(s_i) else {
         return Plan::Decline;
@@ -623,7 +736,7 @@ fn plan_token(src: &str, s_i: usize, rule: &str, lower: bool, tins: Tins) -> Pla
             None => Plan::Bad,
             Some(e) => emit(
                 "#CC",
-                tins.cc,
+                BY_NAME,
                 safe_slice(src, s_i + 2, e).to_string(),
                 safe_slice(src, s_i, e + 2),
                 None,
@@ -649,7 +762,7 @@ fn plan_token(src: &str, s_i: usize, rule: &str, lower: bool, tins: Tins) -> Pla
 
     // A top-level selector-group comma.
     if c == b',' {
-        return emit("#GC", tins.gc, ",".to_string(), ",", None, s_i + 1);
+        return emit("#GC", BY_NAME, ",".to_string(), ",", None, s_i + 1);
     }
 
     // An at-rule: block or statement by `{`-before-`;` lookahead, and a
@@ -661,7 +774,7 @@ fn plan_token(src: &str, s_i: usize, rule: &str, lower: bool, tins: Tins) -> Pla
             k_end += 1;
         }
         let kw = safe_slice(src, s_i + 1, k_end).to_string();
-        let (kind, index) = scan_to_brace_or_end(bytes, s_i);
+        let (kind, index) = brace(s_i);
         if UNTERMINATED == index {
             return Plan::Bad;
         }
@@ -670,11 +783,11 @@ fn plan_token(src: &str, s_i: usize, rule: &str, lower: bool, tins: Tins) -> Pla
             // matching reworkcss.
             let prelude = es_trim(safe_slice(src, k_end, index)).to_string();
             let (name, tin) = if is_keyframes_kw(&kw) {
-                ("#ATK", tins.atk)
+                ("#ATK", BY_NAME)
             } else if DECLS_KW.contains(&kw.as_str()) {
-                ("#ATD", tins.atd)
+                ("#ATD", BY_NAME)
             } else {
-                ("#ATR", tins.atr)
+                ("#ATR", BY_NAME)
             };
             let raw = safe_slice(src, s_i, index);
             return emit(name, tin, kw, raw, Some(("prelude", prelude)), index);
@@ -693,7 +806,7 @@ fn plan_token(src: &str, s_i: usize, rule: &str, lower: bool, tins: Tins) -> Pla
             p_end
         };
         let raw = safe_slice(src, s_i, end);
-        return emit("#ATS", tins.ats, kw, raw, Some(("params", params)), end);
+        return emit("#ATS", BY_NAME, kw, raw, Some(("params", params)), end);
     }
 
     // Other fixed punctuation belongs to the grammar. `:` does not: a run
@@ -703,7 +816,7 @@ fn plan_token(src: &str, s_i: usize, rule: &str, lower: bool, tins: Tins) -> Pla
     }
 
     // A selector or a property name, by `{`-before-`;` lookahead.
-    let (kind, index) = scan_to_brace_or_end(bytes, s_i);
+    let (kind, index) = brace(s_i);
     if UNTERMINATED == index {
         return Plan::Bad;
     }
@@ -763,13 +876,14 @@ pub(crate) fn css_token(
     rule: &mut Rule,
     ctx: &mut Context,
     lower: bool,
-    tins: Tins,
 ) -> Option<Token> {
     let point = lexer.point();
     let s_i = point.site.si;
     let (plan, chars, overshoot) = {
         let src = lexer.source();
-        let plan = plan_token(src, s_i, rule.name.as_str(), lower, tins);
+        let bytes = src.as_bytes();
+        let mut brace = |at: usize| BraceScans::scan(ctx, bytes, at);
+        let plan = plan_token(src, s_i, rule.name.as_str(), lower, &mut brace);
         let (chars, overshoot) = match &plan {
             Plan::Decline => return None,
             Plan::Bad => (
@@ -830,8 +944,12 @@ pub(crate) fn css_token(
 ///   whose escaped quote hid it from the property scan) came out as
 ///   `unexpected` at the property. Dropping the unconsumed lookahead makes
 ///   the bad token the one the error reports, which is what the throw did.
-///   The engine only does this with neither recovery nor relexing on; in
-///   those modes the lookahead is left alone.
+///   The subscriber does this only with neither recovery nor relexing on;
+///   in those modes the lookahead is left alone. With relexing on the
+///   canonical engine reports the good token too, and under recovery the
+///   engine's recovery reads the lookahead: dropping it there doubled the
+///   recovered values that differ from the canonical port's, over the
+///   review's 12,000-input corpus. `tests/plugin.rs` pins both modes.
 pub(crate) fn lex_subscriber(token: &mut Token, _rule: &mut Rule, ctx: &mut Context) {
     if TIN_ZZ == token.tin {
         if let Some(Value::Number(n)) = ctx.u.get(OVERSHOOT) {

@@ -27,6 +27,9 @@ permissions:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    # A regression that loops rather than fails would otherwise hold the
+    # runner for GitHub's six-hour default; the healthy job takes minutes.
+    timeout-minutes: 30
     steps:
       # The shared fixtures and the conformance corpus are read as text, so a
       # checkout that rewrote line endings would test inputs the fixtures do
@@ -78,6 +81,7 @@ jobs:
   # TypeScript port built, which the job above does not.
   probe:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: no autocrlf
         run: git config --global core.autocrlf false

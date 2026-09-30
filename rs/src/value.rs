@@ -189,7 +189,7 @@ impl Node {
 /// An AST is as deep as the CSS that produced it, and a derived drop would
 /// recurse once per level — so a stylesheet nested a few thousand rules deep
 /// would abort the process, on nothing worse than untrusted input, at the
-/// moment the tree went out of scope. The rule machine keeps its own stack
+/// moment the tree went out of scope. The engine keeps its own rule stack
 /// for the same reason; this is the other half of that promise.
 impl Drop for Node {
     fn drop(&mut self) {

@@ -23,10 +23,9 @@ and Go have no limit. `parse` and `Css::parse` have no limit either.
 
 ## Install
 
-The `tabnas-css` 0.5.9 on crates.io is the earlier build of this crate,
-which carried a lexer and a rule machine of its own and had no
-dependencies. The crate this repository builds is the plugin on the engine,
-and it is not on crates.io yet, so the dependency is the repository.
+The crate is taken from the repository. The `tabnas-css` 0.5.9 on
+crates.io is a different implementation: it has no dependencies, and none
+of the plugin API this page describes.
 
 Its own dependencies are named by relative path to sibling checkouts
 (`path = "../../parser/rs"`). Inside a git source, cargo resolves such a
@@ -61,9 +60,10 @@ The crate needs Rust 1.85 or later, the engine's own floor.
 
 ```rust
 let ast = tabnas_css::parse("a { color: red }").unwrap();
-// {"type":"stylesheet","rules":[
-//   {"type":"rule","selectors":["a"],"declarations":[
-//     {"type":"declaration","property":"color","value":"red"}]}]}
+assert_eq!(
+    ast.to_json(),
+    r#"{"type":"stylesheet","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"color","value":"red"}]}]}"#
+);
 ```
 
 Every node is a `Node`, an insertion-ordered map with a `type` key. Fields
@@ -100,7 +100,10 @@ use tabnas_css::{Css, Options};
 
 let css = Css::with_options(Options { position: true, ..Options::default() });
 let ast = css.parse("a { color: red }").unwrap();
-// every node gains "position":{"start":{"line":1,"column":1},"end":{…}}
+// Every node gains a position; the stylesheet's spans the source.
+assert!(ast.to_json().ends_with(
+    r#""position":{"start":{"line":1,"column":1},"end":{"line":1,"column":17}}}"#
+));
 ```
 
 Columns count UTF-16 code units, which is what a JavaScript string index
@@ -114,18 +117,21 @@ block. Nested nodes are appended to the parent's `declarations` in source
 order, interleaved with declarations:
 
 ```rust
-tabnas_css::parse("a { color: red; & b { top: 0 } }").unwrap();
-// rule declarations: [
-//   {"type":"declaration","property":"color","value":"red"},
-//   {"type":"rule","selectors":["& b"],"declarations":[
-//     {"type":"declaration","property":"top","value":"0"}]}]
+let ast = tabnas_css::parse("a { color: red; & b { top: 0 } }").unwrap();
+// The rule's declarations: a declaration, then the nested rule.
+assert_eq!(
+    ast.to_json(),
+    r#"{"type":"stylesheet","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"color","value":"red"},{"type":"rule","selectors":["& b"],"declarations":[{"type":"declaration","property":"top","value":"0"}]}]}]}"#
+);
 ```
 
 ## A plugin on the tabnas engine
 
 The TypeScript and Go ports install the grammar on the tabnas engine, layered
 on the relaxed-JSON grammar jsonic, and this crate does the same in Rust: it
-runs on `tabnas-parser` (imported as `tabnas`) and `tabnas-jsonic`. jsonic
+runs on `tabnas-parser` (imported as `tabnas`) and `tabnas-jsonic`, and
+re-exports both, as `tabnas_css::tabnas` and `tabnas_css::tabnas_jsonic`, so
+that a caller names their types without a second copy of either. jsonic
 reads `css-grammar.jsonic`, and the plugin installs its rules with the
 canonical option overrides and the `cssToken` lex matcher. Those overrides
 switch jsonic's own rules and value matchers off, so `{a:1}` is refused here
@@ -136,14 +142,17 @@ as it is in the other two ports.
 `plugin()` is the grammar as an engine plugin, `make()` builds a jsonic
 engine with it installed, and `Css::tabnas()` is the engine a `Css` runs.
 Their parse returns the engine's own `tabnas::Value`, the same tree as the
-canonical port's plain objects, with three differences from `Css::parse`:
+canonical port's plain objects, with these differences from `Css::parse`:
 
 - the engine writes a whole number, such as a line in a `position`, as `1.0`
   in JSON;
 - an engine error's column counts Unicode scalars, where this crate's
   `Error` counts UTF-16 code units (`tabnas_css::Error::from` converts one);
 - the tree is bounded at `TREE_RULE_DEPTH` (768) open rules, and one level
-  more fails with `cancel`.
+  more fails with `cancel`;
+- with the engine's recovery on, the partial stylesheet is not always the
+  canonical port's (the [concepts page](doc/concepts.md#recovery) says
+  where they part).
 
 The [how-to guide](doc/guide.md#use-the-plugin-on-your-own-engine) has the
 recipe, and the [reference](doc/reference.md#the-two-result-forms) the
@@ -167,10 +176,13 @@ not sanitising: this crate returns the raw text the stylesheet contained, and
 escaping it for HTML, SQL or a shell remains the caller's job. A `url(...)` in
 a declaration value is untrusted text, not a link to fetch.
 
-A parse holds memory in proportion to its input. Measured in a release
-build, 100,000 flat rules (1.7 MB of CSS) peaked at 210 MB, and 100,000
-nested rules (1.2 MB) at 678 MB, about 6.8 KB per open level. A host that
-parses untrusted CSS should cap the input's size.
+A parse holds memory, and takes time, in proportion to its input, and
+nesting costs the most. Measured in a release build, 100,000 flat rules
+(1.7 MB of CSS) peaked at 210 MiB, or 580 MiB with positions on, and
+100,000 nested rules (0.6 MB) at 678 MiB, about 7 KiB per open level. The
+densest nesting, `a{` repeated, holds about 2.8 KiB and takes about 26 µs
+per byte of input. A host that parses untrusted CSS should cap the input's
+size.
 
 `parse` and `Css::parse` have no depth limit: 20,000 nested rules parse, and
 the result drops, clones, compares and prints without recursion, on a 2 MiB

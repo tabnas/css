@@ -18,12 +18,13 @@
 //!   ([`make`](crate::make), [`plugin`](crate::plugin),
 //!   [`Css::tabnas`](crate::Css::tabnas)): each cell holds the node itself,
 //!   an engine object, and a child is moved into its parent's list when it is
-//!   complete. The engine returns the stylesheet, and with recovery on it
-//!   returns the partial stylesheet, as the canonical port does. The engine's
-//!   value drops, copies and prints by recursion, one frame per level, so this
-//!   form is bounded at [`TREE_RULE_DEPTH`] open rules by a parse guard.
+//!   complete. The engine returns the stylesheet, and with recovery on a
+//!   partial one, which is not always the canonical port's (see
+//!   `doc/concepts.md`). The engine's value drops, copies and prints by
+//!   recursion, one frame per level, so this form is bounded at
+//!   [`TREE_RULE_DEPTH`] open rules by a parse guard.
 //! - **The arena**, for [`Css::parse`](crate::Css::parse), which asks for it
-//!   with the [`ARENA`] meta key: every node is one flat record in a
+//!   with [`arena_meta`]: every node is one flat record in a
 //!   per-parse list in `ctx.u`, a cell holds the record's id, and a child list
 //!   holds ids. The engine never holds a nested value, so no depth reaches a
 //!   recursion; [`Value::from_arena`](crate::Value) builds the crate's own
@@ -31,13 +32,14 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use tabnas::{ActionError, Context, GrammarSetting, PluginError, Rule, Tabnas, Token, Value};
 
 use crate::grammar::{specs, RULES};
 use crate::lex::{
-    self, col_width, es_is_whitespace, es_trim, split_selectors, vendor_prefix, Tins, OVERSHOOT,
+    self, col_width, es_is_whitespace, es_trim, split_selectors, vendor_prefix, BRACE_SCAN,
+    OVERSHOOT,
 };
 use crate::Options;
 
@@ -53,9 +55,11 @@ use crate::Options;
 /// Rust-only refusal, registered in `test/divergent.tsv`.
 pub const TREE_RULE_DEPTH: usize = 768;
 
-/// The meta key that asks for the arena store. [`Css::parse`](crate::Css::parse)
-/// passes it; a parse without it builds the tree.
-pub(crate) const ARENA: &str = "tabnas-css/arena";
+/// The name the tree form's bound is installed under, as a parse guard.
+const DEPTH_GUARD: &str = "tabnas-css/depth";
+
+/// The key of the meta [`arena_meta`] builds, for whoever reads it.
+const ARENA: &str = "tabnas-css/arena";
 
 /// The arena: the `ctx.u` key holding the per-parse list of node records.
 const NODES: &str = "tabnas-css/nodes";
@@ -64,9 +68,33 @@ const NODES: &str = "tabnas-css/nodes";
 /// characters, built when the first position is recorded.
 const ASTRAL: &str = "tabnas-css/astral";
 
+/// The meta [`Css::parse`](crate::Css::parse) passes to ask for the arena
+/// store; a parse without it builds the tree.
+///
+/// Recognised by its ADDRESS, not by its contents: the engine's API lets a
+/// caller pass meta of its own, and a key a caller could spell would let it
+/// switch the store, and with it the tree form's bound, from outside. Every
+/// call hands out the one allocation made here, which a caller has no way
+/// to make, and the engine passes meta to the context as it was given.
+pub(crate) fn arena_meta() -> Value {
+    arena_marker().clone()
+}
+
+fn arena_marker() -> &'static Value {
+    static META: OnceLock<Value> = OnceLock::new();
+    META.get_or_init(|| {
+        let mut meta = object();
+        put(&mut meta, ARENA, Value::Bool(true));
+        meta
+    })
+}
+
 /// Whether this parse builds into the arena.
 fn arena(ctx: &Context) -> bool {
-    matches!(&ctx.meta, Value::Object(meta) if meta.contains_key(ARENA))
+    match (&ctx.meta, arena_marker()) {
+        (Value::Object(meta), Value::Object(ours)) => Arc::ptr_eq(meta, ours),
+        _ => false,
+    }
 }
 
 fn object() -> Value {
@@ -81,12 +109,39 @@ fn text(s: &str) -> Value {
     Value::String(s.to_string())
 }
 
-/// Set `key`, keeping its place when it is already present, as assigning a
-/// JavaScript object property does.
+/// Set `key` where assigning a JavaScript object property puts it: in its
+/// place when it is already present, and otherwise last, unless it is an
+/// array index, which JavaScript enumerates first, in ascending order. An
+/// at-keyword is a key (`@0 x;` is `{"0": "x", "type": "0"}` in the
+/// canonical port), so the order reaches the JSON.
 fn put(target: &mut Value, key: &str, value: Value) {
-    if let Some(fields) = target.as_object_mut() {
-        fields.insert(key.to_string(), value);
+    let Some(fields) = target.as_object_mut() else {
+        return;
+    };
+    match array_index(key) {
+        Some(index) if !fields.contains_key(key) => {
+            let at = fields
+                .keys()
+                .take_while(|k| array_index(k).is_some_and(|other| other < index))
+                .count();
+            fields.shift_insert(at, key.to_string(), value);
+        }
+        _ => {
+            fields.insert(key.to_string(), value);
+        }
     }
+}
+
+/// The array index `key` names, if it names one: the canonical decimal
+/// form of an integer below 2^32 - 1, as ECMAScript defines one.
+fn array_index(key: &str) -> Option<u32> {
+    let canonical = !key.is_empty()
+        && key.bytes().all(|b| b.is_ascii_digit())
+        && (key == "0" || !key.starts_with('0'));
+    if !canonical {
+        return None;
+    }
+    key.parse::<u32>().ok().filter(|&index| index < u32::MAX)
 }
 
 /// Append to the list at `field`.
@@ -350,14 +405,22 @@ fn o0_text(rule: &Rule) -> String {
     rule.o0().map(token_text).unwrap_or_default()
 }
 
-/// Append the completed child's node to this rule's node's `field`. A child
-/// that built nothing is skipped, as `undefined !== c` skips it in the
-/// canonical port.
+/// Append the completed child's node to this rule's node's `field`.
+///
+/// A child that built no node of its own is skipped. Every rule these
+/// pushers follow (`statement`, `decl`, `keyframe`) builds its node in each
+/// open alternate, so such a child failed before its constructor ran, which
+/// only the engine's recovery lets a parse survive. It still holds this
+/// rule's cell, and the engine then leaves `child_node` undefined, where
+/// `child_value()` would answer with this rule's own node. The canonical
+/// port pushes that node into itself there (`undefined !== c` sees the
+/// parent), a cycle, which a value here cannot hold; pushing a copy would
+/// put a stylesheet inside its own `rules`.
 fn push_child(rule: &Rule, ctx: &mut Context, field: &str) {
-    if !rule.has_child_value() {
+    if rule.child_node.is_undefined() {
         return;
     }
-    let child = rule.child_value();
+    let child = rule.child_node.clone();
     with_node(rule, ctx, |record| push_to(record, field, child));
 }
 
@@ -535,17 +598,14 @@ pub(crate) fn install(parser: &mut Tabnas, options: &Options) -> Result<(), Plug
                 .any(|alt| alt.a.iter().any(|action| "@cssSheet" == action))
     });
 
-    let tins = Tins {
-        cc: parser.token("#CC"),
-        atr: parser.token("#ATR"),
-        atd: parser.token("#ATD"),
-        atk: parser.token("#ATK"),
-        ats: parser.token("#ATS"),
-        gc: parser.token("#GC"),
-    };
+    // The matcher emits these by name (see `lex::BY_NAME`); registering
+    // them here gives them numbers before the rules that name them.
+    for name in ["#CC", "#ATR", "#ATD", "#ATK", "#ATS", "#GC"] {
+        parser.token(name);
+    }
     let lower = options.lowercase_properties;
     parser.imperative_lex_match_ref("@css-token", move |lexer, rule, ctx| {
-        lex::css_token(lexer, rule, ctx, lower, tins)
+        lex::css_token(lexer, rule, ctx, lower)
     });
     register_actions(parser, options.position);
 
@@ -555,15 +615,18 @@ pub(crate) fn install(parser: &mut Tabnas, options: &Options) -> Result<(), Plug
         ctx.u.shift_remove(NODES);
         ctx.u.shift_remove(ASTRAL);
         ctx.u.shift_remove(OVERSHOOT);
+        ctx.u.shift_remove(BRACE_SCAN);
     });
     if first {
         parser.subscribe_lex(lex::lex_subscriber);
     }
 
-    // Named `depth`, the name jsonic's own guard has, so this one replaces
-    // it: jsonic's counts jsonic's containers, and none is reachable here.
-    // The count comes first because it is the cheap test.
-    parser.parse_guard("depth", |ctx| {
+    // A name of the plugin's own. A later plugin that installs a guard
+    // named `depth`, as jsonic, json and the grammars layered on them do,
+    // replaces only that one, and this bound stays. jsonic's guard counts
+    // `map` and `list` rules, which no css rule opens, so it never refuses
+    // a css parse. The count comes first because it is the cheap test.
+    parser.parse_guard(DEPTH_GUARD, |ctx| {
         ctx.rule_stack.len() <= TREE_RULE_DEPTH || arena(ctx)
     });
 

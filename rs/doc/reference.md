@@ -20,16 +20,19 @@ pages link back to this one rather than restating it.
 use tabnas_css::{Css, Error, Node, Options, Value};
 ```
 
-The `tabnas-css` 0.5.9 on crates.io is the earlier, dependency-free
-build of this crate. This page documents the plugin on the engine,
-which is taken from the repository with the `[patch]` tables the
+This page documents the crate this repository builds, which is taken
+from the repository with the `[patch]` tables the
 [README](../README.md#install) lists, because its own dependencies are
-sibling path dependencies.
+sibling path dependencies. The `tabnas-css` 0.5.9 on crates.io is a
+different implementation: it has no dependencies, and none of the
+plugin API below.
 
 The engine's types appear in this API as `tabnas::…`: `Tabnas`,
-`Plugin`, `PluginError`, `Value` and `TabnasError`. The crate does not
-re-export them, so a crate that names one depends on `tabnas-parser`
-itself.
+`Plugin`, `PluginError`, `Value` and `TabnasError`. The crate re-exports
+the engine as `tabnas_css::tabnas` and jsonic as `tabnas_css::tabnas_jsonic`;
+name their types through those paths. A dependency of your own on
+either can resolve to another copy of the crate, one from crates.io for
+instance, whose types are not the ones this API takes and returns.
 
 `tabnas_css::VERSION` is the crate's version as a `&'static str`. It
 equals the version in `Cargo.toml`, and equals the version the
@@ -129,7 +132,7 @@ Installing it adds, to the engine it is used on:
   matcher;
 - the actions that build the nodes, a `parse.prepare` hook that clears
   the plugin's per-parse state, a lex subscriber, and a parse guard
-  named `depth`, which replaces jsonic's guard of that name.
+  named `tabnas-css/depth`, the tree form's bound.
 
 Using it again on the same engine, or deriving an engine from one that
 has it (`Tabnas::derive`), installs it again with the options then in
@@ -140,7 +143,7 @@ Use it on jsonic, as `make` does. On a bare
 `tabnas::Tabnas::new()` it gives the same results.
 
 ```rust
-let mut parser = tabnas_jsonic::make();
+let mut parser = tabnas_css::tabnas_jsonic::make();
 parser.use_plugin(tabnas_css::plugin(), None).unwrap();
 let tree = parser.parse("a { color: red }").unwrap();
 assert_eq!(
@@ -157,7 +160,7 @@ is recorded and runs again on a derived engine.
 
 ### `fn make() -> tabnas::Tabnas`
 
-A jsonic engine (`tabnas_jsonic::make()`) with the plugin installed,
+A jsonic engine (`tabnas_css::tabnas_jsonic::make()`) with the plugin installed,
 with the default options.
 
 ### `fn make_with(options: Options) -> tabnas::Tabnas`
@@ -286,16 +289,21 @@ A parse returns one of two forms, depending on the entry point.
 | | `parse`, `parse_with`, `Css::parse` | the engine's parse: `make()`, `plugin()`, `Css::tabnas()` |
 |---|---|---|
 | Result | `Result<tabnas_css::Value, tabnas_css::Error>` | `Result<tabnas::Value, tabnas::TabnasError>` |
-| JSON | `to_json()`, byte for byte the canonical port's `JSON.stringify` | the engine's writer: a whole number, such as a line, as `1.0` |
+| JSON | `to_json()`, byte for byte the canonical port's `JSON.stringify`, key order included | the engine's writer: a whole number, such as a line, as `1.0` |
 | Error column | UTF-16 code units | Unicode scalars; `Error::from` converts |
 | Depth | no limit | [`TREE_RULE_DEPTH`](#const-tree_rule_depth-usize) open rules; one more fails with `cancel` |
-| Recovery | none | with the engine's `parse.recover.enabled`, the partial stylesheet |
+| Recovery | none | with the engine's `parse.recover.enabled`, a partial stylesheet, not always the canonical port's |
 
 Both forms hold the same tree, value for value: the canonical port's
 plain objects. For `""` both are `{"type":"stylesheet","rules":[]}`,
-with no `position` even when `position` is on.
+with no `position` even when `position` is on. A `position.end` that
+was never recorded, as for a declaration with an empty value, is an
+undefined key in `Css::parse`'s tree, which its JSON leaves out, and no
+key at all in the tree form.
 
-The tree form's bound is a parse guard named `depth`, and it exists
+The tree form's bound is a parse guard named `tabnas-css/depth`, a name
+no other plugin uses, so installing jsonic or a grammar layered on it
+after this plugin leaves it in place. It exists
 because the engine's `Value` drops, clones, compares, and prints by
 recursion, one stack frame per level. A tree at the bound survives all
 of those on a 2 MiB thread in a debug build. The canonical port has no
@@ -541,9 +549,10 @@ from, and this parser follows the model:
 | `}` | a stray close brace |
 
 `Css::parse` has no error-recovery mode: a document either parses or
-fails. The engine's tree form returns the partial stylesheet when the
+fails. The engine's tree form returns a partial stylesheet when the
 engine's own recovery is on (see [the two result
-forms](#the-two-result-forms)).
+forms](#the-two-result-forms)); the concepts page compares it with the
+canonical port's.
 
 ## Tokens
 

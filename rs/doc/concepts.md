@@ -145,8 +145,10 @@ subscriber closes that gap: when a bad token arrives behind an
 unconsumed good one, it drops the unconsumed lookahead, so the bad token
 comes first and is the one the error reports, as the throw reports it.
 It does so only with the engine's `parse.recover` and `lex.relex` off; in those
-modes the lookahead is left as the engine keeps it. The shared comment
-fixtures pin the reported code for inputs of this shape.
+modes the lookahead is left as the engine keeps it. With `lex.relex` on, the
+canonical engine reports the good token too; recovery is the subject of
+[its own section](#recovery). The shared comment fixtures pin the
+reported code for inputs of this shape.
 
 ## Node ownership
 
@@ -169,11 +171,15 @@ A node lives in one of two stores, chosen per parse.
 `plugin()` on an engine of yours, `Css::tabnas()`). Each cell holds the
 node itself, an engine object, and a finished child moves into its
 parent's list. The engine returns the stylesheet, the canonical port's
-plain objects value for value, and with the engine's recovery on it
-returns the partial stylesheet, as the canonical port does. That is
-what a plugin user expects to get back.
+plain objects value for value, which is what a plugin user expects to
+get back. With the engine's recovery on it returns a partial stylesheet,
+which [the section on recovery](#recovery) compares with the canonical
+port's.
 
-**The arena**, for `Css::parse`, which asks for it with a meta key.
+**The arena**, for `Css::parse`, which asks for it with a meta object of
+its own. The plugin recognises that object by its address rather than
+its contents, so meta a caller passes through the engine's API cannot
+ask for the arena, and cannot lift the tree form's bound either.
 Every node is one flat record in a per-parse list, a cell holds the
 record's id, and a child list holds ids. The engine never holds a nested
 value. Every child's constructor runs after its parent's, so a child's
@@ -184,11 +190,13 @@ walk builds this crate's `Value` without recursion.
 The two stores exist because of what the engine's `Value` does with a
 deep tree: it drops, clones, compares and prints by recursion, one stack
 frame per level. The arena never gives it a deep tree. The tree form
-does, so a parse guard named `depth` stops it at `TREE_RULE_DEPTH` (768)
-open rules: 191 nested style rules or 256 nested `@media` blocks, a
+does, so a parse guard stops it at `TREE_RULE_DEPTH` (768) open rules: 191 nested style rules or 256 nested `@media` blocks, a
 depth whose tree survives all of those operations on a 2 MiB thread in
 a debug build. The canonical port has no such bound, and neither does
-`Css::parse`, so it is a divergence of this port, registered as one.
+`Css::parse`, so it is a divergence of this port, registered as one. The
+guard is named `tabnas-css/depth`: jsonic names its own guard `depth`, as
+do the grammars layered on it, each replacing the last, and a name of
+its own keeps this bound when one of them is installed after the plugin.
 
 ## Depth is bounded by memory, not by the stack
 
@@ -204,11 +212,13 @@ what a caller reaches for while looking at a tree, which makes it the
 likeliest of the five to meet a hostile one.
 
 What depth costs is memory. Each open level holds the engine's frames
-for its rules, and measured in a release build that is about 6.8 KB per
-nested style rule: 100,000 of them (1.2 MB of CSS) peaked at 678 MB.
-Length costs memory too, far less per item: 100,000 flat rules (1.7 MB)
-peaked at 210 MB. A host that parses untrusted CSS should cap the
-input's size.
+for its rules, and measured in a release build that is about 7 KiB per
+nested style rule: 100,000 of them (0.6 MB of CSS) peaked at 678 MiB.
+The densest nesting, `a{` repeated, holds about 2.8 KiB per byte of
+input and takes about 26 µs per byte. Length costs memory too, far less
+per item: 100,000 flat rules (1.7 MB) peaked at 210 MiB, and 580 MiB
+with positions on, and a single long token holds about 18 bytes per
+byte. A host that parses untrusted CSS should cap the input's size.
 
 Length does not cost depth. Every repetition in the grammar, the items
 of a stylesheet or a block, the declarations of a rule, the selectors of
@@ -218,6 +228,16 @@ new one. So the rule stack follows the nesting of a stylesheet and never its
 length, and a test holds each repetition, over ten thousand items, to
 the depth one item needs.
 
+Length does not cost time beyond its own, either. The matcher decides
+between a selector and a property by scanning ahead for a `{` before a `;`, and a
+group of selectors, or of keyframe selectors, scanned from each item's
+own start would cost the group's length once per item: a 200 KB list of
+selectors took 9 s. The scan's whole state is its position and its
+bracket depth, so a later item that the first item's scan passed at
+depth zero, outside any string or comment, gets the same answer, and
+the matcher keeps that answer with a cursor that only moves forward.
+Each group is scanned once, and the 200 KB list parses in 0.2 s.
+
 ## The rule history bound
 
 When a rule replaces itself, the engine links the new rule to the one it
@@ -225,8 +245,8 @@ replaced (its `prev`), and by default keeps the whole chain. For a
 replace loop that chain is every item of the list, all reachable until
 the list closes. The grammar's options set `rule.history` to 1, so a
 rule keeps a link to the one it replaced and to no further back. Measured
-on 100,000 flat rules in a release build, the peak is 927 MB with the
-chain unbounded and 210 MB with the bound.
+on 100,000 flat rules in a release build, the peak is 927 MiB with the
+chain unbounded and 210 MiB with the bound.
 
 The canonical options do not set it, and it changes no result: no
 alternate in this grammar reads `prev`.
@@ -245,9 +265,8 @@ needs no lock.
 
 The engine's generality has a price per parse, too. Measured in a
 release build, 100,000 flat rules took 1.71 s to parse and write as
-JSON; the `tabnas-css` 0.5.9 on crates.io, which carries a parser
-written for this grammar alone, took 0.40 s. A `callgrind` profile puts
-about 85% of the work in the engine's own parse loop.
+JSON, and a `callgrind` profile puts about 85% of the work in the
+engine's own parse loop.
 
 ## Differences from the TypeScript version
 
@@ -259,9 +278,9 @@ deliberately not identical.
 
 TypeScript installs the plugin on an engine
 (`new Tabnas().use(jsonic).use(Css)`) and returns plain JavaScript
-objects. Rust has the same form, `tabnas_jsonic::make()` with
-`use_plugin(tabnas_css::plugin(), …)`, or `tabnas_css::make()`, which
-returns the engine's `tabnas::Value`. It adds `parse`, `parse_with` and
+objects. Rust has the same form, `tabnas_css::tabnas_jsonic::make()` with
+`use_plugin(tabnas_css::plugin(), …)`, or `tabnas_css::make()`, whose
+parse returns the engine's `tabnas::Value`. It adds `parse`, `parse_with` and
 a `Css` value, which return `Result<Value, Error>` rather than throwing.
 Options are a struct with two `bool` fields rather than an object with
 optional properties, so both are always present and both default to
@@ -286,7 +305,9 @@ order and still serialise to nothing.
 The engine's own writer prints a whole number as `1.0`, so the tree
 form's JSON carries `"line":1.0` where the canonical port writes
 `"line":1`. `Value::to_json` writes what `JSON.stringify` writes, byte
-for byte.
+for byte, key order included. JavaScript enumerates a key that is an
+array index before every other, so `@0 x;` is `{"0":"x","type":"0"}`,
+and the plugin inserts such a key where JavaScript puts it.
 
 ### Trimming is ECMAScript's, not Unicode's
 
@@ -342,6 +363,25 @@ not move its cursor past the end of the source, so the matcher records
 the overshoot in the parse's context, and the plugin's lex subscriber
 adds it to the column of the end-of-source token, the only token that
 can follow it.
+
+### Recovery
+
+`Css::parse` has no recovery mode, and neither has the canonical port's
+`parse`. The engine has one, and under it the tree form returns a
+partial stylesheet that is usually the canonical port's, though not
+always. The canonical engine throws a bad token, such as an unclosed
+comment, as it is fetched, and under recovery records it and skips it.
+This engine keeps the token in its lookahead, as [a bad token behind a
+good one](#a-bad-token-behind-a-good-one) describes, so a recovery can stop
+elsewhere, keep a node the canonical port drops or drop one it keeps,
+and report an error the canonical port does not, sometimes the same
+error twice. The repair belongs to the engine.
+
+One difference is this port's choice. Where a statement, a declaration
+or a keyframe fails before its node is built, the canonical pusher puts
+the enclosing node inside itself, a cycle. A value here cannot hold a
+cycle, and a copy would put a stylesheet inside its own `rules`, so the
+entry is left out.
 
 ### Single-sourced grammar
 

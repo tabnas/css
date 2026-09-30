@@ -211,3 +211,28 @@ fn parse_time_grows_linearly_with_the_rules() {
         "1,000 rules took {small:?} and 10,000 took {large:?}: {ratio:.1}x"
     );
 }
+
+/// A selector group, and a keyframe-selector group, parse in time linear in
+/// their length. Each item of a group is classified by the scan to the
+/// group's `{`, which from each item's own start is quadratic: 10,000
+/// selectors took a hundred times as long as 1,000.
+#[test]
+fn a_selector_group_parses_in_linear_time() {
+    for (what, group) in [
+        (
+            "selectors",
+            (|n| format!("{}b{{c:d}}", "a,".repeat(n))) as fn(usize) -> String,
+        ),
+        ("keyframe selectors", |n| {
+            format!("@keyframes k{{{}to{{a:b}}}}", "1%,".repeat(n))
+        }),
+    ] {
+        let small = fastest_parse(&group(1_000));
+        let large = fastest_parse(&group(10_000));
+        let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-6);
+        assert!(
+            ratio < 30.0,
+            "1,000 {what} took {small:?} and 10,000 took {large:?}: {ratio:.1}x"
+        );
+    }
+}

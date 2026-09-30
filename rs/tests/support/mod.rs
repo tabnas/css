@@ -261,9 +261,9 @@ fn write_canonical(value: &Value, out: &mut String) {
 // --- A minimal JSON reader -------------------------------------------------
 //
 // The fixtures' `expected` column and the reworkcss corpus's `ast.json` files
-// are JSON, and this crate has no dependencies — so the tests read JSON with
-// this rather than pulling serde in for the test profile alone. It is only
-// ever pointed at files in this repository.
+// are JSON, and serde is not a dependency of this crate (adding one is a
+// dependency change, which takes the maintainer's instruction), so the tests
+// read JSON with this. It is only ever pointed at files in this repository.
 
 /// Parse JSON into a [`Value`].
 pub fn json(text: &str) -> Result<Value, String> {

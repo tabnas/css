@@ -381,9 +381,10 @@ match as-is.
    In Rust the overrides are `OPTIONS_DOC` in `rs/src/grammar.rs`
    (`grammarDef.options` written out as JSON, the empty result for `""`
    included), installed before the rules, and the matcher is
-   `css_token` in `rs/src/lex.rs`. `OPTIONS_DOC` sets one option the
-   canonical options do not, `rule.history: 1` (see the gotchas). A change to
-   either must land in all three.
+   `css_token` in `rs/src/lex.rs`. `OPTIONS_DOC` sets two options the
+   canonical options do not: `rule.history: 1` (see the gotchas) and the
+   `parse.prepare` hook `@css-prepare`, which clears the plugin's per-parse
+   state. A change to either must land in all three.
 5. `Defaults` (`lowercaseProperties: false`, `position: false`) and `VERSION`
    in `go/css.go` mirror the TS `Css.defaults` and the `VERSION` exported from
    `ts/src/css.ts`; `Options::default()` and `VERSION` in `rs/src/lib.rs`
@@ -441,23 +442,38 @@ match as-is.
   through the shared cell, as the canonical ones do through the shared
   object.
 - **Rust: two result forms, chosen per parse.** `Css::parse` (and `parse`,
-  `parse_with`) passes the `tabnas-css/arena` meta key: each node is then one
+  `parse_with`) passes the arena meta (`plugin::arena_meta`), one object the
+  plugin recognises by its ADDRESS, so meta a caller passes through the
+  engine's API cannot select the arena or lift the tree form's bound
+  (`rs/tests/plugin.rs`): each node is then one
   flat record in a per-parse list in `ctx.u`, a cell holds the record's id,
   and `Value::from_arena` builds the crate's `Value` without recursion. The
   engine never holds a nested value, so this form has no depth limit
   (`rs/tests/css.rs` parses 20,000 levels, on a 2 MiB thread too). A parse
   through the engine's own API (`make()`, `plugin()` on your own instance,
   `Css::tabnas().parse()`) builds the TREE form: engine objects, equal to the
-  canonical port's plain objects value for value, and with the engine's
-  recovery on (`parse.recover.enabled`) the partial stylesheet, as TS
-  returns. Two differences in that form: the engine writes a whole number as
-  `1.0` in JSON, and an engine error's column counts Unicode scalars
-  (`tabnas_css::Error::from` converts it).
+  canonical port's plain objects value for value. Two differences in that
+  form: the engine writes a whole number as `1.0` in JSON, and an engine
+  error's column counts Unicode scalars (`tabnas_css::Error::from` converts
+  it). With the engine's recovery on (`parse.recover.enabled`) the tree
+  form returns a partial stylesheet that is NOT always TS's: the Rust engine
+  buffers the bad token TS throws at fetch, so a recovery can stop
+  elsewhere and report an error TS does not, or the same one twice (over
+  the review's 12,000-input corpus, 446 values differ outside TS's cycles).
+  That is the engine's to repair. Where a statement, a declaration or a
+  keyframe fails before its constructor runs, TS's pusher pushes the
+  enclosing node into itself, a cycle; `push_child` skips a child whose
+  `child_node` is undefined (it still shares the parent's cell) rather
+  than push a copy of the parent. `rs/tests/plugin.rs` pins the values
+  and first errors, which are TS's with the cycle left out.
 - **Rust: the tree form is bounded at `TREE_RULE_DEPTH` (768) open rules.**
   The engine's value drops, clones and prints by recursion, one frame per
-  level, so the plugin installs a parse guard named `depth` (replacing
-  jsonic's guard of that name, which counts jsonic's containers) that stops a
-  tree-form parse past 768 open rules with `cancel`. That is 191 nested style
+  level, so the plugin installs a parse guard named `tabnas-css/depth` that
+  stops a tree-form parse past 768 open rules with `cancel`. Not `depth`:
+  jsonic and the grammars layered on it each install theirs under that name
+  to replace the last, and one installed after css would drop the bound
+  (jsonic's own counts `map` and `list` rules, which css never opens, so it
+  stays and never refuses a css parse). That is 191 nested style
   rules (four rules each) or 256 nested `@media` blocks (three each). A tree
   at the limit survives drop, clone, compare, print and JSON on a 2 MiB
   thread in a debug build (`rs/tests/plugin.rs`). The arena form skips the
@@ -469,7 +485,8 @@ match as-is.
   machines; none of the five is derived. `Debug` is the one that is easy to
   forget, because it is what a caller reaches for while debugging, and it is
   the one a review caught. `rs/tests/css.rs` pins all of them at 20,000
-  levels. The engine's own value is the exception, which is why the tree
+  levels, on the `Value` and on the `Node` a caller holds, whose impls are
+  separate. The engine's own value is the exception, which is why the tree
   form is bounded.
 - **Rust: `str::trim` is NOT `String.prototype.trim`.** Use `es_trim` and
   `es_is_whitespace` from `lex.rs` at every site that produces AST text. See
@@ -495,21 +512,43 @@ match as-is.
   (only with recovery and relexing off). Without that, an unclosed comment
   behind a property whose escaped quote or paren hid it from the property
   scan (`a{b\"x;"/*`) came out as `unexpected` at the property, not
-  `unterminated_comment`. `test/spec/comments.tsv` pins those rows.
+  `unterminated_comment`. `test/spec/comments.tsv` pins those rows. With
+  relexing on TS reports the good token too; under recovery, dropping the
+  lookahead doubled the recovered values that differ from TS's.
+  `rs/tests/plugin.rs` pins both modes.
+- **Rust: the matcher emits the grammar's own tokens by NAME.** `#CC`,
+  `#GC` and the four at-rule tokens carry the tin `-1` (`lex::BY_NAME`),
+  and the engine resolves the name as it lexes. `Tabnas::merge` renumbers
+  every custom token without running the plugin again, so a number
+  captured at install named another token in a merged instance (an
+  `@media` came out as `keyframes`). TS's `lex.token('#CC', …)` resolves
+  per call for the same reason. `rs/tests/plugin.rs` merges both ways.
+- **Rust: a selector group is scanned once.** The matcher classifies a
+  `#TX` by scanning to a `{` before a `;`, which from each item of a group
+  costs the group's length per item: 200 KB of selectors took 9 s, as it
+  still does in TS and Go. The scan's state is its position and bracket
+  depth only, so `BraceScans` in `lex.rs` keeps the first item's answer
+  with a forward cursor, and gives it to any later start the cursor
+  reaches at depth 0; anything else scans afresh. The 200 KB now parse in
+  0.2 s. `rs/tests/repeat.rs` pins linear time for selector and keyframe
+  groups, and `test/spec/selectors.tsv` the edges (a `{` in a string or a
+  comment, an escape, unbalanced brackets).
 - **Rust: `rule.history` is 1.** `OPTIONS_DOC` sets it, and the canonical
   options do not: a rule keeps a link to the rule it replaced and none
   further back. With the engine's default, unbounded, every item of a list
   stayed reachable until the list closed. Measured: 100,000 flat rules
-  (1.7 MB) peaked at 927 MB, and at 210 MB with the bound. No alternate here
+  (1.7 MB) peaked at 927 MiB, and at 210 MiB with the bound. No alternate here
   reads `prev`, so no result changes; `rs/tests/memory.rs` holds the peaks
   under ceilings.
 - **Rust: per-parse state, and a second install.** The plugin's state in
-  `ctx.u` (the arena, the astral list, the overshoot) is cleared by a named
+  `ctx.u` (the arena, the astral list, the overshoot, the group scan) is
+  cleared by a named
   `parse.prepare` hook, `@css-prepare`, so a caller's seeded context cannot
   reach it. A second install (`use_plugin` again, or `derive`) applies its
   options: the matcher and the actions are registered again, and the 13 css
-  rules are removed and installed afresh. The lex subscriber is added once
-  per instance, since subscribers are not named.
+  rules are removed and installed afresh (`rs/tests/plugin.rs` compares
+  every rule's alternate counts with a fresh instance's). The lex
+  subscriber is added once per instance, since subscribers are not named.
 - **Rust: the engine's debug self-check is off in the dev profile; keep it
   off.** `[profile.dev.package.tabnas-parser] debug-assertions = false` in
   `rs/Cargo.toml`. The check compares the whole rule stack with a shadow copy
@@ -521,9 +560,11 @@ match as-is.
   the same key in its own manifest.
 - **Rust: what the engine costs.** Measured in release builds: 100,000 flat
   rules (1.7 MB), parse plus JSON output, take 1.71 s, where the pre-engine
-  crate took 0.40 s, and peak at 210 MB (130 MB before). 100,000 nested
-  rules (1.2 MB) peak at 678 MB (167 MB before), about 6.8 KB per open level
-  in engine frames. About 85% of the time is in the engine's parse loop
+  crate took 0.40 s, and peak at 210 MiB (130 before), 580 MiB with
+  positions on. 100,000 nested rules (0.6 MB) peak at 678 MiB (167 before),
+  about 7 KiB per open level in engine frames; the densest nesting, `a{`
+  repeated, holds about 2.8 KiB and takes about 26 µs per byte of input,
+  and a single long token holds about 18 bytes per byte. About 85% of the time is in the engine's parse loop
   (callgrind), so the cost is the engine's per-step cost, and parser#256 is
   where that is addressed. A host that parses untrusted CSS caps the input
   size.
@@ -1015,7 +1056,7 @@ the plugin's own fixtures now pins a code: all 24 rows of
 measured in all three runtimes, and they say so, as does one row of
 `comments.tsv`. The two codes reachable from this plugin are therefore both
 pinned: `unexpected` and `unterminated_comment`. Rust's tree form adds a
-third, `cancel`, from its `depth` guard at `TREE_RULE_DEPTH`; row 5 of
+third, `cancel`, from its `tabnas-css/depth` guard at `TREE_RULE_DEPTH`; row 5 of
 [`test/divergent.tsv`](test/divergent.tsv) pins it.
 
 The four rejection rows of [`test/spec/reworkcss.tsv`](test/spec/reworkcss.tsv)

@@ -257,8 +257,8 @@ pub fn grammar_text() -> &'static str {
 /// - `rule.history` is 1, which the canonical options do not set: a rule
 ///   keeps a link to the one it replaced, and to no further back. Unbounded,
 ///   the engine's default, every item of a list stays reachable until the
-///   list closes, which held a flat stylesheet of 100,000 rules at 927 MB
-///   where the bound holds it at 210 MB (`tests/memory.rs`). No alternate
+///   list closes, which held a flat stylesheet of 100,000 rules at 927 MiB
+///   where the bound holds it at 210 MiB (`tests/memory.rs`). No alternate
 ///   here reads `prev`, so no result changes.
 ///
 /// The raw-string delimiter is `##` because `"#CA"` would end `r#"…"#`.

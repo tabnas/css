@@ -38,8 +38,11 @@
 //! grammar jsonic, whose fixed tokens and machinery the grammar reuses:
 //! [`plugin`] installs the grammar, its option overrides and the `cssToken`
 //! matcher on an engine, and [`make`] builds one with it installed. [`Css`] is
-//! that engine behind this crate's own [`Value`], which a tree of any depth
-//! can be dropped, cloned, compared and printed without recursion.
+//! that engine behind this crate's own [`Value`], in which a tree of any
+//! depth can be dropped, cloned, compared and printed without recursion. The
+//! crate re-exports the two it is built on, [`tabnas`] and [`tabnas_jsonic`]:
+//! name their types through those paths, and a second copy of either, which
+//! a dependency of your own can resolve to, never enters the build.
 //!
 //! # Untrusted input
 //!
@@ -50,11 +53,14 @@
 //! escaping it for HTML, SQL or a shell remains the caller's job. A `url(…)`
 //! in a declaration value is untrusted text, not a link to fetch.
 //!
-//! **Cap the input's size.** A parse holds memory in proportion to its
-//! input: measured in a release build, about 6.8 KB per open nesting level
-//! (100,000 nested rules peaked at 678 MB) and, for a flat stylesheet, 210
-//! MB for 100,000 rules. [`Css::parse`] has no depth limit; the engine's
-//! own tree form ([`plugin`], [`make`], [`Css::tabnas`]) stops at
+//! **Cap the input's size.** A parse holds memory, and takes time, in
+//! proportion to its input, and nesting costs the most. Measured in a release
+//! build: 100,000 nested style rules (0.6 MB of CSS) peaked at 678 MiB, about
+//! 7 KiB per open level, and the densest nesting, `a{` repeated, holds about
+//! 2.8 KiB and takes about 26 µs per byte of input. A flat stylesheet of
+//! 100,000 rules (1.7 MB) peaked at 210 MiB, 580 MiB with positions on, and
+//! one long token holds about 18 bytes per byte. [`Css::parse`] has no depth limit; the
+//! engine's own tree form ([`plugin`], [`make`], [`Css::tabnas`]) stops at
 //! [`TREE_RULE_DEPTH`] open rules with `cancel`.
 //!
 //! **Turn the engine's debug self-check off in your debug builds.** With
@@ -75,8 +81,8 @@
 #![allow(clippy::result_large_err)]
 #![warn(missing_docs)]
 // A link in the public documentation that points at nothing, or at a
-// private item, renders as dead text on docs.rs. Nothing in the test gate
-// runs rustdoc, so the pin lives here, where `cargo doc` cannot miss it.
+// private item, renders as dead text on docs.rs. Denied here, so any
+// `cargo doc` fails on one; ci/rust/run.sh runs it with warnings denied.
 #![deny(rustdoc::broken_intra_doc_links, rustdoc::private_intra_doc_links)]
 
 pub mod grammar;
@@ -116,6 +122,14 @@ use tabnas::{Plugin, PluginError, Tabnas};
 pub use lex::Error;
 pub use plugin::TREE_RULE_DEPTH;
 pub use value::{Node, Value};
+
+/// The engine, as this crate links it. Name its types through this path
+/// (`tabnas_css::tabnas::Value`): a dependency of your own on the engine can
+/// resolve to another copy of the crate, whose types are not these.
+pub use tabnas;
+/// The jsonic grammar, as this crate links it, for installing [`plugin`] on
+/// a jsonic engine of your own (`tabnas_css::tabnas_jsonic::make()`).
+pub use tabnas_jsonic;
 
 /// This crate's version.
 ///
@@ -188,14 +202,17 @@ fn truthy(value: Option<&tabnas::Value>) -> bool {
 ///
 /// The engine's own parse returns the tree as an engine [`tabnas::Value`],
 /// the canonical port's plain objects: equal to them value for value, though
-/// the engine writes a whole number as `1.0` in JSON, and an error's column
-/// counts Unicode scalars as the engine's always do, where this crate's
-/// [`Error`] counts UTF-16 code units (convert with [`Error::from`]). That
-/// tree is bounded at [`TREE_RULE_DEPTH`] open rules. [`Css::parse`] has
-/// neither difference and no limit.
+/// the engine writes a whole number as `1.0` in JSON, a `position.end` that
+/// was never recorded is absent rather than an undefined key, and an error's
+/// column counts Unicode scalars as the engine's always do, where this
+/// crate's [`Error`] counts UTF-16 code units (convert with [`Error::from`]).
+/// That tree is bounded at [`TREE_RULE_DEPTH`] open rules. [`Css::parse`] has
+/// none of these differences and no limit. With the engine's recovery on,
+/// the parse returns a partial stylesheet, which is not always the
+/// canonical port's: see `doc/concepts.md`.
 ///
 /// ```
-/// let mut parser = tabnas_jsonic::make();
+/// let mut parser = tabnas_css::tabnas_jsonic::make();
 /// parser.use_plugin(tabnas_css::plugin(), None).unwrap();
 /// let ast = parser.parse("a { color: red }").unwrap();
 /// assert_eq!(
@@ -230,19 +247,6 @@ pub fn make_with(options: Options) -> Tabnas {
         .use_plugin(plugin(), Some(options.to_value()))
         .expect("the css plugin installs on jsonic");
     parser
-}
-
-/// The meta a [`Css::parse`] passes, asking the plugin for its arena store.
-fn arena_meta() -> tabnas::Value {
-    static META: OnceLock<tabnas::Value> = OnceLock::new();
-    META.get_or_init(|| {
-        let mut meta = tabnas::Value::object(Default::default());
-        if let Some(fields) = meta.as_object_mut() {
-            fields.insert(plugin::ARENA.to_string(), tabnas::Value::Bool(true));
-        }
-        meta
-    })
-    .clone()
 }
 
 /// A reusable CSS parser.
@@ -297,7 +301,7 @@ impl Css {
     /// comment — also yields a `stylesheet` node.
     pub fn parse(&self, src: &str) -> Result<Value, Error> {
         self.tabnas
-            .parse_with_meta(src, arena_meta())
+            .parse_with_meta(src, plugin::arena_meta())
             .map(Value::from_arena)
             .map_err(Error::from)
     }

@@ -96,6 +96,14 @@ fn a_second_use_applies_its_options_and_a_derived_instance_agrees() {
         assert!(got.contains(r#""property":"b""#), "{got}");
         assert!(got.contains(r#""position""#), "{got}");
     }
+    // The rules are installed afresh, not on top of the first install's:
+    // installing over a rule puts the new alternates in front of the old,
+    // which parse the same and are tried twice.
+    let fresh = alternate_counts(&make());
+    assert_eq!(13, fresh.len());
+    for p in [&parser, &derived] {
+        assert_eq!(fresh, alternate_counts(p));
+    }
     // The subscriber is not doubled by the second install or the
     // derivation: the end-of-input overshoot is added once.
     for p in [&parser, &derived] {
@@ -108,6 +116,33 @@ fn a_second_use_applies_its_options_and_a_derived_instance_agrees() {
             tree.to_json()
         );
     }
+}
+
+/// Each css rule's name and its open and close alternate counts.
+fn alternate_counts(parser: &Tabnas) -> Vec<(String, usize, usize)> {
+    let css = [
+        "stylesheet",
+        "items",
+        "statement",
+        "sel",
+        "declbody",
+        "decls",
+        "decl",
+        "declval",
+        "rulesbody",
+        "kfbody",
+        "kfitems",
+        "keyframe",
+        "kfsel",
+    ];
+    let mut counts: Vec<(String, usize, usize)> = parser
+        .rule_specs()
+        .into_iter()
+        .filter(|spec| css.contains(&spec.name.as_str()))
+        .map(|spec| (spec.name.to_string(), spec.open.len(), spec.close.len()))
+        .collect();
+    counts.sort();
+    counts
 }
 
 #[test]
@@ -141,6 +176,39 @@ fn a_direct_install_is_kept_by_a_derived_instance() {
         parser.parse("a{b:c}").expect("parses").to_json(),
         derived.parse("a{b:c}").expect("parses").to_json()
     );
+}
+
+#[test]
+fn a_merged_instance_parses_as_the_css_instance_does() {
+    // `Tabnas::merge` numbers every custom token afresh without running the
+    // plugin again, so the matcher must not emit numbers it captured at
+    // install: `#CC` and the at-rule tokens are emitted by name.
+    let css = make()
+        .derive(|options| options.tag = "css".into())
+        .expect("derives");
+    let json = tabnas_jsonic::make()
+        .derive(|options| options.tag = "json".into())
+        .expect("derives");
+    for merged in [
+        css.merge(&json).expect("merges"),
+        json.merge(&css).expect("merges"),
+    ] {
+        for src in [
+            "@media x{a{b:c}}",
+            "@import 'x';",
+            "@host\\",
+            "/*x*/",
+            "@font-face{a:b}",
+            "@keyframes k{from{a:b}}",
+            "a,b{c:d}",
+        ] {
+            assert_eq!(
+                css.parse(src).expect("parses").to_json(),
+                merged.parse(src).expect("parses").to_json(),
+                "{src:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -200,6 +268,25 @@ fn the_tree_form_is_bounded_and_the_css_form_is_not() {
 }
 
 #[test]
+fn a_later_plugins_depth_guard_leaves_the_bound_in_place() {
+    // jsonic installs its guard as `depth`, the name the grammars layered on
+    // it use to replace one another's; the tree form's bound has a name of
+    // its own, so jsonic used after css does not remove it.
+    let mut parser = Tabnas::new();
+    css(&mut parser, &Options::default()).expect("installs");
+    parser
+        .use_plugin(tabnas_jsonic::plugin(), None)
+        .expect("installs");
+    parser
+        .parse(&nested_rules(191))
+        .expect("parses at the bound");
+    let refused = parser
+        .parse(&nested_rules(192))
+        .expect_err("one level past the bound");
+    assert_eq!("cancel", refused.code);
+}
+
+#[test]
 fn a_tree_at_the_bound_is_safe_on_a_small_stack() {
     // A spawned thread's default stack, and a debug build: the engine's
     // value drops, clones, compares and prints by recursion, and the bound is
@@ -229,22 +316,126 @@ fn recovery_returns_a_partial_stylesheet() {
     let parser = make()
         .derive(|options| options.parse.recover.enabled = true)
         .expect("derives");
-    for got in [
-        parser.parse("a{b:c} d{").expect("recovers"),
-        parser
-            .parse_recover("a{b:c} d{")
-            .value
-            .expect("a partial value"),
+    let rule_a = r#"{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"b","value":"c"}]}"#;
+    // The value and the first error are the canonical port's. Where a
+    // statement, declaration or keyframe fails before its constructor runs,
+    // the canonical pusher pushes the enclosing node into itself, a cycle,
+    // and these are its values with that one entry left out: a value here
+    // cannot hold a cycle, and a copy would put a stylesheet inside its own
+    // `rules` (the last five rows).
+    for (src, value, first) in [
+        (
+            "a{b:c} d{",
+            format!(r#"{{"type":"stylesheet","rules":[{rule_a}]}}"#),
+            ("unexpected", 1, 10),
+        ),
+        (
+            "/*",
+            r#"{"type":"stylesheet","rules":[]}"#.to_string(),
+            ("unterminated_comment", 1, 1),
+        ),
+        (
+            "a{b:c} /*x",
+            format!(r#"{{"type":"stylesheet","rules":[{rule_a}]}}"#),
+            ("unterminated_comment", 1, 8),
+        ),
+        (
+            "{",
+            r#"{"type":"stylesheet","rules":[]}"#.to_string(),
+            ("unexpected", 1, 1),
+        ),
+        (
+            "a{b:c;;d:e}",
+            format!(r#"{{"type":"stylesheet","rules":[{rule_a}]}}"#),
+            ("unexpected", 1, 7),
+        ),
+        (
+            "@media x{ , } a{b:c}",
+            format!(
+                r#"{{"type":"stylesheet","rules":[{{"type":"media","media":"x","rules":[]}},{rule_a}]}}"#
+            ),
+            ("unexpected", 1, 11),
+        ),
+        (
+            "@keyframes k{ , }",
+            r#"{"type":"stylesheet","rules":[{"type":"keyframes","name":"k","keyframes":[]}]}"#
+                .to_string(),
+            ("unexpected", 1, 15),
+        ),
+        (
+            "@font-face{ , }",
+            r#"{"type":"stylesheet","rules":[{"type":"font-face","declarations":[]}]}"#.to_string(),
+            ("unexpected", 1, 13),
+        ),
     ] {
-        let tree = from_tree(&got);
-        let node = tree.as_node().expect("an object, not a bare number");
-        assert_eq!(Some("stylesheet"), node.node_type());
-        assert!(
-            tree.to_json().contains(r#""property":"b","value":"c""#),
-            "{}",
-            tree.to_json()
+        let got = parser.parse_recover(src);
+        let tree = from_tree(&got.value.expect("a partial value"));
+        assert_eq!(value, tree.to_json(), "{src:?}");
+        let error = Error::from(got.errors.into_iter().next().expect("an error"));
+        assert_eq!(
+            first,
+            (error.code.as_str(), error.line, error.column),
+            "{src:?}"
         );
     }
+    // An unclosed comment behind a good token: the canonical engine throws
+    // the bad token as it is fetched, and records and skips it under
+    // recovery; this one buffers it. The lex subscriber makes it the error
+    // without recovery (`comments.tsv`), and steps aside under recovery,
+    // where the engine's recovery reads the lookahead: dropping it there
+    // doubles the recovered values that differ from the canonical port's
+    // over the review corpus. So the first error is `unexpected` at the
+    // property, where the canonical port's is `unterminated_comment` at 1:5.
+    let got = parser.parse_recover("a{b\\\"x;\"/*");
+    let error = Error::from(got.errors.into_iter().next().expect("an error"));
+    assert_eq!(
+        ("unexpected", 1, 3),
+        (error.code.as_str(), error.line, error.column)
+    );
+    // `parse` with recovery on returns the same partial value.
+    let tree = from_tree(&parser.parse("a{b:c} d{").expect("recovers"));
+    assert_eq!(
+        Some("stylesheet"),
+        tree.as_node().expect("a node").node_type()
+    );
+}
+
+#[test]
+fn relexing_leaves_the_lookahead_alone() {
+    // With relexing on, the canonical engine reports the good token ahead
+    // of the unclosed comment, and so does this one: the lex subscriber
+    // leaves the lookahead alone. Without relexing the comment is the error
+    // (`comments.tsv`).
+    let parser = make()
+        .derive(|options| options.lex.relex = true)
+        .expect("derives");
+    let error = Error::from(parser.parse("a{b\\\"x;\"/*").expect_err("fails"));
+    assert_eq!(
+        ("unexpected", 1, 3),
+        (error.code.as_str(), error.line, error.column)
+    );
+}
+
+#[test]
+fn a_callers_meta_cannot_switch_the_store() {
+    // `Css::parse` asks for the arena with a meta object recognised by its
+    // address; the same key and value from a caller is only meta.
+    let mut forged = Engine::object(Default::default());
+    if let Some(fields) = forged.as_object_mut() {
+        fields.insert("tabnas-css/arena".into(), Engine::Bool(true));
+    }
+    let parser = make_with(POSITIONED);
+    assert_eq!(
+        parser.parse("a{b:c}").expect("parses").to_json(),
+        parser
+            .parse_with_meta("a{b:c}", forged.clone())
+            .expect("parses")
+            .to_json()
+    );
+    let refused = make()
+        .parse_with_meta(&nested_rules(192), forged)
+        .expect_err("the bound still applies");
+    assert_eq!("cancel", refused.code);
 }
 
 #[test]
@@ -260,8 +451,14 @@ fn a_seeded_context_does_not_reach_the_plugins_state() {
         "tabnas-css/astral".into(),
         Engine::array(vec![Engine::Number(0.0)]),
     );
+    // A group scan that claims a `;` at 1000 was found first from 0, with
+    // its cursor at 0: the selector `a b` would read as a property, `a`.
+    seed.u.insert(
+        "tabnas-css/brace-scan".into(),
+        Engine::array([0.0, 1.0, 1000.0, 0.0, 0.0].map(Engine::Number).to_vec()),
+    );
     let parser = make_with(POSITIONED);
-    for src in ["@host x", "a{b:c}"] {
+    for src in ["@host x", "a{b:c}", "a b{c:d}"] {
         let clean = parser.parse(src).expect("parses");
         let seeded = parser
             .parse_with_context(src, Engine::Undefined, &seed)

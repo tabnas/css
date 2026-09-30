@@ -19,7 +19,7 @@ input	ts	go	rust	opts	why
 #
 # Every column is EXECUTED: ts/test/divergent.test.ts reads `ts`,
 # go/divergent_test.go reads `go`, rs/tests/divergent.rs reads `rust`.
-# Until this file existed, the three rows below lived in AGENTS.md prose,
+# Until this file existed, the first three rows below lived in AGENTS.md prose,
 # with only the Rust side asserted (rs/tests/css.rs) -- so the Go values,
 # which are what makes each row a divergence, were measurements nothing
 # re-took.

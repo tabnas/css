@@ -300,11 +300,14 @@ serialises rather than exhausting the stack.
 
 When you already run a tabnas engine, or want its own API (recovery,
 subscribers, `derive`), install the plugin on it rather than holding a
-`Css`. Use it on a jsonic engine (the `tabnas-jsonic` crate, which your
-crate then depends on), as the canonical port documents:
+`Css`. Use it on a jsonic engine, as the canonical port documents. This
+crate re-exports the jsonic crate and the engine it is built on, as
+`tabnas_css::tabnas_jsonic` and `tabnas_css::tabnas`; take both from
+there rather than from a dependency of your own, which can resolve to
+another copy whose types do not match this crate's:
 
 ```rust
-let mut parser = tabnas_jsonic::make();
+let mut parser = tabnas_css::tabnas_jsonic::make();
 parser.use_plugin(tabnas_css::plugin(), None).unwrap();
 let tree = parser.parse("a { color: red }").unwrap();
 assert_eq!(
@@ -333,6 +336,9 @@ Watch the depth. The engine's tree is bounded at
 `tabnas_css::TREE_RULE_DEPTH` open rules (191 nested style rules), and a
 deeper document fails with `cancel`, where `Css::parse` has no limit.
 The engine's JSON also writes whole numbers, such as a `position`'s
-lines, as `1.0`. To name the engine's types in your own code, depend on
-`tabnas-parser` yourself. The [reference](reference.md#the-two-result-forms)
-sets the two forms side by side.
+lines, as `1.0`. With the engine's recovery on, the partial stylesheet
+is not always the canonical port's; the
+[concepts page](concepts.md#recovery) says where they part. To name the
+engine's types in your own code, write `tabnas_css::tabnas::Value` and
+so on. The [reference](reference.md#the-two-result-forms) sets the two
+forms side by side.
