@@ -215,7 +215,7 @@ What depth costs is memory. Each open level holds the engine's frames
 for its rules, and measured in a release build that is about 7 KiB per
 nested style rule: 100,000 of them (0.6 MB of CSS) peaked at 678 MiB.
 The densest nesting, `a{` repeated, holds about 2.8 KiB per byte of
-input and takes about 26 µs per byte. Length costs memory too, far less
+input and takes about 6 µs per byte. Length costs memory too, far less
 per item: 100,000 flat rules (1.7 MB) peaked at 210 MiB, and 580 MiB
 with positions on, and a single long token holds about 18 bytes per
 byte. A host that parses untrusted CSS should cap the input's size.
@@ -304,8 +304,10 @@ order and still serialise to nothing.
 
 The engine's own writer prints a whole number as `1.0`, so the tree
 form's JSON carries `"line":1.0` where the canonical port writes
-`"line":1`. `Value::to_json` writes what `JSON.stringify` writes, byte
-for byte, key order included. JavaScript enumerates a key that is an
+`"line":1`. For a parse result, `Value::to_json` writes what
+`JSON.stringify` writes of the canonical port's, byte for byte, key order
+included; a `Value` a caller builds or edits is written in its own key
+order. JavaScript enumerates a key that is an
 array index before every other, so `@0 x;` is `{"0":"x","type":"0"}`,
 and the plugin inserts such a key where JavaScript puts it.
 
@@ -374,8 +376,13 @@ comment, as it is fetched, and under recovery records it and skips it.
 This engine keeps the token in its lookahead, as [a bad token behind a
 good one](#a-bad-token-behind-a-good-one) describes, so a recovery can stop
 elsewhere, keep a node the canonical port drops or drop one it keeps,
-and report an error the canonical port does not, sometimes the same
-error twice. The repair belongs to the engine.
+and report an error the canonical port does not. Separately, the engine
+can report a recovery's terminal error twice, with no bad token involved
+(`a{` does it), because it compares errors including the record of how
+each was recovered. And a recovering parse takes time quadratic in the
+input, since the engine walks the whole partial value on every step: a
+valid 16 KB stylesheet takes about 16 s. The repairs belong to the
+engine.
 
 One difference is this port's choice. Where a statement, a declaration
 or a keyframe fails before its node is built, the canonical pusher puts

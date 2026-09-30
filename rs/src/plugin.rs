@@ -575,6 +575,12 @@ fn register_actions(parser: &mut Tabnas, position: bool) {
     }
 }
 
+/// Whether `action` is this grammar's `@cssSheet`: as installed, or as
+/// [`Tabnas::merge`] renames it, `@<tag>:cssSheet`.
+fn is_css_sheet(action: &str) -> bool {
+    "@cssSheet" == action || (action.starts_with('@') && action.ends_with(":cssSheet"))
+}
+
 /// Install the plugin on `parser`. See [`plugin`](crate::plugin).
 ///
 /// Safe to run more than once on one instance, and it is: `use_plugin` runs
@@ -595,7 +601,7 @@ pub(crate) fn install(parser: &mut Tabnas, options: &Options) -> Result<(), Plug
             && spec
                 .open
                 .iter()
-                .any(|alt| alt.a.iter().any(|action| "@cssSheet" == action))
+                .any(|alt| alt.a.iter().any(|action| is_css_sheet(action)))
     });
 
     // The matcher emits these by name (see `lex::BY_NAME`); registering
@@ -623,9 +629,12 @@ pub(crate) fn install(parser: &mut Tabnas, options: &Options) -> Result<(), Plug
 
     // A name of the plugin's own. A later plugin that installs a guard
     // named `depth`, as jsonic, json and the grammars layered on them do,
-    // replaces only that one, and this bound stays. jsonic's guard counts
-    // `map` and `list` rules, which no css rule opens, so it never refuses
-    // a css parse. The count comes first because it is the cheap test.
+    // replaces only that one, and this bound stays. jsonic's own `depth`
+    // guard is removed: it counts `map` and `list` rules, which the
+    // grammar's options exclude, so it could never refuse a css parse, and
+    // it ran on every step, about 1% of a flat stylesheet's parse. The
+    // count comes first because it is the cheap test.
+    parser.remove_parse_guard("depth");
     parser.parse_guard(DEPTH_GUARD, |ctx| {
         ctx.rule_stack.len() <= TREE_RULE_DEPTH || arena(ctx)
     });

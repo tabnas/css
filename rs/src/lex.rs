@@ -15,6 +15,7 @@
 //! line.
 
 use std::fmt;
+use std::sync::Arc;
 
 use tabnas::{
     Context, Lexer, Rule, TabnasError, Tin as EngineTin, Token, Value, TIN_BD, TIN_TX, TIN_VL,
@@ -407,34 +408,45 @@ struct BraceScans {
 pub(crate) const BRACE_SCAN: &str = "tabnas-css/brace-scan";
 
 impl BraceScans {
+    /// The answer for a token starting at `s_i`, keeping the state under
+    /// [`BRACE_SCAN`] with one map lookup: the matcher asks on every `#TX`,
+    /// and a flat stylesheet is mostly misses.
     fn scan(ctx: &mut Context, src: &[u8], s_i: usize) -> (Kind, usize) {
-        if let Some(mut kept) = BraceScans::read(ctx) {
+        let Some(Value::Array(slot)) = ctx.u.get_mut(BRACE_SCAN) else {
+            let found = scan_to_brace_or_end(src, s_i);
+            let kept = BraceScans::fresh(s_i, found);
+            ctx.u
+                .insert(BRACE_SCAN.to_string(), Value::array(kept.fields().to_vec()));
+            return found;
+        };
+        let fields = Arc::make_mut(slot);
+        if let Some(mut kept) = BraceScans::decode(fields) {
             if kept.from <= s_i && s_i < kept.found.1 && kept.cursor.i <= s_i {
                 while kept.cursor.i < s_i && kept.cursor.step(src).is_none() {}
                 let reached = kept.cursor.i == s_i && 0 == kept.cursor.depth;
-                kept.write(ctx);
+                kept.encode(fields);
                 if reached {
                     return kept.found;
                 }
             }
         }
+        // An unclosed comment's answer is kept too: a scan from a later start
+        // the cursor reaches meets the same `/*`, and the engine's recovery
+        // asks again at the very start it failed at, up to its skip budget.
         let found = scan_to_brace_or_end(src, s_i);
-        if UNTERMINATED != found.1 {
-            let cursor = Scan { i: s_i, depth: 0 };
-            BraceScans {
-                from: s_i,
-                found,
-                cursor,
-            }
-            .write(ctx);
-        }
+        BraceScans::fresh(s_i, found).encode(fields);
         found
     }
 
-    fn read(ctx: &Context) -> Option<BraceScans> {
-        let Some(Value::Array(fields)) = ctx.u.get(BRACE_SCAN) else {
-            return None;
-        };
+    fn fresh(from: usize, found: (Kind, usize)) -> BraceScans {
+        BraceScans {
+            from,
+            found,
+            cursor: Scan { i: from, depth: 0 },
+        }
+    }
+
+    fn decode(fields: &[Value]) -> Option<BraceScans> {
         let at = |n: usize| match fields.get(n) {
             Some(Value::Number(v)) => Some(*v as usize),
             _ => None,
@@ -454,21 +466,38 @@ impl BraceScans {
         })
     }
 
-    fn write(&self, ctx: &mut Context) {
+    fn numbers(&self) -> [f64; 5] {
         let kind = match self.found.0 {
             Kind::Selector => 0,
             Kind::Decl => 1,
         };
-        let fields = [
+        [
             self.from,
             kind,
             self.found.1,
             self.cursor.i,
             self.cursor.depth,
         ]
-        .map(|n| Value::Number(n as f64));
-        ctx.u
-            .insert(BRACE_SCAN.to_string(), Value::array(fields.to_vec()));
+        .map(|n| n as f64)
+    }
+
+    fn fields(&self) -> [Value; 5] {
+        self.numbers().map(Value::Number)
+    }
+
+    /// Write this state over `fields`, number by number when the shape fits.
+    fn encode(&self, fields: &mut Vec<Value>) {
+        let numbers = self.numbers();
+        if numbers.len() == fields.len() {
+            for (field, n) in fields.iter_mut().zip(numbers) {
+                match field {
+                    Value::Number(slot) => *slot = n,
+                    other => *other = Value::Number(n),
+                }
+            }
+        } else {
+            *fields = self.fields().to_vec();
+        }
     }
 }
 

@@ -180,9 +180,14 @@ A parse holds memory, and takes time, in proportion to its input, and
 nesting costs the most. Measured in a release build, 100,000 flat rules
 (1.7 MB of CSS) peaked at 210 MiB, or 580 MiB with positions on, and
 100,000 nested rules (0.6 MB) at 678 MiB, about 7 KiB per open level. The
-densest nesting, `a{` repeated, holds about 2.8 KiB and takes about 26 µs
+densest nesting, `a{` repeated, holds about 2.8 KiB and takes about 6 µs
 per byte of input. A host that parses untrusted CSS should cap the input's
 size.
+
+The engine's `parse.recover` and `lex.relex` modes are the exception to
+that proportion: in the engine this crate builds on, both take time
+quadratic in the input, and a valid 16 KB stylesheet takes about 16 s with
+recovery on. `parse` and `Css::parse` use neither.
 
 `parse` and `Css::parse` have no depth limit: 20,000 nested rules parse, and
 the result drops, clones, compares and prints without recursion, on a 2 MiB

@@ -89,7 +89,9 @@ memory profile or a stack overflow.
   a name of its own, since jsonic and the grammars on it each install
   theirs as `depth`, replacing the last; it refuses more than
   `TREE_RULE_DEPTH` (768) open rules with `cancel` unless the parse is an
-  arena parse. Row 5 of `../test/divergent.tsv` registers the bound;
+  arena parse. The install removes jsonic's own `depth` guard, which
+  counts `map` and `list` rules the css options exclude, so it never
+  refused a css parse and cost about 1% of every one. Row 5 of `../test/divergent.tsv` registers the bound;
   moving it means moving the constant, `tests/plugin.rs` (191 nested
   rules and 256 nested `@media` at the bound) and that row together. The
   repair is upstream: when the engine's value is iterative, the bound
@@ -134,8 +136,14 @@ memory profile or a stack overflow.
   gives it to a later item's start the cursor reaches at bracket depth 0;
   any other start scans afresh. The scan's whole state is its position
   and its depth, so the answer is exact; without the cache a group's
-  items each scanned to its `{`, and 200 KB of selectors took 9 s.
-  `tests/repeat.rs` pins linear time for both kinds of group.
+  items each scanned to its `{`, and 200 KB of selectors took 9 s. An
+  unclosed comment's answer is kept as well: the engine's recovery asks
+  again at the start that failed, up to its skip budget. The state is
+  five numbers under one `ctx.u` key, updated in place, since the matcher
+  asks on every `#TX`: a fresh key and list per token cost a flat
+  stylesheet 5 to 10% of its parse. `tests/repeat.rs` pins linear time
+  for both kinds of group, and the recovery rows with a stray `(` or `[`
+  in `tests/plugin.rs` pin the depth-0 check.
 - **Lookahead is lazy, and comment nodes are keyed on the rule name.**
   The engine reads a token only when the alternate being tried needs one,
   under the rule trying it; `COMMENT_NODE_RULES` in `lex.rs` names the

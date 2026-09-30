@@ -132,7 +132,8 @@ Installing it adds, to the engine it is used on:
   matcher;
 - the actions that build the nodes, a `parse.prepare` hook that clears
   the plugin's per-parse state, a lex subscriber, and a parse guard
-  named `tabnas-css/depth`, the tree form's bound.
+  named `tabnas-css/depth`, the tree form's bound, in place of jsonic's
+  `depth` guard, which counts rules the css options exclude.
 
 Using it again on the same engine, or deriving an engine from one that
 has it (`Tabnas::derive`), installs it again with the options then in

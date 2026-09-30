@@ -458,9 +458,15 @@ match as-is.
   it). With the engine's recovery on (`parse.recover.enabled`) the tree
   form returns a partial stylesheet that is NOT always TS's: the Rust engine
   buffers the bad token TS throws at fetch, so a recovery can stop
-  elsewhere and report an error TS does not, or the same one twice (over
-  the review's 12,000-input corpus, 446 values differ outside TS's cycles).
-  That is the engine's to repair. Where a statement, a declaration or a
+  elsewhere and report an error TS does not (over the review's
+  12,000-input corpus, 446 values differ outside TS's cycles). Separately,
+  `parse_recover` can report its terminal error twice, with no bad token
+  involved (`a{`), because the engine compares errors including their
+  `recovered` field. Both are the engine's to repair, and so is the time a
+  recovering parse takes: the engine walks the whole partial value on
+  every step, so a valid 16 KB stylesheet takes about 16 s with recovery
+  on, and each rejected re-cut under `lex.relex` copies the whole source,
+  also quadratic. Where a statement, a declaration or a
   keyframe fails before its constructor runs, TS's pusher pushes the
   enclosing node into itself, a cycle; `push_child` skips a child whose
   `child_node` is undefined (it still shares the parent's cell) rather
@@ -471,9 +477,11 @@ match as-is.
   level, so the plugin installs a parse guard named `tabnas-css/depth` that
   stops a tree-form parse past 768 open rules with `cancel`. Not `depth`:
   jsonic and the grammars layered on it each install theirs under that name
-  to replace the last, and one installed after css would drop the bound
-  (jsonic's own counts `map` and `list` rules, which css never opens, so it
-  stays and never refuses a css parse). That is 191 nested style
+  to replace the last, and one installed after css would drop the bound.
+  The install removes jsonic's own `depth` guard: it counts `map` and
+  `list` rules, which the css options exclude, so it could never refuse a
+  css parse, and it cost about 1% of a flat stylesheet's parse on every
+  step. That is 191 nested style
   rules (four rules each) or 256 nested `@media` blocks (three each). A tree
   at the limit survives drop, clone, compare, print and JSON on a 2 MiB
   thread in a debug build (`rs/tests/plugin.rs`). The arena form skips the
@@ -525,14 +533,19 @@ match as-is.
   per call for the same reason. `rs/tests/plugin.rs` merges both ways.
 - **Rust: a selector group is scanned once.** The matcher classifies a
   `#TX` by scanning to a `{` before a `;`, which from each item of a group
-  costs the group's length per item: 200 KB of selectors took 9 s, as it
-  still does in TS and Go. The scan's state is its position and bracket
+  costs the group's length per item: 200 KB of selectors took 9 s here
+  (26 s in TS and 19 s in Go, which still scan per item). The scan's state is its position and bracket
   depth only, so `BraceScans` in `lex.rs` keeps the first item's answer
   with a forward cursor, and gives it to any later start the cursor
   reaches at depth 0; anything else scans afresh. The 200 KB now parse in
-  0.2 s. `rs/tests/repeat.rs` pins linear time for selector and keyframe
-  groups, and `test/spec/selectors.tsv` the edges (a `{` in a string or a
-  comment, an escape, unbalanced brackets).
+  0.2 s. An unclosed comment's answer is kept too, since the engine's
+  recovery asks again at the start it failed at. The state is five numbers
+  under one `ctx.u` key, written in place; the cache costs a flat
+  stylesheet about 1% more instructions. `rs/tests/repeat.rs` pins linear
+  time for selector and keyframe groups, the recovery rows in
+  `rs/tests/plugin.rs` with a stray `(` or `[` pin the depth-0 check, and
+  `test/spec/selectors.tsv` holds output edges for all three runtimes (a
+  `{` in a string or a comment, an escape, unbalanced brackets).
 - **Rust: `rule.history` is 1.** `OPTIONS_DOC` sets it, and the canonical
   options do not: a rule keeps a link to the rule it replaced and none
   further back. With the engine's default, unbounded, every item of a list
@@ -563,7 +576,7 @@ match as-is.
   crate took 0.40 s, and peak at 210 MiB (130 before), 580 MiB with
   positions on. 100,000 nested rules (0.6 MB) peak at 678 MiB (167 before),
   about 7 KiB per open level in engine frames; the densest nesting, `a{`
-  repeated, holds about 2.8 KiB and takes about 26 µs per byte of input,
+  repeated, holds about 2.8 KiB and takes about 6 µs per byte of input,
   and a single long token holds about 18 bytes per byte. About 85% of the time is in the engine's parse loop
   (callgrind), so the cost is the engine's per-step cost, and parser#256 is
   where that is addressed. A host that parses untrusted CSS caps the input

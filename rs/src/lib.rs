@@ -57,11 +57,13 @@
 //! proportion to its input, and nesting costs the most. Measured in a release
 //! build: 100,000 nested style rules (0.6 MB of CSS) peaked at 678 MiB, about
 //! 7 KiB per open level, and the densest nesting, `a{` repeated, holds about
-//! 2.8 KiB and takes about 26 µs per byte of input. A flat stylesheet of
+//! 2.8 KiB and takes about 6 µs per byte of input. A flat stylesheet of
 //! 100,000 rules (1.7 MB) peaked at 210 MiB, 580 MiB with positions on, and
-//! one long token holds about 18 bytes per byte. [`Css::parse`] has no depth limit; the
-//! engine's own tree form ([`plugin`], [`make`], [`Css::tabnas`]) stops at
-//! [`TREE_RULE_DEPTH`] open rules with `cancel`.
+//! one long token holds about 18 bytes per byte. [`Css::parse`] has no depth
+//! limit; the engine's own tree form ([`plugin`], [`make`], [`Css::tabnas`])
+//! stops at [`TREE_RULE_DEPTH`] open rules with `cancel`. The engine's
+//! recovery and relexing modes, which [`Css::parse`] never uses, take time
+//! quadratic in the input in the engine this crate builds on.
 //!
 //! **Turn the engine's debug self-check off in your debug builds.** With
 //! debug assertions on, the engine compares its whole rule stack with a

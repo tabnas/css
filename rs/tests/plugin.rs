@@ -212,6 +212,38 @@ fn a_merged_instance_parses_as_the_css_instance_does() {
 }
 
 #[test]
+fn using_the_plugin_again_on_a_merged_instance_is_a_second_install() {
+    // A merge renames `@cssSheet` to `@css:cssSheet`; the install must still
+    // see its own grammar there, or it adds a second lex subscriber (the
+    // end-of-input overshoot counted twice) and installs the rules on top
+    // of the merged ones.
+    let css = make()
+        .derive(|options| options.tag = "css".into())
+        .expect("derives");
+    let json = tabnas_jsonic::make()
+        .derive(|options| options.tag = "json".into())
+        .expect("derives");
+    let fresh = alternate_counts(&make());
+    for mut merged in [
+        css.merge(&json).expect("merges"),
+        json.merge(&css).expect("merges"),
+    ] {
+        merged
+            .use_plugin(plugin(), Some(POSITIONED.to_value()))
+            .expect("installs again");
+        let tree = from_tree(&merged.parse("@host\\").expect("parses"));
+        assert!(
+            tree.to_json().ends_with(
+                r#""position":{"start":{"line":1,"column":1},"end":{"line":1,"column":8}}}"#
+            ),
+            "{}",
+            tree.to_json()
+        );
+        assert_eq!(fresh, alternate_counts(&merged));
+    }
+}
+
+#[test]
 fn an_empty_source_is_an_empty_stylesheet_without_a_position() {
     let parser = make_with(POSITIONED);
     let empty = parser.parse("").expect("parses").to_json().to_string();
@@ -366,6 +398,24 @@ fn recovery_returns_a_partial_stylesheet() {
             "@font-face{ , }",
             r#"{"type":"stylesheet","rules":[{"type":"font-face","declarations":[]}]}"#.to_string(),
             ("unexpected", 1, 13),
+        ),
+        // A stray opener, then a selector the matcher classifies with the
+        // group scan: the scan from `(` never comes back to depth 0, so a
+        // later start must not take its answer.
+        (
+            "(\"x\"a{b:c}",
+            r#"{"type":"stylesheet","rules":[{"type":"rule","selectors":["\"x\"a"],"declarations":[{"type":"declaration","property":"b","value":"c"}]}]}"#.to_string(),
+            ("unexpected", 1, 1),
+        ),
+        (
+            "(a,b{c:d}",
+            r#"{"type":"stylesheet","rules":[{"type":"rule","selectors":["a","b"],"declarations":[{"type":"declaration","property":"c","value":"d"}]}]}"#.to_string(),
+            ("unexpected", 1, 1),
+        ),
+        (
+            "[x,y{c:d}",
+            r#"{"type":"stylesheet","rules":[{"type":"rule","selectors":["x","y"],"declarations":[{"type":"declaration","property":"c","value":"d"}]}]}"#.to_string(),
+            ("unexpected", 1, 1),
         ),
     ] {
         let got = parser.parse_recover(src);
