@@ -103,3 +103,37 @@ fn every_alternate_carries_the_css_group() {
         }
     }
 }
+
+#[test]
+fn the_rules_carry_no_lifecycle_actions() {
+    // The canonical grammar's rules are alternates and nothing else: no
+    // before-open, after-open, before-close or after-close action. The Rust
+    // plugin's own work (the arena hand-back at the end of the stylesheet)
+    // runs inside the alternates' actions, so the installed rules stay the
+    // canonical port's, rule for rule.
+    let parser = tabnas_css::make();
+    for spec in parser.rule_specs() {
+        if !RULES.contains(&spec.name.as_str()) {
+            continue;
+        }
+        let hooks = [
+            spec.bo.len(),
+            spec.ao.len(),
+            spec.bc.len(),
+            spec.ac.len(),
+            spec.bo_fns.len(),
+            spec.ao_fns.len(),
+            spec.bc_fns.len(),
+            spec.ac_fns.len(),
+            spec.bo_state_fns.len(),
+            spec.ao_state_fns.len(),
+            spec.bc_state_fns.len(),
+            spec.ac_state_fns.len(),
+        ];
+        assert_eq!(
+            [0; 12], hooks,
+            "rule '{}' has lifecycle actions (bo, ao, bc, ac; named, functions, state)",
+            spec.name
+        );
+    }
+}

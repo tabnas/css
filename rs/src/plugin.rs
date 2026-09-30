@@ -478,12 +478,23 @@ fn register_actions(parser: &mut Tabnas, position: bool) {
     // The closing brace, or the end of the source for the stylesheet: the
     // end of the node the block belongs to. A close phase, so the matched
     // token is the rule's first CLOSE token.
+    //
+    // At the stylesheet's end an arena parse also hands back the whole list,
+    // as the root rule's node, for `Value::from_arena` to assemble: nothing
+    // runs after this close but the engine taking that node as the result.
+    // It is done here rather than in a rule lifecycle action so that the
+    // installed rules are the canonical port's, alternate for alternate and
+    // with no hook it lacks. A tree parse's node is already the stylesheet.
     parser.action_with_context("@cssEnd", move |rule, ctx| -> Outcome {
         if position {
             if let Some(token) = rule.c0() {
                 let end = end_pos(ctx, token);
                 set_end(rule, ctx, end);
             }
+        }
+        if "stylesheet" == rule.name.as_str() && arena(ctx) {
+            let records = ctx.u.shift_remove(NODES).unwrap_or_else(list);
+            rule.node = Rc::new(RefCell::new(records));
         }
         Ok(())
     });
@@ -499,18 +510,6 @@ fn register_actions(parser: &mut Tabnas, position: bool) {
             Ok(())
         });
     }
-
-    // After the stylesheet closes, and before the engine takes the root
-    // rule's node as the result: an arena parse hands back the whole list,
-    // for `Value::from_arena` to assemble. A tree parse's node is already the
-    // stylesheet.
-    parser.state_action_ref("@stylesheet-ac", |rule, ctx| -> Outcome {
-        if arena(ctx) {
-            let records = ctx.u.shift_remove(NODES).unwrap_or_else(list);
-            rule.node = Rc::new(RefCell::new(records));
-        }
-        Ok(())
-    });
 }
 
 /// Install the plugin on `parser`. See [`plugin`](crate::plugin).

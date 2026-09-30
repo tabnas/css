@@ -53,6 +53,15 @@ engine switch was one.
 Each is behaviour. A change to any of them shows up in a parse result, a
 memory profile or a stack overflow.
 
+- **The installed rules are the canonical port's, rule for rule.** The
+  13 rules and every alternate (order, token slots, `b`, `p`, `r`,
+  actions, groups) are what `css-grammar.jsonic` gives the TypeScript and
+  Go ports, and no rule carries a lifecycle action (`bo`, `ao`, `bc`,
+  `ac`). Work only Rust needs runs inside an alternate's action instead:
+  the arena hand-back is in `@cssEnd`, on the stylesheet's close.
+  `tests/grammar.rs` pins the absence of lifecycle actions and the `css`
+  group on every alternate; `tests/repeat.rs` pins the pushes and
+  replaces.
 - **A node constructor installs a FRESH cell.** The engine shares one
   node cell between a rule and the rules it pushes or replaces into, so
   `@cssSheet`, `@cssRule`, `@cssDecl` and the other constructors set
