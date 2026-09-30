@@ -18,7 +18,7 @@ The rules come from `css-grammar.jsonic`, the file the other two ports
 embed, copied in verbatim. The plugin reads it with jsonic, once per
 process, and installs the rules with the canonical option overrides:
 jsonic's own rules excluded, `;` remapped onto the member separator,
-`[` and `]` dropped as tokens, the string, number, text and value
+`[` and `]` dropped as tokens, the string, number, text, and value
 matchers off, and `/* */` the only comment. A lex matcher of its own,
 `cssToken`, owns everything else.
 
@@ -337,7 +337,7 @@ degrades to a shorter span instead of a panic in a caller's parse.
 
 The column arithmetic does count the overshoot, because the canonical
 port counts it. `@host\` is six characters, and its `host` node ends at
-column seven inside a stylesheet ending at column eight. The engine will
+column seven inside a stylesheet ending at column eight. The engine does
 not move its cursor past the end of the source, so the matcher records
 the overshoot in the parse's context, and the plugin's lex subscriber
 adds it to the column of the end-of-source token, the only token that

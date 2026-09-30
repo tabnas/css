@@ -296,7 +296,7 @@ plain objects. For `""` both are `{"type":"stylesheet","rules":[]}`,
 with no `position` even when `position` is on.
 
 The tree form's bound is a parse guard named `depth`, and it exists
-because the engine's `Value` drops, clones, compares and prints by
+because the engine's `Value` drops, clones, compares, and prints by
 recursion, one stack frame per level. A tree at the bound survives all
 of those on a 2 MiB thread in a debug build. The canonical port has no
 such bound, so this one is a registered divergence of the Rust port.
