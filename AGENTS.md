@@ -795,8 +795,7 @@ Publishing is **dispatch-driven and runs in CI**, never locally:
 `@tabnas/css` to npm over GitHub OIDC trusted publishing (no token,
 provenance attached), and a `go/v*` tag is the Go module release —
 proxy.golang.org serves it straight from the tag. Its `crates` job publishes
-the Rust crate to crates.io when the `TABNAS_CRATES` variable is `on` (step
-1). A local `npm publish` goes out over a token and bypasses OIDC entirely —
+the Rust crate to crates.io (step 1). A local `npm publish` goes out over a token and bypasses OIDC entirely —
 do not use it for a release.
 
 ### Dispatch it; do not push the tag
@@ -822,10 +821,9 @@ The steps, in order:
    rewrites the first three; `make version-rs V=x.y.z` bumps the Rust sites
    until it learns about them.
 
-   **The Rust crate goes to crates.io through `release.yml`, when switched
-   on.** Its `crates` job calls `crates-release.yml` with the release tag,
-   and both run only when the `TABNAS_CRATES` configuration variable is
-   `on` (see that file's header for the trusted-publisher setup). The job
+   **The Rust crate goes to crates.io through `release.yml`.** Its `crates`
+   job calls `crates-release.yml` with the release tag, on every release
+   (see that file's header for the trusted-publisher setup). The job
    publishes `rs/` from the tag, rewriting each sibling path dependency into
    a requirement on that crate's newest version on crates.io and dropping
    the path-only dev-dependency, and `cargo publish` verify-builds against
@@ -1176,7 +1174,7 @@ runner as well, and is a complement to the corpus rather than a substitute
 for it.
 
 `.github/workflows/release.yml` publishes the npm package on a `ts/v*` tag via
-OIDC trusted publishing, and, with `TABNAS_CRATES` on, the crate to crates.io
+OIDC trusted publishing, and the crate to crates.io
 through `crates-release.yml` (see "Releasing"). Change a workflow file in `.github/workflows/`
 itself, in a reviewed pull request: session credentials can push workflow
 changes (admin `DECISIONS.md` ADR-8, as amended 2026-09-24). They still
