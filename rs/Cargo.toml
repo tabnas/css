@@ -7,7 +7,9 @@
 name = "tabnas-css"
 version = "0.5.9"
 edition = "2021"
-rust-version = "1.74"
+# The engine's own floor (parser rs/Cargo.toml): this crate is a plugin on
+# it, so it can promise no older compiler than the engine does.
+rust-version = "1.85"
 license = "MIT"
 description = "Parse CSS into a reworkcss-style abstract syntax tree."
 repository = "https://github.com/tabnas/css"
@@ -16,9 +18,6 @@ documentation = "https://docs.rs/tabnas-css"
 readme = "README.md"
 keywords = ["css", "stylesheet", "parser", "ast", "tabnas"]
 categories = ["parser-implementations", "web-programming"]
-# `doc/` ships with the crate. The Markdown pages are included by the
-# `#[cfg(doctest)]` module in src/lib.rs, so a published crate without
-# them is one whose own test suite cannot build.
 # `doc/` ships because the `#[cfg(doctest)]` module in src/lib.rs includes
 # those pages, so a crate without them is one whose own doctests cannot
 # build. `tests/` does NOT ship: every integration test reads something
@@ -28,12 +27,34 @@ categories = ["parser-implementations", "web-programming"]
 # a missing repository root.
 include = ["src/**", "examples/**", "doc/**", "README.md", "LICENSE"]
 
-# No dependencies, by design. The TypeScript and Go ports sit on the tabnas
-# engine; there is no Rust engine to sit on, so this port carries the grammar
-# machine itself (src/machine.rs) rather than depending on one. See
-# "Why this port is self-contained" in README.md.
-[dependencies]
-
 [lib]
 name = "tabnas_css"
 path = "src/lib.rs"
+
+[dependencies]
+# The engine and the relaxed-JSON grammar this plugin layers on, as the
+# TypeScript and Go ports do, consumed as SIBLING CHECKOUTS, the standard
+# tabnas development model: clone https://github.com/tabnas/parser,
+# https://github.com/tabnas/json and https://github.com/tabnas/jsonic next
+# to this repo. tabnas-json is not named here: tabnas-jsonic takes it by
+# path itself, which is the only reason its checkout is needed.
+tabnas = { package = "tabnas-parser", path = "../../parser/rs" }
+tabnas-jsonic = { path = "../../jsonic/rs" }
+
+[dev-dependencies]
+# The introspection plugin, for tests/debug_model.rs: the Rust half of
+# ts/test/debug-model.test.ts, which proves the grammar composes with it
+# and reads the same structured model. Tests only, and a sibling checkout
+# like the rest: clone https://github.com/tabnas/debug.
+tabnas-debug = { path = "../../debug/rs" }
+
+# The engine checks its whole rule stack against a shadow copy on every
+# step when debug assertions are on: its own self-test, and quadratic in
+# nesting depth. Measured on this grammar in a debug build, 1,000 nested
+# rules took 8.3 s, 2,000 took 32.9 s and 4,000 took 134 s; with the check
+# off, 20,000 take 1 to 3 s. `cargo test` runs the 20,000-level tests, so
+# the check stays off here. A profile applies only to the root package: a
+# crate that depends on this one sets the same key in its own manifest
+# (README.md, "Untrusted input").
+[profile.dev.package.tabnas-parser]
+debug-assertions = false

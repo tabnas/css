@@ -26,8 +26,9 @@ npm install @tabnas/parser @tabnas/jsonic @tabnas/css
 # Go
 go get github.com/tabnas/css/go@latest
 
-# Rust (not on crates.io yet; the dependency is this repository)
-cargo add --git https://github.com/tabnas/css tabnas-css
+# Rust: this repository's crate, from git, with the [patch] tables its
+# own dependencies need: add the TOML in rs/README.md#install to
+# Cargo.toml (crates.io's tabnas-css 0.5.9 is a different implementation)
 ```
 
 ## One tiny example
@@ -65,8 +66,8 @@ ast, _ := tabnascss.Parse(`a { color: red }`)
 //     map[string]any{"type":"declaration","property":"color","value":"red"}}}}}
 ```
 
-**Rust.** `tabnas_css::parse` is the one-call entry point, and the crate has
-no dependencies:
+**Rust.** The crate is a plugin on the Rust build of the engine, as the other
+two are on theirs, and `tabnas_css::parse` is the one-call entry point:
 
 ```rust
 let ast = tabnas_css::parse("a { color: red }").unwrap();
@@ -107,8 +108,10 @@ The AST is measured against the
 upstream's own `ast.json`, with and without source positions, in all three
 runtimes, and all six of its non-`silent` accept/reject assertions
 hold. No case in that corpus is parsed differently by the three runtimes.
-Four inputs outside it are, all four in the Go port, and each one is pinned as
-a row of [`test/divergent.tsv`](test/divergent.tsv), read by all three suites,
+Five inputs outside it are: four in the Go port, and 192 nested style rules,
+which the Rust engine's own tree form refuses at its depth bound while
+`tabnas_css::parse` and the other two runtimes read them. Each is pinned as a
+row of [`test/divergent.tsv`](test/divergent.tsv), read by all three suites,
 rather than described in prose. The forty-sixth case, a zero-length source, is
 asserted explicitly rather than skipped, because it used to be one: `''` now
 yields `{ type: 'stylesheet', rules: [] }`, as upstream does, and so does any

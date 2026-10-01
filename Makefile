@@ -5,7 +5,7 @@
 # repo-set go.work + node_modules symlinks (admin/scripts/link.sh).
 
 .PHONY: all build test clean build-ts build-go build-rs \
-        test-ts test-go test-rs clean-ts clean-go clean-rs \
+        test-ts test-go test-rs gate-rs version-rs clean-ts clean-go clean-rs \
         publish-ts publish-go tags-go reset \
         prose prose-counts probe probe-rs
 
@@ -63,14 +63,48 @@ tags-go:
 # There is no publish target. The crate is released by the same dispatch
 # that publishes the other two; a local `cargo publish` is not the
 # release path, for the same reason a local `npm publish` is not.
+#
+# The crate takes the engine, jsonic and (for its tests) the debug plugin
+# by path from sibling checkouts: clone tabnas/parser, tabnas/json,
+# tabnas/jsonic and tabnas/debug next to this repo. These targets are the
+# fast inner loop; `gate-rs` is the full gate CI runs. rs/Cargo.lock is
+# committed and none of these is `--locked` (the siblings are checkouts of
+# main, so their versions move), so a run can rewrite it: commit a lock
+# change only when you meant one, and `gate-rs` checks that you did.
 build-rs:
-	cd rs && cargo build
+	cd rs && cargo build --all-targets
 
 test-rs:
-	cd rs && cargo test
+	cd rs && cargo test --all-targets && cargo test --doc
+	cd rs && cargo clippy --all-targets --all-features -- -D warnings
+
+gate-rs:
+	ci/rust/run.sh
 
 clean-rs:
 	cd rs && cargo clean
+
+# Set the Rust crate version: make version-rs V=x.y.z
+#
+# Bumps BOTH Rust version sites, rs/Cargo.toml and VERSION in rs/src/lib.rs,
+# plus the crate's own entry in rs/Cargo.lock, which ci/rust/run.sh checks
+# against the manifest before anything else runs. The release orchestrator
+# rewrites the TypeScript and Go sites and does not know about these;
+# rs/tests/version.rs fails a release that forgets them.
+#
+# The lock entry is edited in place rather than by running cargo: any cargo
+# command resolves the whole graph against the sibling checkouts, and would
+# re-pin whatever they have moved, which is a dependency change a version
+# bump must not make.
+version-rs:
+	@test -n "$(V)" || (echo "Usage: make version-rs V=x.y.z" && exit 1)
+	sed -i.bak 's/^version = ".*"/version = "$(V)"/' rs/Cargo.toml
+	sed -i.bak 's/^pub const VERSION: &str = ".*";/pub const VERSION: \&str = "$(V)";/' rs/src/lib.rs
+	rm -f rs/Cargo.toml.bak rs/src/lib.rs.bak
+	awk -v v="$(V)" '$$0 == "name = \"tabnas-css\"" { f = 1; print; next } \
+	  f && /^version = / { print "version = \"" v "\""; f = 0; next } { print }' \
+	  rs/Cargo.lock > rs/Cargo.lock.tmp
+	mv rs/Cargo.lock.tmp rs/Cargo.lock
 
 # The differential probes: both are GATES and exit non-zero on a
 # divergence. Not part of `test` because each needs the other runtime

@@ -8,8 +8,8 @@
 //! a handful of representative shapes so this file reads as a suite, plus the
 //! things that are true of THIS port and not of the others — key order in the
 //! emitted JSON, an absent `position.end` (not a null one), the error's line
-//! and column, the depth a stack-based machine can take, and that the cached
-//! entry point is safe to share across threads.
+//! and column, the depth a parse can take, and that the cached entry point is
+//! safe to share across threads.
 
 mod support;
 
@@ -127,6 +127,53 @@ fn emitted_json_puts_type_first_and_keeps_source_order() {
         out.contains(r#"{"type":"keyframes","name":"x","vendor":"-webkit-","keyframes":["#),
         "keyframes key order changed: {out}"
     );
+    // An at-keyword is a key, and JavaScript enumerates an array-index key
+    // before every other, ascending; `JSON.stringify` writes them so. The
+    // outputs are the canonical port's, byte for byte, and the tree form
+    // has the same order.
+    for (src, expected) in [
+        (
+            "@0 x;",
+            r#"{"type":"stylesheet","rules":[{"0":"x","type":"0"}]}"#,
+        ),
+        (
+            "@1 x{a{}}",
+            r#"{"type":"stylesheet","rules":[{"1":"x","type":"1","rules":[{"type":"rule","selectors":["a"],"declarations":[]}]}]}"#,
+        ),
+        (
+            "@4294967294 x;",
+            r#"{"type":"stylesheet","rules":[{"4294967294":"x","type":"4294967294"}]}"#,
+        ),
+        // Not array indices: past the largest, and not in canonical form.
+        (
+            "@4294967295 x;",
+            r#"{"type":"stylesheet","rules":[{"type":"4294967295","4294967295":"x"}]}"#,
+        ),
+        (
+            "@01 x;",
+            r#"{"type":"stylesheet","rules":[{"type":"01","01":"x"}]}"#,
+        ),
+    ] {
+        assert_eq!(expected, json(src), "{src:?}");
+        let tree = tabnas_css::make().parse(src).expect("parses");
+        let keys = first_rule_keys(&tree);
+        let first = &expected[expected.find(r#"[{""#).expect("a rule") + 3..];
+        assert!(first.starts_with(keys[0].as_str()), "{src:?}: {keys:?}");
+    }
+}
+
+/// The keys of the first rule of an engine tree, in its order.
+fn first_rule_keys(tree: &tabnas::Value) -> Vec<String> {
+    let tabnas::Value::Object(sheet) = tree else {
+        panic!("a stylesheet object");
+    };
+    let Some(tabnas::Value::Array(rules)) = sheet.get("rules") else {
+        panic!("a rules list");
+    };
+    let Some(tabnas::Value::Object(rule)) = rules.first() else {
+        panic!("a rule object");
+    };
+    rule.keys().cloned().collect()
 }
 
 #[test]
@@ -197,8 +244,45 @@ fn an_error_reports_where_it_stopped() {
 }
 
 #[test]
+fn errors_stop_where_the_canonical_port_stops() {
+    // Line and column as the TypeScript port reports them, columns in UTF-16
+    // code units. The unclosed comments behind an escaped quote or paren are
+    // the case the engine's buffered lookahead would otherwise report at the
+    // property before them, as `unexpected`; see `lex_subscriber`.
+    for (src, code, line, column) in [
+        ("a,b", "unexpected", 1, 3),
+        ("a{c:1", "unexpected", 1, 6),
+        ("a{b:c\\", "unexpected", 1, 8),
+        ("#\u{1D11E}\u{1D11E} a{!}", "unexpected", 1, 9),
+        ("b{,/*!important", "unexpected", 1, 3),
+        ("a{b:c;/*", "unterminated_comment", 1, 7),
+        ("@media x{/*", "unterminated_comment", 1, 10),
+        ("a{/*", "unterminated_comment", 1, 3),
+        ("b\\(;/*", "unterminated_comment", 1, 3),
+        ("a{b\\(;/*", "unterminated_comment", 1, 5),
+        ("a{b\\\"x;\"/*", "unterminated_comment", 1, 5),
+        ("@media x{b\\\"x;\"/*", "unterminated_comment", 1, 12),
+        ("@keyframes k{b\\\"x;\"/*", "unterminated_comment", 1, 16),
+        ("a{b:c;d\\\"x;\"/*", "unterminated_comment", 1, 9),
+        // An astral character on an earlier line moves no column on a later
+        // one: the count starts at the error's own line.
+        ("a{b:\u{1D11E}}\n}", "unexpected", 2, 1),
+        ("/*\u{1D11E}*/\n}", "unexpected", 2, 1),
+        ("a{b:\u{1D11E};\nc:\u{1D11E}\\", "unexpected", 2, 7),
+    ] {
+        let err = Css::new().parse(src).expect_err(src);
+        assert_eq!(
+            (code, line, column),
+            (err.code.as_str(), err.line, err.column),
+            "{src:?}"
+        );
+    }
+}
+
+#[test]
 fn deep_nesting_does_not_exhaust_the_stack() {
-    // The rule machine keeps its own stack rather than recursing, so depth is
+    // The engine keeps its own rule stack rather than recursing, and
+    // `Css::parse` keeps each node flat until the parse is over, so depth is
     // bounded by memory and not by the thread's stack. A recursive-descent
     // port would abort the process here rather than fail a test, which is why
     // this is worth pinning.
@@ -217,6 +301,16 @@ fn deep_nesting_does_not_exhaust_the_stack() {
     assert!(format!("{ast:?}").starts_with(r#"{"type":"stylesheet""#));
     let copy = ast.clone();
     assert!(copy == ast, "a deep clone compares equal to its source");
+
+    // The same walks on the `Node` a caller holds, which are impls of
+    // their own: `Value`'s Debug never reaches `Node`'s.
+    let root = ast.as_node().expect("a stylesheet node");
+    assert!(format!("{root:?}").starts_with(r#"{"type":"stylesheet""#));
+    assert!(root.to_json().starts_with(r#"{"type":"stylesheet""#));
+    let root_copy = root.clone();
+    assert!(&root_copy == root, "a deep node clone compares equal");
+    drop(root_copy);
+    drop(copy);
 
     let mut node = ast.as_node().expect("a stylesheet node");
     let mut depth = 0;
@@ -451,5 +545,47 @@ fn json_output_escapes_what_json_stringify_escapes() {
         "2",
         Value::Num(2.0).to_json(),
         "integral numbers lose the .0"
+    );
+}
+
+#[test]
+fn deep_nesting_is_safe_on_a_small_stack() {
+    // The same promise on a spawned thread's default stack, 2 MiB, in the
+    // shapes that exercise the most: positions on, a failure after the deep
+    // part has closed (so the engine drops everything it built), and nested
+    // at-rules rather than style rules.
+    std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            const DEPTH: usize = 20_000;
+            let positioned = Css::with_options(Options {
+                position: true,
+                ..Options::default()
+            });
+            let rules = format!("{}color: red{}", "a { ".repeat(DEPTH), " }".repeat(DEPTH));
+            let ast = positioned.parse(&rules).expect("parses");
+            assert!(ast.to_json().contains(r#""position""#));
+            drop(ast);
+
+            let failing = format!("{}}}", rules);
+            let err = Css::new().parse(&failing).expect_err("a stray '}'");
+            assert_eq!("unexpected", err.code);
+
+            let media = format!("{}{}", "@media x{".repeat(DEPTH), "}".repeat(DEPTH));
+            let ast = Css::new().parse(&media).expect("parses");
+            assert!(ast.to_json().starts_with(r#"{"type":"stylesheet""#));
+        })
+        .expect("spawns")
+        .join()
+        .expect("no stack overflow");
+}
+
+#[test]
+fn the_engine_is_reachable_and_returns_the_tree_form() {
+    let css = Css::new();
+    let tree = css.tabnas().parse("a { b: c }").expect("parses");
+    assert_eq!(
+        css.parse("a { b: c }").expect("parses").to_json(),
+        tree.to_json().to_string()
     );
 }

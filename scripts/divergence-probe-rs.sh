@@ -48,7 +48,13 @@ for arg in "$@"; do
   esac
 done
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+# rs/Cargo.lock is committed, and the `cargo build` below is not `--locked`
+# (the siblings are checkouts of main, whose versions move), so it can
+# rewrite the lock. Put it back on the way out: a probe run must not change
+# a dependency pin as a side effect, which is what ci/rust/run.sh holds to.
+LOCK="$HERE/rs/Cargo.lock"
+cp "$LOCK" "$WORK/Cargo.lock.before"
+trap 'cmp -s "$WORK/Cargo.lock.before" "$LOCK" || cp "$WORK/Cargo.lock.before" "$LOCK"; rm -rf "$WORK"' EXIT
 
 node -e '
 const fs = require("fs")
@@ -74,6 +80,12 @@ const toks = [
   // on. A trim written against the wrong set is invisible without them, and
   // it silently changes the AST.
   "\ufeff","\u0085","\u00a0","\u2028","\u2029",
+  // Escaped quotes and brackets. A property name ends at one (the scan
+  // for its characters stops there) while the lookahead scan skips it as
+  // an escape, so what comes after is read twice, differently; an unclosed
+  // comment behind one is where the Rust engine once reported the wrong
+  // code. Without these the alphabet cannot build that sequence.
+  "\\\"","\\'"'"'","\\(","\\[",
 ]
 const out = []
 for (let i = 0; i < Number(process.argv[2]); i++) {
@@ -120,7 +132,7 @@ console.error("probe: generated " + out.length + " inputs")
 HOST="$(rustc -vV | sed -n 's/^host: //p')"
 [ -n "$HOST" ] || { echo "probe: rustc did not report a host triple" >&2; exit 2; }
 
-PARSE="$(cargo build --quiet --manifest-path "$HERE/rs/Cargo.toml" --example parse \
+PARSE="$(cargo build --manifest-path "$HERE/rs/Cargo.toml" --example parse \
   --target "$HOST" --message-format=json-render-diagnostics |
   node -e 'let s = ""
 process.stdin.on("data", (d) => (s += d))

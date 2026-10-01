@@ -15,10 +15,12 @@
 // repair, and it is why the file sits beside `test/spec/` rather than in
 // it, where all three parity runners would run it.
 //
-// Every row here records a Go divergence from the canonical runtime, which
-// is why the `ts` and `rust` cells agree: AGENTS.md makes TypeScript
-// canonical, so the repair is in the Go port. See the "Known cross-runtime
-// divergence" section there for the prose.
+// The first four rows record Go divergences from the canonical runtime,
+// which is why the `ts` and `rust` cells agree there: AGENTS.md makes
+// TypeScript canonical, so the repair is in the Go port. The fifth is
+// Rust's own: the engine's tree form refuses nesting past a bound this
+// runtime does not have. See the "Known cross-runtime divergence" section
+// there for the prose.
 
 import { join } from 'node:path'
 

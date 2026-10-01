@@ -21,60 +21,91 @@ on:
     branches: [ main ]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   rust:
     runs-on: ubuntu-latest
+    # A regression that loops rather than fails would otherwise hold the
+    # runner for GitHub's six-hour default; the healthy job takes minutes.
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
       # The shared fixtures and the conformance corpus are read as text, so a
       # checkout that rewrote line endings would test inputs the fixtures do
       # not describe. Matches the shared workflow, which sets this for the
-      # same reason.
+      # same reason. Set before the checkouts it governs.
       - name: no autocrlf
         run: git config --global core.autocrlf false
 
+      # Checked out into a NAMED directory. rs/Cargo.toml takes the engine
+      # as `path = "../../parser/rs"` (and the jsonic grammar and the debug
+      # plugin the same way, and jsonic takes the JSON core by path in
+      # turn), which resolves relative to rs/, so the siblings have to sit
+      # beside this checkout rather than inside it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: css
+
+      # Sibling main, not a release: the crates are taken by path, so this
+      # is the only resolution there is. It is also what the Go port is
+      # measured against in CI, so all three ports see the same engine.
+      - name: clone the sibling crates
+        run: |
+          git clone --depth 1 https://github.com/tabnas/parser.git parser
+          git clone --depth 1 https://github.com/tabnas/json.git json
+          git clone --depth 1 https://github.com/tabnas/jsonic.git jsonic
+          git clone --depth 1 https://github.com/tabnas/debug.git debug
+
+      # Pinned to the MSRV in rs/Cargo.toml rather than to `stable`, so this
+      # fails on a change that needs a newer compiler instead of passing here
+      # and breaking for anyone honouring rust-version. rustup, not a
+      # third-party toolchain action: these repos allow only GitHub-owned and
+      # verified-creator actions. `default` is what makes the MSRV the
+      # toolchain the gate runs under.
       - name: install rust
-        run: rustup toolchain install stable --profile minimal --component clippy,rustfmt
+        run: |
+          rustup toolchain install 1.85 --profile minimal --component clippy,rustfmt
+          rustup default 1.85
 
-      # No dependency cache: the crate declares no dependencies, so there is
-      # nothing to restore and a cache step would only be a lie about what it
-      # saves.
-      - name: build
-        working-directory: rs
-        run: cargo build --verbose
-
-      # The conformance suite fetches the pinned reworkcss corpus for itself
+      # fmt, build, test (doctests included), clippy and rustdoc, with the
+      # lockfile checks: everything lives in the script so this file and a
+      # contributor's local run cannot say different things. The conformance
+      # suite fetches the pinned reworkcss corpus for itself
       # (rs/tests/reworkcss.rs), and FAILS rather than skipping if the fetch
       # did not produce one. Do not add a skip here to make a red run green.
-      - name: test
-        working-directory: rs
-        run: cargo test --verbose
-
-      - name: clippy
-        working-directory: rs
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: rustfmt
-        working-directory: rs
-        run: cargo fmt --check
+      - name: rust gate
+        run: css/ci/rust/run.sh
 
   # The TS/Rust differential probe. Separate job because it needs the
   # TypeScript port built, which the job above does not.
   probe:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
       - name: no autocrlf
         run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: css
+
+      # The probe builds the crate, so it needs the same siblings.
+      - name: clone the sibling crates
+        run: |
+          git clone --depth 1 https://github.com/tabnas/parser.git parser
+          git clone --depth 1 https://github.com/tabnas/json.git json
+          git clone --depth 1 https://github.com/tabnas/jsonic.git jsonic
+          git clone --depth 1 https://github.com/tabnas/debug.git debug
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '24.x'
 
       - name: install rust
-        run: rustup toolchain install stable --profile minimal
+        run: |
+          rustup toolchain install 1.85 --profile minimal
+          rustup default 1.85
 
       # The probe runs the TS port from ts/dist, so it needs a real build, not
       # just an install. A stale dist would compare the previous commit's
@@ -85,10 +116,11 @@ jobs:
       # it installs anything. A probe job that dies there reports a red gate
       # that compared no runtimes at all.
       - name: build ts
-        working-directory: ts
+        working-directory: css/ts
         run: |
           npm install
           npm run build
 
       - name: probe
+        working-directory: css
         run: bash scripts/divergence-probe-rs.sh 4000

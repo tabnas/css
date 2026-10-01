@@ -4,8 +4,7 @@ By the end of this page you will have parsed a stylesheet with
 `tabnas-css`, read the tree it produced, and turned on both of its
 options. Every step shows what the parser actually returns.
 
-You need Rust and Cargo, and a crate to work in. Nothing else: this
-crate has no dependencies.
+You need Rust 1.85 or later, Cargo, and a crate to work in.
 
 If you have already parsed CSS with the TypeScript or Go version, the
 tree is the same tree and only the Rust types are new. Skip to
@@ -13,18 +12,29 @@ tree is the same tree and only the Rust types are new. Skip to
 
 ## 1. Install
 
-The crate is not on crates.io yet, so the dependency is the repository.
-Add it to `Cargo.toml`:
+This page uses the crate this repository builds, a plugin on the tabnas
+engine, taken from the repository (the `tabnas-css` on crates.io is a
+different implementation). Add it to `Cargo.toml`, with the `[patch]`
+tables that point the crate's own dependencies at their repositories:
 
 ```toml
 [dependencies]
 tabnas-css = { git = "https://github.com/tabnas/css" }
+
+[patch."https://github.com/tabnas/css"]
+tabnas = { package = "tabnas-parser", git = "https://github.com/tabnas/parser" }
+tabnas-jsonic = { git = "https://github.com/tabnas/jsonic" }
+
+[patch."https://github.com/tabnas/jsonic"]
+tabnas = { package = "tabnas-parser", git = "https://github.com/tabnas/parser" }
+tabnas-json = { git = "https://github.com/tabnas/json" }
+
+[patch."https://github.com/tabnas/json"]
+tabnas = { package = "tabnas-parser", git = "https://github.com/tabnas/parser" }
 ```
 
-Cargo finds the crate in `rs/`. That is the whole install: there is no
-engine to bring along, no build script, and no optional features. When the
-crate is published, this line becomes `tabnas-css = "0.5"` and nothing
-else about the rest of this page changes.
+Cargo finds the crate in `rs/` and fetches the engine with it. The
+[README](../README.md#install) explains why the patch tables are needed.
 
 ## 2. Parse a rule
 
@@ -213,7 +223,7 @@ assert!(ast.to_json().contains(
 
 Lines and columns are 1-based, and `end` is the position just past the
 last character. Hold the `Css` rather than rebuilding one: building
-reads the grammar, which costs more than a parse.
+installs the grammar on a new engine, which costs more than a parse.
 
 ## 10. The empty cases
 
@@ -234,7 +244,7 @@ assert_eq!("unexpected", err.code);
 ```
 
 That one has no selector, and this parser follows upstream in rejecting
-it. There are two error codes in total, and the
+it. `parse` raises two error codes, and the
 [reference](reference.md#errors) lists both.
 
 ## Where to go next

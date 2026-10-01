@@ -8,8 +8,8 @@ the [tutorial](tutorial.md).
 Two conventions run through every recipe. `parse` is the one-call entry
 point and reuses a process-wide parser, so it is cheap to call and safe
 across threads. Anything with options goes through a `Css` you build and
-keep, because building one reads the grammar and costs more than a parse
-does.
+keep, because building one installs the grammar on a new engine, which
+costs more than a parse does.
 
 ## Parse a single stylesheet
 
@@ -278,7 +278,7 @@ assert_eq!("unexpected", err.code);
 assert_eq!(1, err.line);
 ```
 
-`code` is the part to branch on. There are two, `unexpected` and
+`code` is the part to branch on. `parse` raises two, `unexpected` and
 `unterminated_comment`, and the [reference](reference.md#errors)
 describes when each is raised. `Error` implements `Display` and
 `std::error::Error`, so `?` works in any function returning
@@ -295,3 +295,50 @@ assert!(text.starts_with(r#"{"type":"stylesheet""#));
 `to_json` writes keys in insertion order, so `type` comes first. It is
 iterative rather than recursive, so a deeply nested stylesheet
 serialises rather than exhausting the stack.
+
+## Use the plugin on your own engine
+
+When you already run a tabnas engine, or want its own API (recovery,
+subscribers, `derive`), install the plugin on it rather than holding a
+`Css`. Use it on a jsonic engine, as the canonical port documents. This
+crate re-exports the jsonic crate and the engine it is built on, as
+`tabnas_css::tabnas_jsonic` and `tabnas_css::tabnas`; take both from
+there rather than from a dependency of your own, which can resolve to
+another copy whose types do not match this crate's:
+
+```rust
+let mut parser = tabnas_css::tabnas_jsonic::make();
+parser.use_plugin(tabnas_css::plugin(), None).unwrap();
+let tree = parser.parse("a { color: red }").unwrap();
+assert_eq!(
+    tree.to_json().to_string(),
+    r#"{"type":"stylesheet","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"color","value":"red"}]}]}"#
+);
+```
+
+`tabnas_css::make()` builds the same engine for you, and
+`make_with(options)` one with options. On an engine of your own, pass
+options as `Some(options.to_value())`, or call
+`tabnas_css::css(&mut parser, &options)`.
+
+The result is the engine's `tabnas::Value`, not this crate's `Value`,
+and an error is a `tabnas::TabnasError` whose column counts Unicode
+scalars. Convert one with `tabnas_css::Error::from` to get the UTF-16
+column `Css::parse` reports:
+
+```rust
+let engine = tabnas_css::make().parse("#\u{1D11E}\u{1D11E} a{!}").unwrap_err();
+let error = tabnas_css::Error::from(engine);
+assert_eq!(("unexpected", 9), (error.code.as_str(), error.column));
+```
+
+Watch the depth. The engine's tree is bounded at
+`tabnas_css::TREE_RULE_DEPTH` open rules (191 nested style rules), and a
+deeper document fails with `cancel`, where `Css::parse` has no limit.
+The engine's JSON also writes whole numbers, such as a `position`'s
+lines, as `1.0`. With the engine's recovery on, the partial stylesheet
+is not always the canonical port's; the
+[concepts page](concepts.md#recovery) says where they part. To name the
+engine's types in your own code, write `tabnas_css::tabnas::Value` and
+so on. The [reference](reference.md#the-two-result-forms) sets the two
+forms side by side.

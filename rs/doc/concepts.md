@@ -5,27 +5,28 @@ departs from the canonical TypeScript version. For what the API does,
 read the [reference](reference.md); for a first parse, the
 [tutorial](tutorial.md).
 
-## A grammar without a shared engine
+## A grammar plugin on a shared engine
 
-`@tabnas/css` is a grammar plugin. In TypeScript and in Go it installs a
-rule table on the tabnas parsing engine, reuses that engine's fixed
-punctuation tokens, switches the engine's relaxed-JSON value matchers
-off, and supplies a lexer of its own for everything else. The engine
-supplies the machinery; the plugin supplies the CSS.
+`@tabnas/css` is a grammar plugin, in all three ports. In Rust it runs
+on two crates: the tabnas engine, `tabnas-parser`, a rule-based parser
+over a matcher-based lexer, and `tabnas-jsonic`, the relaxed-JSON
+grammar whose fixed punctuation tokens (`{`, `}`, `:`) and machinery
+the CSS grammar reuses. The engine supplies the machinery; the plugin
+supplies the CSS.
 
-There is no Rust build of that engine. This crate therefore carries the
-machinery as well as the CSS: a lexer, a rule machine, and a small
-reader for the grammar file. What it does not carry is a second opinion
-about the grammar. The rules themselves come from the same
-`css-grammar.jsonic` the other two ports embed, copied in verbatim, and
-a test compares the copy against the file so that an embed nobody re-ran
-cannot ship.
+The rules come from `css-grammar.jsonic`, the file the other two ports
+embed, copied in verbatim. The plugin reads it with jsonic, once per
+process, and installs the rules with the canonical option overrides:
+jsonic's own rules excluded, `;` remapped onto the member separator,
+`[` and `]` dropped as tokens, the string, number, text, and value
+matchers off, and `/* */` the only comment. A lex matcher of its own,
+`cssToken`, owns everything else.
 
-That has one consequence a caller can see, and it is a pleasant one.
-The other ports sit on a relaxed-JSON dialect and have to switch its
-leniency off, then prove it stayed off, so that `{a:1}` is rejected.
-Here there is no dialect underneath: `{a:1}` is rejected because it is
-not CSS, which is the same verdict for a simpler reason.
+So `{a:1}` is refused here for the reason it is refused in TypeScript
+and Go: jsonic's leniency is switched off, and the shared leniency
+fixtures prove it stayed off. The Rust suite also runs every shared
+fixture with the plugin on a bare engine, with no jsonic at all, and
+gets the same verdicts.
 
 ## The output model: a reworkcss-style AST
 
@@ -57,7 +58,8 @@ Three properties of that model matter more than the others:
 
 What the model deliberately leaves out is as important. There is no
 `parent` back-reference, no source filename, and no error-recovery mode
-that collects failures and carries on. Nodes are plain data.
+in `Css::parse` that collects failures and carries on. Nodes are plain
+data.
 
 ## CSS structure is supplied, not inherited
 
@@ -82,88 +84,189 @@ parenthesis, and the whole rule fails to lex.
 
 A parse has two halves.
 
-**The lexer** owns all non-fixed text. One matcher emits, by position:
+**The lexer** owns all non-fixed text. The `cssToken` matcher runs at
+order 100000, ahead of every builtin matcher, and emits, by position:
 one selector or one property name (`#TX`), a top-level selector-group
 comma (`#GC`), a declaration value (`#VL`), a comment at a list position
 (`#CC`), and the four at-rule kinds (`#ATR`, `#ATD`, `#ATK`, `#ATS`),
 which carry the keyword and the prelude together. What it declines falls
-through: `{`, `}`, `:` and `;` lex as fixed punctuation, and a comment
-away from a list position is skipped as whitespace.
+through to the engine's builtin matchers: `{`, `}`, `:` and `;` lex as
+fixed punctuation, and a comment away from a list position is skipped
+as whitespace.
 
-**The rule machine** runs the rule table. A rule has an `open` phase and
-a `close` phase, each with an ordered list of alternatives. An
-alternative matches when the next tokens are its token sequence, and
-then its actions run, some of the matched tokens are pushed back for
-whatever reads next, and the rule either pushes a child rule, replaces
-itself, or closes.
+**The engine** runs the rule table. A rule has an `open` phase and a
+`close` phase, each with an ordered list of alternates. An alternate
+matches when the next tokens are its token sequence, and then its
+actions run, some of the matched tokens are pushed back for whatever
+reads next, and the rule either pushes a child rule, replaces itself,
+or closes.
 
 The actions are the whole of the AST construction. Constructors
 (`@cssRule`, `@cssDecl`, `@cssComment` and the at-rule ones) install a
 fresh typed node; setters (`@cssSelector`, `@cssDeclVal`) fill its
 fields; pushers (`@cssPushRule`, `@cssPushDecl`, `@cssPushKf`) append a
-finished child to a parent's array. The rule shape reads like the
+finished child to a parent's list. The rule shape reads like the
 language: `stylesheet` to `items` to `statement`, and for a style rule
 `sel` then `declbody` to `decls` to `decl` to `declval`.
 
 ## Lazy lookahead is behaviour
 
-Tokens are read only when an alternative being tried needs one, under
-the rule trying it, and within an alternative only while it still
+The engine reads a token only when an alternate being tried needs one,
+under the rule trying it, and within an alternate only while it still
 matches. That sounds like an optimisation. It decides the tree.
 
 A comment right after `{` becomes a node because the block wrapper's
 empty-block lookahead reads the first body token under the wrapper's own
-name, and the wrapper is one of the rules at which a comment is a node.
-A comment between a property and its colon is read under the rule that
-builds a declaration, which is not, so it is skipped. Same characters,
-different rule asking, different tree.
+name, and the wrapper is one of the rules at which the matcher makes a
+comment a node. A comment between a property and its colon is read
+under the rule that builds a declaration, which is not, so it is
+skipped. Same characters, different rule asking, different tree.
 
 The second half matters as much. Given `b{,/*!important`, the rule that
-builds a block member tries its `#TX #CL` alternative and fails on the
+builds a block member tries its `#TX #CL` alternate and fails on the
 first token, so the unterminated comment behind it is never read and the
 parse fails as `unexpected`. Reading the whole sequence up front would
 read it and fail as `unterminated_comment` instead: a different error
 code for the same document.
 
+## A bad token behind a good one
+
+Lazy lookahead has one case where the two engines part company. The
+canonical engine throws a bad token, such as an unclosed comment, the
+moment the lexer produces it. This engine keeps it in the lookahead,
+and an error with no matching alternate takes its code and position
+from the first lookahead token only.
+
+So in `a{b\"x;"/*`, where the escaped quote hides the comment from the
+property scan, the unclosed comment is the second token of the
+declaration alternate, and left alone the error would be `unexpected`
+at the property rather than `unterminated_comment`. The plugin's lex
+subscriber closes that gap: when a bad token arrives behind an
+unconsumed good one, it drops the unconsumed lookahead, so the bad token
+comes first and is the one the error reports, as the throw reports it.
+It does so only with the engine's `parse.recover` and `lex.relex` off; in those
+modes the lookahead is left as the engine keeps it. With `lex.relex` on, the
+canonical engine reports the good token too; recovery is the subject of
+[its own section](#recovery). The shared comment fixtures pin the
+reported code for inputs of this shape.
+
 ## Node ownership
 
-In the canonical ports a child rule inherits its parent's node by
-reference, so a selector pushed three rules down lands in the parent's
-node. Rust has no such aliasing without interior mutability, and reaching
-for `Rc<RefCell<_>>` here would buy runtime borrow panics in exchange for
-a shape the language does not need.
+In the canonical port a node constructor rebinds `r.node`, and a child
+rule inherits its parent's node object by reference, so a selector
+pushed three rules down lands in the parent's node.
 
-So the node moves instead. A pushed child takes the node; a constructor
-hands it back before installing its own; a popping rule either returns it
-or delivers its own node to the parent as the child. Only the top frame
-ever runs, so the node is always where the running rule is, and the
-ownership is static.
+The Rust engine shares one node cell, an `Rc<RefCell<…>>`, between a
+rule and the rules it pushes or replaces into. A constructor that wrote
+into the cell it was handed would therefore overwrite its parent's node.
+So the constructors install a fresh cell, which is what rebinding a name
+does in JavaScript, and the setters and pushers write through the
+shared cell, as the canonical ones write through the shared object.
+
+## Two node stores
+
+A node lives in one of two stores, chosen per parse.
+
+**The tree**, for a parse through the engine's own API (`make()`,
+`plugin()` on an engine of yours, `Css::tabnas()`). Each cell holds the
+node itself, an engine object, and a finished child moves into its
+parent's list. The engine returns the stylesheet, the canonical port's
+plain objects value for value, which is what a plugin user expects to
+get back. With the engine's recovery on it returns a partial stylesheet,
+which [the section on recovery](#recovery) compares with the canonical
+port's.
+
+**The arena**, for `Css::parse`, which asks for it with a meta object of
+its own. The plugin recognises that object by its address rather than
+its contents, so meta a caller passes through the engine's API cannot
+ask for the arena, and cannot lift the tree form's bound either.
+Every node is one flat record in a per-parse list, a cell holds the
+record's id, and a child list holds ids. The engine never holds a nested
+value. Every child's constructor runs after its parent's, so a child's
+id is always greater, and walking the list from the last record to the
+first finds each child already built and moves it into place. That
+walk builds this crate's `Value` without recursion.
+
+The two stores exist because of what the engine's `Value` does with a
+deep tree: it drops, clones, compares and prints by recursion, one stack
+frame per level. The arena never gives it a deep tree. The tree form
+does, so a parse guard stops it at `TREE_RULE_DEPTH` (768) open rules: 191 nested style rules or 256 nested `@media` blocks, a
+depth whose tree survives all of those operations on a 2 MiB thread in
+a debug build. The canonical port has no such bound, and neither does
+`Css::parse`, so it is a divergence of this port, registered as one. The
+guard is named `tabnas-css/depth`: jsonic names its own guard `depth`, as
+do the grammars layered on it, each replacing the last, and a name of
+its own keeps this bound when one of them is installed after the plugin.
 
 ## Depth is bounded by memory, not by the stack
 
-The rule machine keeps its own stack rather than recursing, so a
-stylesheet nested twenty thousand rules deep parses. That promise has a
-second half that is easy to miss: the tree it produces is as deep as the
-source, so a derived drop would recurse once per level and abort the
-process the moment the value went out of scope.
+The engine keeps its rule stack as data rather than recursing, and
+`Css::parse` keeps its nodes flat, so a stylesheet nested twenty
+thousand rules deep parses on a 2 MiB thread. The tree it produces is as
+deep as the source, so nothing reachable from a parse result recurses
+per level either. Dropping a `Value`, cloning one, comparing two,
+writing one as JSON, and formatting one for `Debug` are all explicit
+stack machines, and none of the five is derived. `Debug` is the one that
+is easy to forget, because it is not part of the parse at all: it is
+what a caller reaches for while looking at a tree, which makes it the
+likeliest of the five to meet a hostile one.
 
-So nothing reachable from a parse result recurses per level. Dropping a
-`Value`, cloning one, comparing two, writing one as JSON, and formatting
-one for `Debug` are all explicit stack machines, and none of the five is
-derived. `Debug` is the one that is easy to forget, because it is not
-part of the parse at all: it is what a caller reaches for while looking
-at a tree, which makes it the likeliest of the five to meet a hostile
-one.
+What depth costs is memory. Each open level holds the engine's frames
+for its rules, and measured in a release build that is about 7 KiB per
+nested style rule: 100,000 of them (0.6 MB of CSS) peaked at 678 MiB.
+The densest nesting, `a{` repeated, holds about 2.8 KiB per byte of
+input and takes about 6 µs per byte. Length costs memory too, far less
+per item: 100,000 flat rules (1.7 MB) peaked at 210 MiB, and 580 MiB
+with positions on, and a single long token holds about 18 bytes per
+byte. A host that parses untrusted CSS should cap the input's size.
+
+Length does not cost depth. Every repetition in the grammar, the items
+of a stylesheet or a block, the declarations of a rule, the selectors of
+a group, is a replace loop: the rule that reads one item replaces itself
+with the reader of the next, in the same frame, rather than pushing a
+new one. So the rule stack follows the nesting of a stylesheet and never its
+length, and a test holds each repetition, over ten thousand items, to
+the depth one item needs.
+
+Length does not cost time beyond its own, either. The matcher decides
+between a selector and a property by scanning ahead for a `{` before a `;`, and a
+group of selectors, or of keyframe selectors, scanned from each item's
+own start would cost the group's length once per item: a 200 KB list of
+selectors took 9 s. The scan's whole state is its position and its
+bracket depth, so a later item that the first item's scan passed at
+depth zero, outside any string or comment, gets the same answer, and
+the matcher keeps that answer with a cursor that only moves forward.
+Each group is scanned once, and the 200 KB list parses in 0.2 s.
+
+## The rule history bound
+
+When a rule replaces itself, the engine links the new rule to the one it
+replaced (its `prev`), and by default keeps the whole chain. For a
+replace loop that chain is every item of the list, all reachable until
+the list closes. The grammar's options set `rule.history` to 1, so a
+rule keeps a link to the one it replaced and to no further back. Measured
+on 100,000 flat rules in a release build, the peak is 927 MiB with the
+chain unbounded and 210 MiB with the bound.
+
+The canonical options do not set it, and it changes no result: no
+alternate in this grammar reads `prev`.
 
 ## Why reuse one parser
 
-Building a `Css` reads and parses the grammar. That costs more than
-parsing a small stylesheet does, so a loop that builds one per document
-spends most of its time on the grammar. `tabnas_css::parse` builds one
-process-wide parser on first use for exactly this reason, and a caller
-who needs options should hold a `Css` rather than call `parse_with` in a
-loop. A `Css` is immutable after construction, so sharing one behind a
-reference across threads needs no lock.
+The plugin reads `css-grammar.jsonic` once per process. Building a
+`Css` still builds a jsonic engine and installs the rules, the matcher
+and the actions on it, which costs more than parsing a small stylesheet
+does, so a loop that builds one per document spends most of its time on
+the setup. `tabnas_css::parse` builds one process-wide parser on first
+use for exactly this reason, and a caller who needs options should hold
+a `Css` rather than call `parse_with` in a loop. A `Css` is immutable
+after construction, so sharing one behind a reference across threads
+needs no lock.
+
+The engine's generality has a price per parse, too. Measured in a
+release build, 100,000 flat rules took 1.71 s to parse and write as
+JSON, and a `callgrind` profile puts about 85% of the work in the
+engine's own parse loop.
 
 ## Differences from the TypeScript version
 
@@ -173,20 +276,24 @@ deliberately not identical.
 
 ### API shape
 
-TypeScript installs a plugin on an engine
+TypeScript installs the plugin on an engine
 (`new Tabnas().use(jsonic).use(Css)`) and returns plain JavaScript
-objects. Rust exposes `parse`, `parse_with` and a `Css` value, and
-returns `Result<Value, Error>` rather than throwing. Options are a
-struct with two `bool` fields rather than an object with optional
-properties, so both are always present and both default to `false`.
+objects. Rust has the same form, `tabnas_css::tabnas_jsonic::make()` with
+`use_plugin(tabnas_css::plugin(), …)`, or `tabnas_css::make()`, whose
+parse returns the engine's `tabnas::Value`. It adds `parse`, `parse_with` and
+a `Css` value, which return `Result<Value, Error>` rather than throwing.
+Options are a struct with two `bool` fields rather than an object with
+optional properties, so both are always present and both default to
+`false`.
 
 ### AST representation
 
 JavaScript has one universal object type and Rust does not, so the tree
-is a `Node`, an insertion-ordered map, with `Value` for what a field can
-hold. Insertion order is kept because the AST is usually read back as
-JSON and `{"type": …}` first reads better than a sorted map. Nothing
-depends on it: the conformance runners compare key sets.
+from `Css::parse` is a `Node`, an insertion-ordered map, with `Value`
+for what a field can hold. Insertion order is kept because the AST is
+usually read back as JSON and `{"type": …}` first reads better than a
+sorted map. Nothing depends on it: the conformance runners compare key
+sets.
 
 `Value::Undefined` exists to reproduce one JavaScript behaviour exactly.
 The canonical port writes `end: undefined` into a `position` and fills
@@ -194,6 +301,15 @@ it in later, and `JSON.stringify` omits a key whose value is
 `undefined`. A node whose end is never recorded therefore serialises
 with a `start` and no `end`, and `Undefined` is how a key can exist in
 order and still serialise to nothing.
+
+The engine's own writer prints a whole number as `1.0`, so the tree
+form's JSON carries `"line":1.0` where the canonical port writes
+`"line":1`. For a parse result, `Value::to_json` writes what
+`JSON.stringify` writes of the canonical port's, byte for byte, key order
+included; a `Value` a caller builds or edits is written in its own key
+order. JavaScript enumerates a key that is an
+array index before every other, so `@0 x;` is `{"0":"x","type":"0"}`,
+and the plugin inserts such a key where JavaScript puts it.
 
 ### Trimming is ECMAScript's, not Unicode's
 
@@ -219,6 +335,18 @@ string index counts, rather than bytes or characters. For `#©{…}` a byte
 count is wrong, and for `#𝄞{…}` a character count is wrong. The
 conformance fixtures pin both.
 
+The engine counts a column in Unicode scalars, from the last point it
+resets the count: a `\n` in any token, or the end of a run of line
+characters. The canonical port counts from the same points, in UTF-16
+code units, so the two differ by the astral characters in between, the
+ones two code units wide. The plugin corrects for them in two places.
+For a position, it builds a sorted list of the source's astral characters on
+the first position a parse records, and adds the count between the reset
+and the token, found by binary search; a source with no astral character
+pays nothing. For an error, `Error::from` counts the astral characters
+between the reset and the error. The engine's own errors keep the scalar
+count, so a caller of the tree form converts with `Error::from`.
+
 ### Slicing where the scanners overshoot
 
 The scanners overshoot on purpose in one case: a `\` at the last
@@ -231,17 +359,43 @@ helper is unreachable in practice. It is there so that a future change
 degrades to a shorter span instead of a panic in a caller's parse.
 
 The column arithmetic does count the overshoot, because the canonical
-port counts it. `@host\` is six characters and yields a stylesheet
-ending at column eight.
+port counts it. `@host\` is six characters, and its `host` node ends at
+column seven inside a stylesheet ending at column eight. The engine does
+not move its cursor past the end of the source, so the matcher records
+the overshoot in the parse's context, and the plugin's lex subscriber
+adds it to the column of the end-of-source token, the only token that
+can follow it.
+
+### Recovery
+
+`Css::parse` has no recovery mode, and neither has the canonical port's
+`parse`. The engine has one, and under it the tree form returns a
+partial stylesheet that is usually the canonical port's, though not
+always. The canonical engine throws a bad token, such as an unclosed
+comment, as it is fetched, and under recovery records it and skips it.
+This engine keeps the token in its lookahead, as [a bad token behind a
+good one](#a-bad-token-behind-a-good-one) describes, so a recovery can stop
+elsewhere, keep a node the canonical port drops or drop one it keeps,
+and report an error the canonical port does not. Separately, the engine
+can report a recovery's terminal error twice, with no bad token involved
+(`a{` does it), because it compares errors including the record of how
+each was recovered. And a recovering parse takes time quadratic in the
+input, since the engine walks the whole partial value on every step: a
+valid 16 KB stylesheet takes about 16 s. The repairs belong to the
+engine.
+
+One difference is this port's choice. Where a statement, a declaration
+or a keyframe fails before its node is built, the canonical pusher puts
+the enclosing node inside itself, a cycle. A value here cannot hold a
+cycle, and a copy would put a stylesheet inside its own `rules`, so the
+entry is left out.
 
 ### Single-sourced grammar
 
 `css-grammar.jsonic` is copied verbatim into all three ports by one
-embed script. The other two read it with a jsonic engine they already
-depend on. This crate has a reader for the subset the file is written in
-(`#` comments, maps with bare or quoted keys, lists, and commas
-optional), which is enough for that document and is not a jsonic
-implementation.
+embed script, and all three read it with jsonic on the engine. A test
+compares the Rust copy against the file, so that an embed nobody re-ran
+cannot ship.
 
 ## Accepted and rejected: the edge cases
 

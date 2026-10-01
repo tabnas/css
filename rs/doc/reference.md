@@ -6,19 +6,33 @@ pages link back to this one rather than restating it.
 
 ## Crate
 
-```toml
-[dependencies]
-# Not on crates.io yet; `tabnas-css = "0.5"` once it is.
-tabnas-css = { git = "https://github.com/tabnas/css" }
-```
+| | |
+|---|---|
+| Package | `tabnas-css` |
+| Library | `tabnas_css` |
+| Minimum Rust | 1.85 (`rust-version`), the engine's own floor |
+| Dependencies | `tabnas-parser`, renamed `tabnas` in the manifest; `tabnas-jsonic`, which depends on `tabnas-json` |
+| Dev-dependencies | `tabnas-debug`, for the tests only |
+| Features | none |
+| Build script | none |
 
 ```rust
 use tabnas_css::{Css, Error, Node, Options, Value};
 ```
 
-The crate name is `tabnas-css` and the library name is `tabnas_css`. It
-declares no dependencies, and it needs no build step, no feature flags
-and no network access at build time.
+This page documents the crate this repository builds, which is taken
+from the repository with the `[patch]` tables the
+[README](../README.md#install) lists, because its own dependencies are
+sibling path dependencies. The `tabnas-css` 0.5.9 on crates.io is a
+different implementation: it has no dependencies, and none of the
+plugin API below.
+
+The engine's types appear in this API as `tabnas::…`: `Tabnas`,
+`Plugin`, `PluginError`, `Value` and `TabnasError`. The crate re-exports
+the engine as `tabnas_css::tabnas` and jsonic as `tabnas_css::tabnas_jsonic`;
+name their types through those paths. A dependency of your own on
+either can resolve to another copy of the crate, one from crates.io for
+instance, whose types are not the ones this API takes and returns.
 
 `tabnas_css::VERSION` is the crate's version as a `&'static str`. It
 equals the version in `Cargo.toml`, and equals the version the
@@ -29,7 +43,7 @@ TypeScript package and the Go module carry.
 ### `fn parse(src: &str) -> Result<Value, Error>`
 
 Parse a CSS document with the default options. Returns a
-`Value::Node` holding a `stylesheet` node, or an [`Error`](#error).
+`Value::Node` holding a `stylesheet` node, or an [`Error`](#struct-error).
 
 The call reuses one process-wide parser, built on first use. It is cheap
 to call repeatedly and safe to call from several threads.
@@ -46,17 +60,20 @@ many inputs should hold a [`Css`](#struct-css) instead.
 
 ### `struct Css`
 
-A reusable parser.
+A reusable parser: a jsonic engine with the plugin installed, and the
+options it was built with.
 
 | Method | Returns | What it does |
 |---|---|---|
 | `Css::new()` | `Css` | A parser with the default options. |
 | `Css::with_options(Options)` | `Css` | A parser with the given options. |
-| `css.parse(&str)` | `Result<Value, Error>` | Parse a document. |
+| `css.parse(&str)` | `Result<Value, Error>` | Parse a document into this crate's [`Value`](#enum-value). |
 | `css.options()` | `Options` | The options this parser was built with. |
-| `css.grammar()` | `&Grammar` | The rule table this parser runs. |
+| `css.tabnas()` | `&tabnas::Tabnas` | The engine this parser runs. Its own parse returns the [tree form](#the-two-result-forms). |
 
-`Css` implements `Default` and `Debug`. It is immutable after
+Building a `Css` installs the grammar on a new engine, which costs more
+than a parse. `Css` implements `Default`, and `Debug`, which shows the
+options only. It is `Send` and `Sync`, and immutable after
 construction, so `&Css` can be shared across threads.
 
 ```rust
@@ -69,13 +86,96 @@ assert!(css.parse("a { x: 1 }").is_ok());
 
 ### `struct Options`
 
-Plugin options. Both fields default to `false`, and `Options` implements
-`Default`, `Clone`, `Copy`, `Debug` and `PartialEq`.
+Plugin options: `CssOptions` in the canonical port. Both fields default
+to `false`, and `Options` implements `Default`, `Clone`, `Copy`,
+`Debug`, `PartialEq` and `Eq`.
 
 | Field | Type | Default |
 |---|---|---|
 | `lowercase_properties` | `bool` | `false` |
 | `position` | `bool` | `false` |
+
+| Method | Returns | What it does |
+|---|---|---|
+| `Options::from_value(&tabnas::Value)` | `Options` | Reads an engine option bag: the keys `lowercaseProperties` and `position`. |
+| `options.to_value()` | `tabnas::Value` | An engine option bag holding both keys as `true` or `false`, for `use_plugin`. |
+
+`from_value` reads each key for its JavaScript truthiness, as
+`!!options.position` does in the canonical port: an absent key,
+`undefined`, `null`, `false`, `0`, `NaN` and `""` are `false`, and any
+other value is `true`. Other keys are ignored, and a bag that is not an
+object gives the defaults.
+
+```rust
+use tabnas_css::Options;
+
+let options = Options { lowercase_properties: true, position: false };
+assert_eq!(options, Options::from_value(&options.to_value()));
+```
+
+### `fn plugin() -> tabnas::Plugin`
+
+The grammar as an engine plugin, named `css`: `Css` in the canonical
+port. Its option bag is the one [`Options::to_value`](#struct-options)
+writes, with both keys `false` by default.
+
+Installing it adds, to the engine it is used on:
+
+- the 13 rules of `css-grammar.jsonic`, each alternate tagged with the
+  group `css`;
+- the option overrides: jsonic's own rules excluded, `stylesheet` the
+  start rule, `;` as the member separator `#CA`, `[` and `]` not
+  tokens, the string, number, text and value matchers off, `/* */` the
+  only comment, `{"type":"stylesheet","rules":[]}` the result for `""`,
+  and the rule history bounded at one link;
+- the `cssToken` lex matcher, at order 100000, ahead of every builtin
+  matcher;
+- the actions that build the nodes, a `parse.prepare` hook that clears
+  the plugin's per-parse state, a lex subscriber, and a parse guard
+  named `tabnas-css/depth`, the tree form's bound, in place of jsonic's
+  `depth` guard, which counts rules the css options exclude.
+
+Using it again on the same engine, or deriving an engine from one that
+has it (`Tabnas::derive`), installs it again with the options then in
+force: the matcher and the actions are replaced and the rules
+installed afresh. The lex subscriber is added once per engine.
+
+Use it on jsonic, as `make` does. On a bare
+`tabnas::Tabnas::new()` it gives the same results.
+
+```rust
+let mut parser = tabnas_css::tabnas_jsonic::make();
+parser.use_plugin(tabnas_css::plugin(), None).unwrap();
+let tree = parser.parse("a { color: red }").unwrap();
+assert_eq!(
+    tree.to_json().to_string(),
+    r#"{"type":"stylesheet","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"color","value":"red"}]}]}"#
+);
+```
+
+### `fn css(parser: &mut tabnas::Tabnas, options: &Options) -> Result<(), tabnas::PluginError>`
+
+Install the plugin on `parser` with `options`. It is
+`parser.use_plugin(plugin(), Some(options.to_value()))`, so the install
+is recorded and runs again on a derived engine.
+
+### `fn make() -> tabnas::Tabnas`
+
+A jsonic engine (`tabnas_css::tabnas_jsonic::make()`) with the plugin installed,
+with the default options.
+
+### `fn make_with(options: Options) -> tabnas::Tabnas`
+
+The same, with `options`.
+
+### `const TREE_RULE_DEPTH: usize`
+
+`768`: the most rules the [tree form](#the-two-result-forms) lets be
+open at once. That is 191 nested style rules, which take four rules
+each (`decls`, `decl`, `sel` and `declbody`), or 256 nested `@media`
+blocks, which take three (`items`, `statement` and `rulesbody`). One
+level more fails with `cancel`. [`Css::parse`](#struct-css) is not
+bounded.
 
 ### `enum Value`
 
@@ -98,6 +198,8 @@ What an AST node field can hold.
 | `as_list()` | `Option<&[Value]>` for a `List` |
 | `to_json()` | the value as JSON text |
 
+`Value` implements `From<&str>`, `From<String>` and `From<Node>`.
+
 `Undefined` is JavaScript's `undefined`: a key that exists, in insertion
 order, but is absent from the serialised JSON. The canonical port writes
 `end: undefined` into a `position` at construction and fills it in
@@ -107,7 +209,8 @@ and no `end` at all.
 Dropping a `Value`, cloning one, comparing two, writing one as JSON and
 formatting one for `Debug` are all iterative, so an AST as deep as its
 source cannot exhaust the stack on any of them. None of the five is
-derived.
+derived. `Debug` writes the JSON, with `Undefined` keys shown as
+`undefined` rather than dropped.
 
 ### `struct Node`
 
@@ -125,6 +228,9 @@ An insertion-ordered, string-keyed map.
 | `len()` / `is_empty()` | the key count, `Undefined` keys included |
 | `to_json()` | the node as JSON text, `Undefined` keys omitted |
 
+`Node` implements `Default`, and `Clone`, `PartialEq` and `Debug`
+iteratively, as `Value` does.
+
 ### `struct Error`
 
 A parse failure.
@@ -136,26 +242,83 @@ A parse failure.
 | `line` | `usize` | 1-based line where the parse stopped |
 | `column` | `usize` | 1-based column, in UTF-16 code units |
 
-`Error` implements `Display`, `Debug`, `Clone`, `PartialEq` and
-`std::error::Error`.
+`Error` implements `Display`, `Debug`, `Clone`, `PartialEq`, `Eq` and
+`std::error::Error`. `Display` writes
+`[css/<code>]: <message> (line <line>, column <column>)`.
+
+`Error` also implements `From<tabnas::TabnasError>`, for an error from
+the engine's own parse. The code is kept, the message is the engine's
+detail, the line is the engine's row, and the column is converted from
+the engine's count of Unicode scalars to UTF-16 code units, the count
+`Css::parse` reports:
+
+```rust
+let engine = tabnas_css::make().parse("#\u{1D11E}\u{1D11E} a{!}").unwrap_err();
+assert_eq!(7, engine.col);
+let error = tabnas_css::Error::from(engine);
+assert_eq!(("unexpected", 1, 9), (error.code.as_str(), error.line, error.column));
+```
 
 ### `mod grammar`
 
-`Grammar::load()` reads the embedded grammar; `Grammar::parse(&str)`
-reads one supplied as text, and returns `Result<Grammar, String>`.
-`grammar::grammar_text()` is the verbatim grammar the crate was built
-from. `Grammar::rule(&str)` returns a `RuleDef`, whose `open` and
-`close` are the `Alt` lists the machine tries.
-
-This module is public so that a caller can inspect what the parser runs.
-Nothing in it is needed to parse CSS.
+`grammar::grammar_text()` returns the verbatim `css-grammar.jsonic`
+text the crate was built from, as a `&'static str`. Nothing in the
+module is needed to parse CSS.
 
 ### `mod lex`
 
-The token kinds (`Tin`), the token type, and the scanner helpers.
-`Tin::name()` gives the grammar name of a token kind and
-`Tin::describe()` a human description. Public for the same reason as
-`grammar`: so that the parse can be inspected.
+The token kinds and the text helpers the matcher uses.
+
+| Item | What it is |
+|---|---|
+| `Tin` | the token kinds of the [token table](#tokens), each with `name()`, its grammar name, and `describe()`, a human description |
+| `Error` | the parse failure, re-exported at the crate root |
+| `es_trim(&str) -> &str` | trims as JavaScript's `String.prototype.trim` does |
+| `es_is_whitespace(char) -> bool` | ECMAScript whitespace: Unicode `White_Space` plus U+FEFF, less U+0085 |
+| `strip_comments(&str) -> String` | removes `/* … */` comments, leaving quoted strings untouched |
+| `split_selectors(&str) -> Vec<String>` | splits a prelude on top-level commas, stripping comments and trimming each selector |
+| `vendor_prefix(&str) -> Option<&str>` | the `-vendor-` prefix of an at-keyword, if it has one |
+
+### `mod value`
+
+`Value` and `Node`, re-exported at the crate root.
+
+## The two result forms
+
+A parse returns one of two forms, depending on the entry point.
+
+| | `parse`, `parse_with`, `Css::parse` | the engine's parse: `make()`, `plugin()`, `Css::tabnas()` |
+|---|---|---|
+| Result | `Result<tabnas_css::Value, tabnas_css::Error>` | `Result<tabnas::Value, tabnas::TabnasError>` |
+| JSON | `to_json()`, byte for byte the canonical port's `JSON.stringify`, key order included | the engine's writer: a whole number, such as a line, as `1.0` |
+| Error column | UTF-16 code units | Unicode scalars; `Error::from` converts |
+| Depth | no limit | [`TREE_RULE_DEPTH`](#const-tree_rule_depth-usize) open rules; one more fails with `cancel` |
+| Recovery | none | with the engine's `parse.recover.enabled`, a partial stylesheet, not always the canonical port's |
+
+Both forms hold the same tree, value for value: the canonical port's
+plain objects. For `""` both are `{"type":"stylesheet","rules":[]}`,
+with no `position` even when `position` is on. A `position.end` that
+was never recorded, as for a declaration with an empty value, is an
+undefined key in `Css::parse`'s tree, which its JSON leaves out, and no
+key at all in the tree form.
+
+The tree form's bound is a parse guard named `tabnas-css/depth`, a name
+no other plugin uses, so installing jsonic or a grammar layered on it
+after this plugin leaves it in place. It exists
+because the engine's `Value` drops, clones, compares, and prints by
+recursion, one stack frame per level. A tree at the bound survives all
+of those on a 2 MiB thread in a debug build. The canonical port has no
+such bound, so this one is a registered divergence of the Rust port.
+
+`Css::parse` asks the plugin to keep each node as a flat record rather
+than a nested engine value, and builds this crate's `Value` from the
+records without recursion. Its depth is bounded by memory alone.
+
+```rust
+let deep = format!("{}b:c{}", "a{".repeat(192), "}".repeat(192));
+assert_eq!("cancel", tabnas_css::make().parse(&deep).unwrap_err().code);
+assert!(tabnas_css::parse(&deep).is_ok());
+```
 
 ## Options
 
@@ -386,7 +549,11 @@ from, and this parser follows the model:
 | `a{c:1} extra` | trailing text that is not a rule |
 | `}` | a stray close brace |
 
-There is no error-recovery mode. A document either parses or raises.
+`Css::parse` has no error-recovery mode: a document either parses or
+fails. The engine's tree form returns a partial stylesheet when the
+engine's own recovery is on (see [the two result
+forms](#the-two-result-forms)); the concepts page compares it with the
+canonical port's.
 
 ## Tokens
 
@@ -411,21 +578,27 @@ them.
 
 Which token a character starts depends on the rule that is active when
 it is read, because the same characters can begin a selector, a property
-or a value. That is the whole reason the lexer takes a rule name.
+or a value. That is the whole reason the engine passes the matcher the
+rule that is reading.
 
 ## Errors
 
-Two codes, both inherited from the model rather than declared here.
+`Css::parse` raises two codes, both inherited from the engine rather
+than declared here.
 
 | `code` | Raised when |
 |---|---|
 | `unterminated_comment` | a `/*` has no closing `*/` |
 | `unexpected` | no grammar alternative matches the next token |
 
+The engine's tree form raises a third, `cancel`, for nesting past
+[`TREE_RULE_DEPTH`](#const-tree_rule_depth-usize).
+
 ```rust
 assert_eq!("unterminated_comment", tabnas_css::parse("/*").unwrap_err().code);
 assert_eq!("unexpected", tabnas_css::parse("}").unwrap_err().code);
 ```
 
-`line` and `column` say where the parse stopped. `message` explains it
-and is meant for a person, so branch on `code` rather than on text.
+`line` and `column` say where the parse stopped. `message` is the
+engine's own text and is meant for a person, so branch on `code` rather
+than on text.

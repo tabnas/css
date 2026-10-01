@@ -4,10 +4,12 @@
 //! fixtures, reading JSON, and comparing two ASTs by value.
 //!
 //! The TypeScript and Go runners get all of this from `@tabnas/support`,
-//! whose two halves cannot drift from each other. There is no Rust half, so
-//! this module is it — deliberately small, and written to the SAME fixture
-//! contract `test/AGENTS.md` sets out, so a row means the same thing in all
-//! three runtimes.
+//! whose two halves cannot drift from each other. That package has a Rust
+//! half too (the `tabnas-support` crate), which this crate does not take:
+//! a new dependency needs the maintainer's instruction, and this module
+//! predates the crate's first ones. So this module is it — deliberately
+//! small, and written to the SAME fixture contract `test/AGENTS.md` sets
+//! out, so a row means the same thing in all three runtimes.
 
 #![allow(dead_code)]
 
@@ -259,9 +261,9 @@ fn write_canonical(value: &Value, out: &mut String) {
 // --- A minimal JSON reader -------------------------------------------------
 //
 // The fixtures' `expected` column and the reworkcss corpus's `ast.json` files
-// are JSON, and this crate has no dependencies — so the tests read JSON with
-// this rather than pulling serde in for the test profile alone. It is only
-// ever pointed at files in this repository.
+// are JSON, and serde is not a dependency of this crate (adding one is a
+// dependency change, which takes the maintainer's instruction), so the tests
+// read JSON with this. It is only ever pointed at files in this repository.
 
 /// Parse JSON into a [`Value`].
 pub fn json(text: &str) -> Result<Value, String> {

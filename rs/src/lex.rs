@@ -1,18 +1,26 @@
 /* Copyright (c) 2025 Richard Rodger, MIT License */
 
-//! The lexer: the single `cssToken` matcher, the scanners it reads spans
-//! with, and the token buffer the rule machine peeks into.
+//! The lexer: the single `cssToken` matcher the plugin installs on the
+//! engine, and the scanners it reads spans with.
 //!
 //! CSS is context-sensitive — the same characters can begin a selector, a
-//! property or a value — so the lexer owns the hard tokenisation and the
+//! property or a value — so the matcher owns the hard tokenisation and the
 //! grammar only assembles typed nodes from what it emits. Which token comes
-//! out depends on the rule that is active when the character is read, which is
-//! why [`Lex::peek`] takes a rule name.
+//! out depends on the rule that is active when the character is read: the
+//! engine reads a token only when the alternate being tried needs one, under
+//! the rule trying it, and passes that rule to the matcher.
 //!
 //! See `ts/src/css.ts` for the canonical commentary; the three ports are kept
-//! in step.
+//! in step, and this module follows `buildCssTokenMatcher` there line for
+//! line.
 
 use std::fmt;
+use std::sync::Arc;
+
+use tabnas::{
+    Context, Lexer, Rule, TabnasError, Tin as EngineTin, Token, Value, TIN_BD, TIN_TX, TIN_VL,
+    TIN_ZZ,
+};
 
 /// A token kind.
 ///
@@ -91,31 +99,14 @@ impl Tin {
     }
 }
 
-/// One lexed token.
-#[derive(Clone, Debug)]
-pub struct Token {
-    /// The token kind.
-    pub tin: Tin,
-    /// The token's semantic value: the selector, property, value, comment
-    /// text, or at-rule keyword.
-    pub val: String,
-    /// The source text the token consumed, used to derive its end position.
-    pub src: String,
-    /// 1-based line of the token's first character.
-    pub r_i: usize,
-    /// 1-based column (in UTF-16 code units) of the token's first character.
-    pub c_i: usize,
-    /// An at-rule's prelude (block at-rules) or params (statement at-rules).
-    /// The canonical port carries this in the token's `use` field.
-    pub use_text: String,
-}
-
 /// A parse failure.
 ///
 /// `code` is the contract: the shared fixtures pin `ERROR:<code>` and compare
-/// it exactly. This crate raises only the two codes the canonical port
-/// inherits from the engine — `unterminated_comment` and `unexpected` — and
-/// declares none of its own, matching `tabnas.plugin.json` (`errorCodes: []`).
+/// it exactly. [`Css::parse`](crate::Css::parse) raises only the two codes the
+/// canonical port inherits from the engine — `unterminated_comment` and
+/// `unexpected` — and this crate declares none of its own, matching
+/// `tabnas.plugin.json` (`errorCodes: []`). The engine's own tree form can
+/// also stop with `cancel`, at [`TREE_RULE_DEPTH`](crate::TREE_RULE_DEPTH).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Error {
     /// The error code, compared exactly by the conformance fixtures.
@@ -139,17 +130,6 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
-
-/// The lexer's scan position.
-#[derive(Clone, Copy, Debug)]
-pub struct Point {
-    /// Byte offset into the source.
-    pub s_i: usize,
-    /// 1-based line.
-    pub r_i: usize,
-    /// 1-based column, in UTF-16 code units.
-    pub c_i: usize,
-}
 
 /// The scanners' "there is no valid end here" result: an unclosed
 /// `/* ... */`.
@@ -233,381 +213,6 @@ pub fn vendor_prefix(kw: &str) -> Option<&str> {
     }
 }
 
-/// The lexer, plus the token buffer the rule machine peeks into.
-///
-/// Tokens are lexed lazily: [`Lex::peek`] produces only as many as the alt
-/// being tried needs, under the rule that is trying it. A token already in the
-/// buffer is NOT re-lexed when a later rule looks at it — that caching is what
-/// makes a comment right after `{` a node (read under `declbody`) while a
-/// comment between a property and its `:` is not (read under `decl`).
-pub struct Lex {
-    src: String,
-    bytes: Vec<u8>,
-    pnt: Point,
-    buf: Vec<Token>,
-    lowercase_properties: bool,
-}
-
-impl Lex {
-    /// A lexer over `src`.
-    pub fn new(src: &str, lowercase_properties: bool) -> Lex {
-        Lex {
-            src: src.to_string(),
-            bytes: src.as_bytes().to_vec(),
-            pnt: Point {
-                s_i: 0,
-                r_i: 1,
-                c_i: 1,
-            },
-            buf: Vec::new(),
-            lowercase_properties,
-        }
-    }
-
-    /// Ensure the buffer holds `n` tokens, lexing any shortfall under `rule`,
-    /// and return them.
-    pub fn peek(&mut self, n: usize, rule: &str) -> Result<&[Token], Error> {
-        while self.buf.len() < n {
-            let tok = self.lex_one(rule)?;
-            self.buf.push(tok);
-        }
-        Ok(&self.buf[..n])
-    }
-
-    /// Drop the first `n` buffered tokens. Anything left stays cached.
-    pub fn consume(&mut self, n: usize) {
-        let n = n.min(self.buf.len());
-        self.buf.drain(..n);
-    }
-
-    /// The current scan position, for error reporting.
-    pub fn point(&self) -> Point {
-        self.pnt
-    }
-
-    fn err(&self, code: &str, message: String) -> Error {
-        Error {
-            code: code.to_string(),
-            message,
-            line: self.pnt.r_i,
-            column: self.pnt.c_i,
-        }
-    }
-
-    /// Lex one token under `rule`.
-    ///
-    /// The `cssToken` matcher runs first and owns all non-fixed text. What it
-    /// declines falls through to the builtins: a `/* */` comment away from a
-    /// list position is skipped as whitespace, and `{` `}` `:` `;` lex as
-    /// fixed punctuation. Nothing else is CSS.
-    fn lex_one(&mut self, rule: &str) -> Result<Token, Error> {
-        loop {
-            self.skip_space();
-            if self.pnt.s_i >= self.bytes.len() {
-                return Ok(Token {
-                    tin: Tin::Zz,
-                    val: String::new(),
-                    src: String::new(),
-                    r_i: self.pnt.r_i,
-                    c_i: self.pnt.c_i,
-                    use_text: String::new(),
-                });
-            }
-            if let Some(tok) = self.css_token(rule)? {
-                return Ok(tok);
-            }
-
-            let s_i = self.pnt.s_i;
-            let c = self.bytes[s_i];
-
-            // A comment the matcher declined: skipped as insignificant
-            // whitespace, exactly as the engine's builtin comment matcher
-            // does — and, like it, an unclosed one is an error rather than a
-            // comment running to end of input.
-            if c == b'/' && self.bytes.get(s_i + 1) == Some(&b'*') {
-                let e = skip_comment(&self.bytes, s_i);
-                if UNTERMINATED == e {
-                    return Err(self.err(
-                        "unterminated_comment",
-                        "unterminated comment: no closing '*/'".to_string(),
-                    ));
-                }
-                self.advance(s_i, e);
-                continue;
-            }
-
-            let tin = match c {
-                b'{' => Tin::Ob,
-                b'}' => Tin::Cb,
-                b':' => Tin::Cl,
-                b';' => Tin::Ca,
-                _ => {
-                    let end = next_char_end(&self.bytes, s_i);
-                    return Err(self.err(
-                        "unexpected",
-                        format!("unexpected character(s): {}", &self.src[s_i..end]),
-                    ));
-                }
-            };
-            let text = (c as char).to_string();
-            let tok = self.make(tin, text.clone(), text, String::new());
-            self.advance(s_i, s_i + 1);
-            return Ok(tok);
-        }
-    }
-
-    /// Whitespace the `cssToken` matcher defers to the engine's space and
-    /// line matchers.
-    ///
-    /// `\r` is a LINE character, not a space one: it resets the column
-    /// without starting a new line, so `a{}\r` ends at column 1 and
-    /// `/*x*/\r/*x*/` ends at column 6 rather than 12. That is the engine's
-    /// behaviour and this port reproduces it. A `\r` INSIDE a token the
-    /// matcher consumes — in a selector, a value or a comment body — is not
-    /// whitespace at all and counts as one column, which is what
-    /// [`Lex::advance`] and [`end_pos`] do.
-    fn skip_space(&mut self) {
-        while self.pnt.s_i < self.bytes.len() {
-            match self.bytes[self.pnt.s_i] {
-                b' ' | b'\t' => {
-                    self.pnt.s_i += 1;
-                    self.pnt.c_i += 1;
-                }
-                b'\r' => {
-                    self.pnt.s_i += 1;
-                    self.pnt.c_i = 1;
-                }
-                b'\n' => {
-                    self.pnt.s_i += 1;
-                    self.pnt.r_i += 1;
-                    self.pnt.c_i = 1;
-                }
-                _ => return,
-            }
-        }
-    }
-
-    /// Build a token at the current point.
-    fn make(&self, tin: Tin, val: String, src: String, use_text: String) -> Token {
-        Token {
-            tin,
-            val,
-            src,
-            r_i: self.pnt.r_i,
-            c_i: self.pnt.c_i,
-            use_text,
-        }
-    }
-
-    /// Advance the scan point to `end`, updating line and column across any
-    /// newlines in `[s_i, end)`.
-    ///
-    /// This matcher consumes multi-line runs the engine's space and line
-    /// matchers never see, so it tracks lines itself. Columns are UTF-16 code
-    /// units — what a JavaScript string index counts — so that this port
-    /// reports the same column as the canonical one for `#©{…}` (where a byte
-    /// count is wrong) and for `#𝄞{…}` (where a `char` count is wrong).
-    ///
-    /// `end` may be ONE PAST the source, because the scanners deliberately
-    /// overshoot: a `\` at the last character is an escape whose escaped
-    /// character is not there, and the `i += 2` step runs off the end. The
-    /// canonical port advances its column by the unclamped width and takes
-    /// the CLAMPED span for the token text, so `@host\` yields a node ending
-    /// at column 7 inside a stylesheet ending at column 8 — one past a source
-    /// six characters long. This port reproduces that rather than tidying it,
-    /// because TypeScript is canonical (see the authority rules in
-    /// AGENTS.md); the Go port clamps instead, and that difference is
-    /// recorded there as a known divergence.
-    fn advance(&mut self, s_i: usize, end: usize) {
-        let stop = end.min(self.bytes.len());
-        let overshoot = end - stop;
-        let span = safe_slice(&self.src, s_i, stop);
-        match span.rfind('\n') {
-            Some(last_nl) => {
-                self.pnt.r_i += span.matches('\n').count();
-                self.pnt.c_i = 1 + col_width(&span[last_nl + 1..]) + overshoot;
-            }
-            None => self.pnt.c_i += col_width(span) + overshoot,
-        }
-        self.pnt.s_i = end;
-    }
-
-    /// The single `cssToken` matcher. `None` means "declined": the character
-    /// belongs to a builtin matcher.
-    fn css_token(&mut self, rule: &str) -> Result<Option<Token>, Error> {
-        let s_i = self.pnt.s_i;
-        let c = self.bytes[s_i];
-
-        // Comments: a node at a list position, otherwise deferred (and
-        // skipped by the caller).
-        if c == b'/' && self.bytes.get(s_i + 1) == Some(&b'*') {
-            if !is_comment_node_rule(rule) {
-                return Ok(None);
-            }
-            let e = match find_comment_end(&self.bytes, s_i) {
-                Some(e) => e,
-                None => {
-                    return Err(self.err(
-                        "unterminated_comment",
-                        "unterminated comment: no closing '*/'".to_string(),
-                    ))
-                }
-            };
-            let tok = self.make(
-                Tin::Cc,
-                safe_slice(&self.src, s_i + 2, e).to_string(),
-                safe_slice(&self.src, s_i, e + 2).to_string(),
-                String::new(),
-            );
-            self.advance(s_i, e + 2);
-            return Ok(Some(tok));
-        }
-
-        // Value position: read a declaration value up to the next top-level
-        // `;`/`}` and emit one #VL (comments stripped, surrounding space
-        // trimmed).
-        if "declval" == rule {
-            if c == b'{' || c == b'}' || c == b';' || c == b':' {
-                return Ok(None);
-            }
-            let end = self.scan_or_bad(scan_value_end(&self.bytes, s_i))?;
-            let raw = safe_slice(&self.src, s_i, end);
-            let tok = self.make(
-                Tin::Vl,
-                es_trim(&strip_comments(raw)).to_string(),
-                raw.to_string(),
-                String::new(),
-            );
-            self.advance(s_i, end);
-            return Ok(Some(tok));
-        }
-
-        // A top-level selector-group comma.
-        if c == b',' {
-            let tok = self.make(Tin::Gc, ",".to_string(), ",".to_string(), String::new());
-            self.advance(s_i, s_i + 1);
-            return Ok(Some(tok));
-        }
-
-        // An at-rule.
-        if c == b'@' {
-            return self.at_rule(s_i).map(Some);
-        }
-
-        // Other fixed punctuation belongs to the grammar.
-        if c == b'{' || c == b'}' || c == b';' {
-            return Ok(None);
-        }
-
-        // A selector or a property name, by `{`-before-`;` lookahead.
-        let (kind, index) = scan_to_brace_or_end(&self.bytes, s_i);
-        self.scan_or_bad(index)?;
-        if Kind::Selector == kind {
-            // One selector of a (possible) group: up to the next top-level
-            // `,`/`{`, comments stripped and surrounding space trimmed.
-            let end = self.scan_or_bad(scan_selector_end(&self.bytes, s_i))?;
-            let raw = safe_slice(&self.src, s_i, end);
-            let tok = self.make(
-                Tin::Tx,
-                es_trim(&strip_comments(raw)).to_string(),
-                raw.to_string(),
-                String::new(),
-            );
-            self.advance(s_i, end);
-            return Ok(Some(tok));
-        }
-
-        // A property name: the run of property characters up to `:`,
-        // whitespace, `;` or `}`.
-        let e_i = scan_prop_end(&self.bytes, s_i);
-        if e_i == s_i {
-            return Ok(None);
-        }
-        let raw = safe_slice(&self.src, s_i, e_i);
-        // `/` and `*` are property characters (the `*prop` / `//prop` IE
-        // hacks), so a trailing `/*...*/` hack comment lands inside the
-        // scanned name; strip comments out of it, as reworkcss does.
-        let mut prop = strip_comments(raw);
-        if prop.is_empty() {
-            return Ok(None);
-        }
-        if self.lowercase_properties {
-            prop = prop.to_lowercase();
-        }
-        let tok = self.make(Tin::Tx, prop, raw.to_string(), String::new());
-        self.advance(s_i, e_i);
-        Ok(Some(tok))
-    }
-
-    /// Lex an at-rule starting at `@`.
-    ///
-    /// Classified block-vs-statement by a `{`-before-`;` lookahead and, for
-    /// blocks, by keyword: `#ATK` for keyframes, `#ATD` for a declarations
-    /// body, `#ATR` otherwise. The keyword rides in `val` and the
-    /// prelude/params in `use_text`.
-    fn at_rule(&mut self, s_i: usize) -> Result<Token, Error> {
-        let mut k_end = s_i + 1;
-        while k_end < self.bytes.len() && is_at_char(self.bytes[k_end]) {
-            k_end += 1;
-        }
-        let kw = safe_slice(&self.src, s_i + 1, k_end).to_string();
-
-        let (kind, index) = scan_to_brace_or_end(&self.bytes, s_i);
-        let index = self.scan_or_bad(index)?;
-        if Kind::Selector == kind {
-            // Block at-rule: the prelude is the text between the keyword and
-            // `{`. At-rule preludes KEEP their comments (they are only
-            // trimmed), matching reworkcss.
-            let prelude = es_trim(safe_slice(&self.src, k_end, index)).to_string();
-            let tin = if is_keyframes_kw(&kw) {
-                Tin::Atk
-            } else if DECLS_KW.contains(&kw.as_str()) {
-                Tin::Atd
-            } else {
-                Tin::Atr
-            };
-            let tok = self.make(
-                tin,
-                kw,
-                safe_slice(&self.src, s_i, index).to_string(),
-                prelude,
-            );
-            self.advance(s_i, index);
-            return Ok(tok);
-        }
-
-        // Statement at-rule: params run up to the next top-level `;`/`}`. A
-        // `;` is consumed (it terminates the statement); a `}` or end of
-        // input is left for the enclosing rule.
-        let p_end = self.scan_or_bad(scan_value_end(&self.bytes, k_end))?;
-        let params = es_trim(safe_slice(&self.src, k_end, p_end)).to_string();
-        let end = if self.bytes.get(p_end) == Some(&b';') {
-            p_end + 1
-        } else {
-            p_end
-        };
-        let tok = self.make(
-            Tin::Ats,
-            kw,
-            safe_slice(&self.src, s_i, end).to_string(),
-            params,
-        );
-        self.advance(s_i, end);
-        Ok(tok)
-    }
-
-    /// Turn a scanner's [`UNTERMINATED`] into the error it stands for.
-    fn scan_or_bad(&self, index: usize) -> Result<usize, Error> {
-        if UNTERMINATED == index {
-            return Err(self.err(
-                "unterminated_comment",
-                "unterminated comment: no closing '*/'".to_string(),
-            ));
-        }
-        Ok(index)
-    }
-}
-
 /// Whether `c` is whitespace as ECMAScript defines it, which is NOT what
 /// [`char::is_whitespace`] answers.
 ///
@@ -638,7 +243,7 @@ pub fn es_trim(s: &str) -> &str {
 
 /// The column width of `s`: its length in UTF-16 code units, which is what a
 /// JavaScript string index counts.
-fn col_width(s: &str) -> usize {
+pub(crate) fn col_width(s: &str) -> usize {
     s.chars().map(char::len_utf16).sum()
 }
 
@@ -667,15 +272,6 @@ fn safe_slice(src: &str, start: usize, end: usize) -> &str {
         end -= 1;
     }
     &src[start..end]
-}
-
-/// The end of the UTF-8 character starting at `i`.
-fn next_char_end(src: &[u8], i: usize) -> usize {
-    let mut e = i + 1;
-    while e < src.len() && (src[e] & 0xC0) == 0x80 {
-        e += 1;
-    }
-    e.min(src.len())
 }
 
 /// The index of the `*` that opens the `*/` closing the comment at `i`, or
@@ -720,51 +316,189 @@ fn skip_string(src: &[u8], mut i: usize) -> usize {
     }
     // A trailing backslash steps i ONE PAST the end. That overshoot is not a
     // defect to clamp away here: the canonical port returns it too, and its
-    // column arithmetic counts it. See [`Lex::advance`] and [`safe_slice`].
+    // column arithmetic counts it. See [`css_token`] and [`safe_slice`].
     i
 }
 
 /// Scan a key prelude: where it ends, and whether it is a selector (a
 /// top-level `{` comes first) or a declaration (a top-level `;`/`}` or end of
 /// input comes first). Strings, `()`, `[]` and comments are skipped.
-fn scan_to_brace_or_end(src: &[u8], mut i: usize) -> (Kind, usize) {
-    let mut depth = 0usize;
-    while i < src.len() {
-        let c = src[i];
-        if c == b'"' || c == b'\'' {
-            i = skip_string(src, i);
-            continue;
+fn scan_to_brace_or_end(src: &[u8], i: usize) -> (Kind, usize) {
+    let mut scan = Scan { i, depth: 0 };
+    loop {
+        if let Some(found) = scan.step(src) {
+            return found;
         }
-        if c == b'/' && src.get(i + 1) == Some(&b'*') {
-            let n = skip_comment(src, i);
+    }
+}
+
+/// [`scan_to_brace_or_end`] one step at a time. The position and the
+/// bracket depth are its whole state, so two scans in the same state go on
+/// to the same answer: what [`BraceScans`] relies on.
+#[derive(Clone, Copy, Debug)]
+struct Scan {
+    i: usize,
+    depth: usize,
+}
+
+impl Scan {
+    /// Take one step: past a string, a comment, an escape or one byte.
+    /// `Some` is the scan's answer.
+    fn step(&mut self, src: &[u8]) -> Option<(Kind, usize)> {
+        let Some(&c) = src.get(self.i) else {
+            // i may be one past the end; see skip_string.
+            return Some((Kind::Decl, self.i));
+        };
+        if c == b'"' || c == b'\'' {
+            self.i = skip_string(src, self.i);
+            return None;
+        }
+        if c == b'/' && src.get(self.i + 1) == Some(&b'*') {
+            let n = skip_comment(src, self.i);
             if UNTERMINATED == n {
-                return (Kind::Decl, UNTERMINATED);
+                return Some((Kind::Decl, UNTERMINATED));
             }
-            i = n;
-            continue;
+            self.i = n;
+            return None;
         }
         // A CSS escape (`\(`, `\'`, `\3A `, …) hides the next character from
         // the structural scan.
         if c == b'\\' {
-            i += 2;
-            continue;
+            self.i += 2;
+            return None;
         }
         if c == b'(' || c == b'[' {
-            depth += 1;
+            self.depth += 1;
         } else if c == b')' || c == b']' {
-            depth = depth.saturating_sub(1);
-        } else if 0 == depth {
+            self.depth = self.depth.saturating_sub(1);
+        } else if 0 == self.depth {
             if c == b'{' {
-                return (Kind::Selector, i);
+                return Some((Kind::Selector, self.i));
             }
             if c == b';' || c == b'}' {
-                return (Kind::Decl, i);
+                return Some((Kind::Decl, self.i));
             }
         }
-        i += 1;
+        self.i += 1;
+        None
     }
-    // i may be one past the end; see skip_string.
-    (Kind::Decl, i)
+}
+
+/// [`scan_to_brace_or_end`] for every token of a parse, in linear time.
+///
+/// Each selector of a group, and each value of a keyframe-selector group,
+/// is classified by scanning to the group's `{`, so a group of `k` items
+/// scanned from each item's start costs `k` times the group's length: a
+/// 200 KB list of selectors took 9 s. The scan from an item's start is the
+/// scan from the group's first item, resumed there, whenever that scan
+/// passes the item's start at bracket depth 0 (the state [`Scan`] carries,
+/// outside any string, comment or escape, which it steps over whole). So
+/// the answer is kept with a cursor that follows the tokens forward, and a
+/// later start the cursor reaches in that state takes the kept answer. Any
+/// other start scans afresh and becomes the one kept. The cursor only moves
+/// forward, so a parse's scanning is linear in its length.
+#[derive(Clone, Copy, Debug)]
+struct BraceScans {
+    from: usize,
+    found: (Kind, usize),
+    cursor: Scan,
+}
+
+/// The `ctx.u` key [`BraceScans`] is kept under, for the parse.
+pub(crate) const BRACE_SCAN: &str = "tabnas-css/brace-scan";
+
+impl BraceScans {
+    /// The answer for a token starting at `s_i`, keeping the state under
+    /// [`BRACE_SCAN`] with one map lookup: the matcher asks on every `#TX`,
+    /// and a flat stylesheet is mostly misses.
+    fn scan(ctx: &mut Context, src: &[u8], s_i: usize) -> (Kind, usize) {
+        let Some(Value::Array(slot)) = ctx.u.get_mut(BRACE_SCAN) else {
+            let found = scan_to_brace_or_end(src, s_i);
+            let kept = BraceScans::fresh(s_i, found);
+            ctx.u
+                .insert(BRACE_SCAN.to_string(), Value::array(kept.fields().to_vec()));
+            return found;
+        };
+        let fields = Arc::make_mut(slot);
+        if let Some(mut kept) = BraceScans::decode(fields) {
+            if kept.from <= s_i && s_i < kept.found.1 && kept.cursor.i <= s_i {
+                while kept.cursor.i < s_i && kept.cursor.step(src).is_none() {}
+                let reached = kept.cursor.i == s_i && 0 == kept.cursor.depth;
+                kept.encode(fields);
+                if reached {
+                    return kept.found;
+                }
+            }
+        }
+        // An unclosed comment's answer is kept too: a scan from a later start
+        // the cursor reaches meets the same `/*`, and the engine's recovery
+        // asks again at the very start it failed at, up to its skip budget.
+        let found = scan_to_brace_or_end(src, s_i);
+        BraceScans::fresh(s_i, found).encode(fields);
+        found
+    }
+
+    fn fresh(from: usize, found: (Kind, usize)) -> BraceScans {
+        BraceScans {
+            from,
+            found,
+            cursor: Scan { i: from, depth: 0 },
+        }
+    }
+
+    fn decode(fields: &[Value]) -> Option<BraceScans> {
+        let at = |n: usize| match fields.get(n) {
+            Some(Value::Number(v)) => Some(*v as usize),
+            _ => None,
+        };
+        let kind = if 0 == at(1)? {
+            Kind::Selector
+        } else {
+            Kind::Decl
+        };
+        Some(BraceScans {
+            from: at(0)?,
+            found: (kind, at(2)?),
+            cursor: Scan {
+                i: at(3)?,
+                depth: at(4)?,
+            },
+        })
+    }
+
+    fn numbers(&self) -> [f64; 5] {
+        let kind = match self.found.0 {
+            Kind::Selector => 0,
+            Kind::Decl => 1,
+        };
+        [
+            self.from,
+            kind,
+            self.found.1,
+            self.cursor.i,
+            self.cursor.depth,
+        ]
+        .map(|n| n as f64)
+    }
+
+    fn fields(&self) -> [Value; 5] {
+        self.numbers().map(Value::Number)
+    }
+
+    /// Write this state over `fields`, number by number when the shape fits.
+    fn encode(&self, fields: &mut Vec<Value>) {
+        let numbers = self.numbers();
+        if numbers.len() == fields.len() {
+            for (field, n) in fields.iter_mut().zip(numbers) {
+                match field {
+                    Value::Number(slot) => *slot = n,
+                    other => *other = Value::Number(n),
+                }
+            }
+        } else {
+            *fields = self.fields().to_vec();
+        }
+    }
 }
 
 /// Scan a single selector: to the next top-level `,` (a group separator) or
@@ -947,18 +681,344 @@ pub fn split_selectors(prelude: &str) -> Vec<String> {
     out
 }
 
-/// A token's first-character position (1-based line and column).
-pub fn start_pos(tok: &Token) -> (usize, usize) {
-    (tok.r_i, tok.c_i)
+// ---------------------------------------------------------------------------
+// The `cssToken` matcher, as the engine runs it.
+
+/// The token number a matcher gives a token the engine is to resolve by
+/// NAME, as it lexes: the six this grammar names itself (`#CC`, `#GC` and
+/// the four at-rule tokens).
+///
+/// The engine numbers a name when it is first registered, and
+/// [`Tabnas::merge`](tabnas::Tabnas::merge) renumbers every custom name in
+/// the merged instance without running the plugin again, so a number
+/// captured at install names another token there. The canonical port's
+/// `lex.token('#CC', …)` resolves the name on every call for the same
+/// reason. `#TX` and `#VL` are the engine's own, with fixed numbers.
+const BY_NAME: EngineTin = -1;
+
+/// Where a scan ran past the end of the source, and by how much: the
+/// `ctx.u` key [`css_token`] records it under and [`lex_subscriber`] reads.
+pub(crate) const OVERSHOOT: &str = "tabnas-css/overshoot";
+
+/// The most of the source an `unterminated_comment` diagnostic shows. The
+/// span runs from the scan's start to the end of the source, which for a
+/// large stylesheet would be most of it; the message is informative, not the
+/// contract, so it is cut here.
+const BAD_SPAN: usize = 32;
+
+/// What [`plan_token`] decided for the characters at the cursor.
+enum Plan {
+    /// Not this matcher's: the engine's builtin matchers take it.
+    Decline,
+    /// An unclosed `/* ... */` behind the cursor: `unterminated_comment`.
+    Bad,
+    /// A token, and the byte offset just past it, which may be ONE past the
+    /// end of the source (see [`css_token`]).
+    Emit {
+        name: &'static str,
+        tin: EngineTin,
+        val: String,
+        raw: String,
+        use_kv: Option<(&'static str, String)>,
+        end: usize,
+    },
 }
 
-/// The position just after a token's last character.
-pub fn end_pos(tok: &Token) -> (usize, usize) {
-    match tok.src.rfind('\n') {
-        Some(last_nl) => (
-            tok.r_i + tok.src.matches('\n').count(),
-            1 + col_width(&tok.src[last_nl + 1..]),
-        ),
-        None => (tok.r_i, tok.c_i + col_width(&tok.src)),
+/// Decide the token at byte `s_i` of `src`, read under the rule `rule`.
+///
+/// `buildCssTokenMatcher` in `ts/src/css.ts`, step for step: whitespace is
+/// declined (the engine's space and line matchers take it), a comment is a
+/// node only at a list position, a value runs to the next top-level `;` or
+/// `}` under `declval`, a top-level `,` separates a selector group, `@`
+/// starts an at-rule, `{` `}` `;` are the grammar's, and anything else is a
+/// selector or a property name by `{`-before-`;` lookahead.
+fn plan_token(
+    src: &str,
+    s_i: usize,
+    rule: &str,
+    lower: bool,
+    brace: &mut dyn FnMut(usize) -> (Kind, usize),
+) -> Plan {
+    let bytes = src.as_bytes();
+    let Some(&c) = bytes.get(s_i) else {
+        return Plan::Decline;
+    };
+    if c == b' ' || c == b'\t' || c == b'\r' || c == b'\n' {
+        return Plan::Decline;
+    }
+    let emit = |name, tin, val: String, raw: &str, use_kv, end| Plan::Emit {
+        name,
+        tin,
+        val,
+        raw: raw.to_string(),
+        use_kv,
+        end,
+    };
+
+    // Comments: a node at a list position, otherwise declined, and then
+    // skipped by the engine's builtin comment matcher.
+    if c == b'/' && bytes.get(s_i + 1) == Some(&b'*') {
+        if !is_comment_node_rule(rule) {
+            return Plan::Decline;
+        }
+        return match find_comment_end(bytes, s_i) {
+            None => Plan::Bad,
+            Some(e) => emit(
+                "#CC",
+                BY_NAME,
+                safe_slice(src, s_i + 2, e).to_string(),
+                safe_slice(src, s_i, e + 2),
+                None,
+                e + 2,
+            ),
+        };
+    }
+
+    // Value position: a declaration value up to the next top-level `;`/`}`,
+    // comments stripped and surrounding space trimmed.
+    if "declval" == rule {
+        if c == b'{' || c == b'}' || c == b';' || c == b':' {
+            return Plan::Decline;
+        }
+        let end = scan_value_end(bytes, s_i);
+        if UNTERMINATED == end {
+            return Plan::Bad;
+        }
+        let raw = safe_slice(src, s_i, end);
+        let val = es_trim(&strip_comments(raw)).to_string();
+        return emit("#VL", TIN_VL, val, raw, None, end);
+    }
+
+    // A top-level selector-group comma.
+    if c == b',' {
+        return emit("#GC", BY_NAME, ",".to_string(), ",", None, s_i + 1);
+    }
+
+    // An at-rule: block or statement by `{`-before-`;` lookahead, and a
+    // block's body by keyword. The keyword rides in the value and the
+    // prelude (block) or params (statement) in the token's `use` bag.
+    if c == b'@' {
+        let mut k_end = s_i + 1;
+        while k_end < bytes.len() && is_at_char(bytes[k_end]) {
+            k_end += 1;
+        }
+        let kw = safe_slice(src, s_i + 1, k_end).to_string();
+        let (kind, index) = brace(s_i);
+        if UNTERMINATED == index {
+            return Plan::Bad;
+        }
+        if Kind::Selector == kind {
+            // At-rule preludes KEEP their comments (they are only trimmed),
+            // matching reworkcss.
+            let prelude = es_trim(safe_slice(src, k_end, index)).to_string();
+            let (name, tin) = if is_keyframes_kw(&kw) {
+                ("#ATK", BY_NAME)
+            } else if DECLS_KW.contains(&kw.as_str()) {
+                ("#ATD", BY_NAME)
+            } else {
+                ("#ATR", BY_NAME)
+            };
+            let raw = safe_slice(src, s_i, index);
+            return emit(name, tin, kw, raw, Some(("prelude", prelude)), index);
+        }
+        // A statement at-rule's params run to the next top-level `;`/`}`. A
+        // `;` is consumed (it ends the statement); a `}` or the end of the
+        // source is left for the enclosing rule.
+        let p_end = scan_value_end(bytes, k_end);
+        if UNTERMINATED == p_end {
+            return Plan::Bad;
+        }
+        let params = es_trim(safe_slice(src, k_end, p_end)).to_string();
+        let end = if bytes.get(p_end) == Some(&b';') {
+            p_end + 1
+        } else {
+            p_end
+        };
+        let raw = safe_slice(src, s_i, end);
+        return emit("#ATS", BY_NAME, kw, raw, Some(("params", params)), end);
+    }
+
+    // Other fixed punctuation belongs to the grammar. `:` does not: a run
+    // that starts with one is scanned below, as in the canonical port.
+    if c == b'{' || c == b'}' || c == b';' {
+        return Plan::Decline;
+    }
+
+    // A selector or a property name, by `{`-before-`;` lookahead.
+    let (kind, index) = brace(s_i);
+    if UNTERMINATED == index {
+        return Plan::Bad;
+    }
+    if Kind::Selector == kind {
+        // One selector of a (possible) group: up to the next top-level `,`
+        // or `{`, comments stripped and surrounding space trimmed.
+        let end = scan_selector_end(bytes, s_i);
+        if UNTERMINATED == end {
+            return Plan::Bad;
+        }
+        let raw = safe_slice(src, s_i, end);
+        let val = es_trim(&strip_comments(raw)).to_string();
+        return emit("#TX", TIN_TX, val, raw, None, end);
+    }
+
+    // A property name: the run of property characters up to `:`,
+    // whitespace, `;` or `}`. `/` and `*` are property characters (the
+    // `*prop` and `//prop` IE hacks), so a trailing `/*...*/` hack comment
+    // lands inside the scanned name; comments are stripped out of it, as
+    // reworkcss does.
+    let e_i = scan_prop_end(bytes, s_i);
+    if e_i == s_i {
+        return Plan::Decline;
+    }
+    let raw = safe_slice(src, s_i, e_i);
+    let mut prop = strip_comments(raw);
+    if prop.is_empty() {
+        return Plan::Decline;
+    }
+    if lower {
+        prop = prop.to_lowercase();
+    }
+    emit("#TX", TIN_TX, prop, raw, None, e_i)
+}
+
+/// The `cssToken` matcher, registered as `@css-token` and named by the
+/// grammar's options at order 1e5, ahead of every builtin matcher.
+///
+/// Two things here are deliberate and easy to "fix" wrongly:
+///
+/// - The end of a token may be ONE PAST the source. A `\` at the last
+///   character is an escape whose escaped character is not there, and the
+///   scanners' `i += 2` steps off the end. The canonical port advances its
+///   column by that unclamped width and takes the CLAMPED span for the
+///   token's text, so `@host\` yields a node ending at column 7 inside a
+///   stylesheet ending at column 8, one past a source six characters long.
+///   The engine will not move its cursor past the end, so the overshoot is
+///   recorded under [`OVERSHOOT`] and [`lex_subscriber`] adds it to the
+///   end-of-source token, the only token that can follow it.
+/// - An unclosed comment is reported WITHOUT advancing, so the diagnostic
+///   points at the start of the scan, as the canonical port's does.
+///
+/// A matcher must never advance and then decline: the engine captured its
+/// dispatch state before the custom matchers ran.
+pub(crate) fn css_token(
+    lexer: &mut Lexer<'_>,
+    rule: &mut Rule,
+    ctx: &mut Context,
+    lower: bool,
+) -> Option<Token> {
+    let point = lexer.point();
+    let s_i = point.site.si;
+    let (plan, chars, overshoot) = {
+        let src = lexer.source();
+        let bytes = src.as_bytes();
+        let mut brace = |at: usize| BraceScans::scan(ctx, bytes, at);
+        let plan = plan_token(src, s_i, rule.name.as_str(), lower, &mut brace);
+        let (chars, overshoot) = match &plan {
+            Plan::Decline => return None,
+            Plan::Bad => (
+                safe_slice(src, s_i, src.len())
+                    .chars()
+                    .take(BAD_SPAN)
+                    .count(),
+                0,
+            ),
+            Plan::Emit { end, .. } => (
+                safe_slice(src, s_i, (*end).min(src.len())).chars().count(),
+                end.saturating_sub(src.len()),
+            ),
+        };
+        (plan, chars, overshoot)
+    };
+    match plan {
+        Plan::Decline => None,
+        Plan::Bad => Some(lexer.bad_span(
+            "unterminated_comment",
+            point.site.pos,
+            point.site.pos + chars,
+        )),
+        Plan::Emit {
+            name,
+            tin,
+            val,
+            raw,
+            use_kv,
+            ..
+        } => {
+            lexer.advance_chars(chars);
+            if 0 < overshoot {
+                ctx.u
+                    .insert(OVERSHOOT.to_string(), Value::Number(overshoot as f64));
+            }
+            let mut token = lexer.token(name, tin, Value::String(val), raw, point);
+            if let Some((key, text)) = use_kv {
+                token
+                    .use_data_mut()
+                    .insert(key.to_string(), Value::String(text));
+            }
+            Some(token)
+        }
+    }
+}
+
+/// The plugin's lex subscriber: it sees every token the engine fetches.
+///
+/// - The end-of-source token takes the column overshoot [`css_token`]
+///   recorded, so the stylesheet's end and an error at the end of the source
+///   land where the canonical port puts them.
+/// - A bad token fetched behind a good one becomes the first token of the
+///   lookahead. The canonical engine throws a bad token the moment it is
+///   fetched; this engine buffers it, and an error with no alternative
+///   takes its code and position from the FIRST token only, so an unclosed
+///   comment seen as the second token of an alternate (behind a property
+///   whose escaped quote hid it from the property scan) came out as
+///   `unexpected` at the property. Dropping the unconsumed lookahead makes
+///   the bad token the one the error reports, which is what the throw did.
+///   The subscriber does this only with neither recovery nor relexing on;
+///   in those modes the lookahead is left alone. With relexing on the
+///   canonical engine reports the good token too, and under recovery the
+///   engine's recovery reads the lookahead: dropping it there doubled the
+///   recovered values that differ from the canonical port's, over the
+///   review's 12,000-input corpus. `tests/plugin.rs` pins both modes.
+pub(crate) fn lex_subscriber(token: &mut Token, _rule: &mut Rule, ctx: &mut Context) {
+    if TIN_ZZ == token.tin {
+        if let Some(Value::Number(n)) = ctx.u.get(OVERSHOOT) {
+            token.site.ci += *n as usize;
+        }
+    } else if TIN_BD == token.tin
+        && !ctx.options.parse.recover.enabled
+        && !ctx.options.lex.relex
+        && ctx.t.first().is_some_and(|t| TIN_BD != t.tin)
+    {
+        ctx.t.clear();
+    }
+}
+
+/// The number of astral characters (those two UTF-16 code units wide) in
+/// scalars `[from, to)` of `src`.
+pub(crate) fn astral_between(src: &str, from: usize, to: usize) -> usize {
+    src.chars()
+        .skip(from)
+        .take(to.saturating_sub(from))
+        .filter(|c| 2 == c.len_utf16())
+        .count()
+}
+
+/// An engine error as this crate's, with the column in UTF-16 code units.
+///
+/// The engine counts a column in Unicode scalars since the last reset (a
+/// `\n` in any token, or the end of a run of line characters); the canonical
+/// port counts UTF-16 code units since the same points. The two differ by
+/// the astral characters between the reset and the error, which is what is
+/// added here. The message is the engine's, and is not the contract.
+impl From<TabnasError> for Error {
+    fn from(error: TabnasError) -> Error {
+        let from = error.pos.saturating_sub(error.col.saturating_sub(1));
+        let wide = astral_between(&error.full_source, from, error.pos);
+        Error {
+            code: error.code,
+            message: error.detail,
+            line: error.row,
+            column: error.col + wide,
+        }
     }
 }

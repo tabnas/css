@@ -1,7 +1,7 @@
 /* Copyright (c) 2025 Richard Rodger, MIT License */
 
-//! The grammar: the embedded `css-grammar.jsonic` text, and the reader that
-//! turns it into the rule table [`machine`](crate::machine) runs.
+//! The grammar: the embedded `css-grammar.jsonic` text, and the option
+//! overrides the plugin installs with it.
 //!
 //! `css-grammar.jsonic` at the repository root is the SINGLE SOURCE OF TRUTH
 //! for the rules. `ts/embed-grammar.js` copies it verbatim into `ts/src/css.ts`,
@@ -9,15 +9,15 @@
 //! the `BEGIN/END EMBEDDED` markers — edit the `.jsonic` file and re-run
 //! `npm run embed` from `ts/`.
 //!
-//! The TypeScript and Go ports read that text with a jsonic engine, which they
-//! already depend on. This port has no engine under it, so it carries the
-//! small reader below: enough of the jsonic dialect to read THIS document —
-//! `#` comments, `{}` maps with bare or quoted keys, `[]` lists, bare and
-//! quoted scalars, and newline-separated entries with commas optional. It is
-//! deliberately not a jsonic implementation; `tests/grammar.rs` pins what it
-//! accepts.
+//! All three ports read that text the same way: with jsonic, on the engine,
+//! into the rule set the engine then runs. The options beside it are
+//! `grammarDef.options` in `ts/src/css.ts`, written out as JSON.
 
-use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use tabnas::GrammarSpec;
+
+use crate::value::Value;
 
 // --- BEGIN EMBEDDED css-grammar.jsonic ---
 const GRAMMAR_TEXT: &str = r##"
@@ -229,380 +229,104 @@ const GRAMMAR_TEXT: &str = r##"
 "##;
 // --- END EMBEDDED css-grammar.jsonic ---
 
-/// One alternative of a rule's `open` or `close` list.
-///
-/// The fields are the jsonic alt fields this grammar uses:
-/// `s` (the token sequence to match), `b` (how many of those matched tokens to
-/// push back rather than consume), `p` (push a child rule), `r` (replace this
-/// rule), `a` (actions to run) and `g` (the alt's tag groups).
-#[derive(Clone, Debug, Default)]
-pub struct Alt {
-    /// Token names this alt matches, in order. Empty matches unconditionally.
-    pub s: Vec<String>,
-    /// Tokens to push back — matched, recorded, but left for the next rule.
-    pub b: usize,
-    /// The child rule to push after this alt's actions run.
-    pub p: Option<String>,
-    /// The rule to replace this one with after this alt's actions run.
-    pub r: Option<String>,
-    /// Action references (`@cssXxx`), run in order.
-    pub a: Vec<String>,
-    /// Comma-separated tag groups, for diagnostics.
-    pub g: String,
-}
-
-/// One grammar rule: the alts tried when it opens, and when it closes.
-#[derive(Clone, Debug, Default)]
-pub struct RuleDef {
-    /// Alts tried, in order, when the rule opens.
-    pub open: Vec<Alt>,
-    /// Alts tried, in order, when the rule closes.
-    pub close: Vec<Alt>,
-}
-
-/// The rule table read out of the embedded grammar text (see
-/// [`grammar_text`]).
-#[derive(Clone, Debug, Default)]
-pub struct Grammar {
-    rules: HashMap<String, RuleDef>,
-}
-
-impl Grammar {
-    /// Read the embedded `css-grammar.jsonic`.
-    ///
-    /// # Panics
-    ///
-    /// If the embedded text is malformed. That is a build-time defect in this
-    /// crate, not anything a caller can provoke, and `tests/grammar.rs` fails
-    /// the build before it can ship.
-    pub fn load() -> Grammar {
-        Grammar::parse(GRAMMAR_TEXT).expect("css: embedded grammar is malformed")
-    }
-
-    /// Read a grammar document in the jsonic subset described above.
-    ///
-    /// A key this reader does not implement is an ERROR, at every level.
-    /// The canonical ports hand the whole document to an engine that
-    /// understands the full jsonic grammar surface; this port implements the
-    /// part `css-grammar.jsonic` uses, and the two can only stay in step if
-    /// the grammar growing a field the machine does not run stops the build.
-    /// Ignoring it would leave the Rust port parsing a DIFFERENT grammar from
-    /// the one the other two runtimes run, with every suite green.
-    pub fn parse(text: &str) -> Result<Grammar, String> {
-        let root = Reader::new(text).document()?;
-        unknown(&root, &["rule"], "the grammar document")?;
-        let mut rules = HashMap::new();
-        if let Some(GVal::Map(rule_map)) = root.get("rule") {
-            for (name, def) in rule_map {
-                let GVal::Map(def) = def else { continue };
-                unknown(def, &["open", "close"], &format!("rule {name:?}"))?;
-                rules.insert(
-                    name.clone(),
-                    RuleDef {
-                        open: build_alts(def.get("open"), name, "open")?,
-                        close: build_alts(def.get("close"), name, "close")?,
-                    },
-                );
-            }
-        }
-        Ok(Grammar { rules })
-    }
-
-    /// The rule named `name`, if the grammar defines one.
-    pub fn rule(&self, name: &str) -> Option<&RuleDef> {
-        self.rules.get(name)
-    }
-
-    /// How many rules the grammar defines.
-    pub fn len(&self) -> usize {
-        self.rules.len()
-    }
-
-    /// Whether the grammar defines no rules at all.
-    pub fn is_empty(&self) -> bool {
-        self.rules.is_empty()
-    }
-
-    /// The rule names, unordered.
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.rules.keys().map(String::as_str)
-    }
-}
-
-/// The verbatim `css-grammar.jsonic` text this crate was built from. Exposed
-/// so a test can compare it against the file on disk and catch an embed that
-/// was never re-run.
+/// The embedded `css-grammar.jsonic` text, exactly as the file on disk holds
+/// it. `tests/grammar.rs` checks the two are the same.
 pub fn grammar_text() -> &'static str {
     GRAMMAR_TEXT
 }
 
-/// The alt fields this port implements. A grammar using any other one is
-/// rejected rather than read with that field dropped.
-const ALT_FIELDS: [&str; 6] = ["s", "b", "p", "r", "a", "g"];
-
-fn build_alts(def: Option<&GVal>, rule: &str, phase: &str) -> Result<Vec<Alt>, String> {
-    let Some(GVal::List(items)) = def else {
-        return Ok(Vec::new());
-    };
-    let mut alts = Vec::with_capacity(items.len());
-    for (i, item) in items.iter().enumerate() {
-        let GVal::Map(m) = item else {
-            alts.push(Alt::default());
-            continue;
-        };
-        unknown(m, &ALT_FIELDS, &format!("rule {rule:?} {phase} alt {i}"))?;
-        alts.push(Alt {
-            s: string_list(m.get("s")),
-            // A non-integer `b` is not something this grammar writes; read
-            // it as "push nothing back" rather than failing the build.
-            b: m.get("b").and_then(GVal::as_num).unwrap_or(0.0).max(0.0) as usize,
-            p: m.get("p").and_then(GVal::as_str).map(str::to_string),
-            r: m.get("r").and_then(GVal::as_str).map(str::to_string),
-            a: string_list(m.get("a")),
-            g: m.get("g")
-                .and_then(GVal::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        });
-    }
-    Ok(alts)
-}
-
-/// Reject a key this reader does not implement, naming where it was found.
-fn unknown(map: &GMap, known: &[&str], where_: &str) -> Result<(), String> {
-    for (key, _) in map {
-        if !known.contains(&key.as_str()) {
-            return Err(format!(
-                "{where_}: unknown field {key:?}. This port implements {known:?}; \
-                 a grammar field the rule machine does not run must fail the \
-                 build rather than be read as absent."
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Read a field that is either one string or a list of them.
+/// The option overrides the grammar installs with: `grammarDef.options` in
+/// `ts/src/css.ts`, as a grammar document.
 ///
-/// `s: '#TX #OB'` is a space-separated sequence, and `a:` may be a single
-/// action or an array of them (`['@reset$' '@cssX']`) — the Go port's
-/// `buildGrammarAlts` handles the same two shapes.
-fn string_list(def: Option<&GVal>) -> Vec<String> {
-    match def {
-        Some(GVal::Str(s)) => s.split_whitespace().map(str::to_string).collect(),
-        Some(GVal::List(items)) => items
-            .iter()
-            .filter_map(GVal::as_str)
-            .map(str::to_string)
-            .collect(),
-        _ => Vec::new(),
-    }
+/// - jsonic's own rules are excluded (implicit maps and lists, top-level
+///   commas, path dives) and `stylesheet` is the start rule.
+/// - `;` is the member-separator token `#CA`, and `[` `]` are not tokens:
+///   they only appear inside selectors and values, which the `cssToken`
+///   matcher reads as text.
+/// - `KEY` names `#TX`, as the canonical options do. The option merge
+///   replaces an array by index, so the live set keeps its other entries;
+///   no alternate here reads it.
+/// - The string, number, text and keyword-value matchers are off: the
+///   `cssToken` matcher owns all non-fixed text.
+/// - Only `/* */` comments exist, and the builtin matcher skips one only
+///   where `cssToken` declines it (away from a list position).
+/// - An exactly empty source is an empty stylesheet, as in reworkcss: the
+///   engine returns `emptyResult` for `""` before any rule runs.
+/// - `cssToken` runs at order 1e5, ahead of every builtin matcher, and
+///   `@css-prepare` clears the plugin's per-parse state before each parse.
+/// - `rule.history` is 1, which the canonical options do not set: a rule
+///   keeps a link to the one it replaced, and to no further back. Unbounded,
+///   the engine's default, every item of a list stays reachable until the
+///   list closes, which held a flat stylesheet of 100,000 rules at 927 MiB
+///   where the bound holds it at 210 MiB (`tests/memory.rs`). No alternate
+///   here reads `prev`, so no result changes.
+///
+/// The raw-string delimiter is `##` because `"#CA"` would end `r#"…"#`.
+pub(crate) const OPTIONS_DOC: &str = r##"{"options": {
+  "rule": {"exclude": "jsonic,imp", "start": "stylesheet", "history": 1},
+  "fixed": {"token": {"#CA": ";", "#OS": null, "#CS": null}},
+  "tokenSet": {"KEY": ["#TX"]},
+  "string": {"chars": ""},
+  "number": {"lex": false},
+  "text": {"lex": false},
+  "value": {"lex": false},
+  "comment": {"lex": true, "def": {
+    "hash": {"lex": false},
+    "slash": {"lex": false},
+    "multi": {"line": false, "start": "/*", "end": "*/", "lex": true}}},
+  "lex": {
+    "emptyResult": {"type": "stylesheet", "rules": []},
+    "match": {"cssToken": {"order": 100000, "make": "@css-token"}}
+  },
+  "parse": {"prepare": {"css": "@css-prepare"}}
+}}"##;
+
+/// The rules `css-grammar.jsonic` defines, in the order it defines them.
+/// A second install of the plugin removes these before installing them
+/// again, since installing a rule that exists puts the new alternates in
+/// front of the old ones rather than replacing them.
+pub(crate) const RULES: [&str; 13] = [
+    "stylesheet",
+    "items",
+    "statement",
+    "sel",
+    "declbody",
+    "decls",
+    "decl",
+    "declval",
+    "rulesbody",
+    "kfbody",
+    "kfitems",
+    "keyframe",
+    "kfsel",
+];
+
+/// The two grammar documents the plugin installs, read once per process:
+/// the options, then the rules.
+pub(crate) struct Specs {
+    pub(crate) options: GrammarSpec,
+    pub(crate) rules: GrammarSpec,
 }
 
-// --- The jsonic-subset reader ---------------------------------------------
-
-/// A value in a grammar document. An insertion-ordered map keeps the alt lists
-/// in source order, which is the order they are tried in.
-#[derive(Clone, Debug, PartialEq)]
-enum GVal {
-    Str(String),
-    Num(f64),
-    Bool(bool),
-    Map(GMap),
-    List(Vec<GVal>),
-}
-
-impl GVal {
-    fn as_str(&self) -> Option<&str> {
-        match self {
-            GVal::Str(s) => Some(s),
-            _ => None,
-        }
-    }
-    fn as_num(&self) -> Option<f64> {
-        match self {
-            GVal::Num(n) => Some(*n),
-            _ => None,
-        }
-    }
-}
-
-/// An insertion-ordered string map.
-#[derive(Clone, Debug, Default, PartialEq)]
-struct GMap(Vec<(String, GVal)>);
-
-impl GMap {
-    fn get(&self, key: &str) -> Option<&GVal> {
-        self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v)
-    }
-}
-
-impl<'a> IntoIterator for &'a GMap {
-    type Item = (&'a String, &'a GVal);
-    type IntoIter = std::iter::Map<
-        std::slice::Iter<'a, (String, GVal)>,
-        fn(&'a (String, GVal)) -> (&'a String, &'a GVal),
-    >;
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.iter().map(|(k, v)| (k, v))
-    }
-}
-
-struct Reader<'a> {
-    src: &'a [u8],
-    i: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn new(text: &'a str) -> Reader<'a> {
-        Reader {
-            src: text.as_bytes(),
-            i: 0,
-        }
-    }
-
-    /// The whole document: one value, then end of input.
-    fn document(mut self) -> Result<GMap, String> {
-        self.skip_space();
-        let v = self.value()?;
-        self.skip_space();
-        if self.i < self.src.len() {
-            return Err(format!("trailing content at byte {}", self.i));
-        }
-        match v {
-            GVal::Map(m) => Ok(m),
-            other => Err(format!("grammar is not a map: {other:?}")),
-        }
-    }
-
-    /// Skip whitespace, `,` separators (optional in this dialect) and `#`
-    /// line comments.
-    fn skip_space(&mut self) {
-        while self.i < self.src.len() {
-            match self.src[self.i] {
-                b' ' | b'\t' | b'\r' | b'\n' | b',' => self.i += 1,
-                b'#' => {
-                    while self.i < self.src.len() && self.src[self.i] != b'\n' {
-                        self.i += 1;
-                    }
-                }
-                _ => return,
-            }
-        }
-    }
-
-    fn value(&mut self) -> Result<GVal, String> {
-        self.skip_space();
-        match self.src.get(self.i) {
-            None => Err("unexpected end of grammar".to_string()),
-            Some(b'{') => self.map(),
-            Some(b'[') => self.list(),
-            Some(b'\'') | Some(b'"') => Ok(GVal::Str(self.quoted()?)),
-            Some(_) => Ok(scalar(self.bare())),
-        }
-    }
-
-    fn map(&mut self) -> Result<GVal, String> {
-        self.i += 1; // '{'
-        let mut out = GMap::default();
-        loop {
-            self.skip_space();
-            match self.src.get(self.i) {
-                None => return Err("unclosed '{' in grammar".to_string()),
-                Some(b'}') => {
-                    self.i += 1;
-                    return Ok(GVal::Map(out));
-                }
-                _ => {}
-            }
-            let key = match self.src[self.i] {
-                b'\'' | b'"' => self.quoted()?,
-                _ => self.bare(),
-            };
-            self.skip_space();
-            if self.src.get(self.i) != Some(&b':') {
-                return Err(format!("expected ':' after key '{key}' in grammar"));
-            }
-            self.i += 1;
-            let value = self.value()?;
-            out.0.push((key, value));
-        }
-    }
-
-    fn list(&mut self) -> Result<GVal, String> {
-        self.i += 1; // '['
-        let mut out = Vec::new();
-        loop {
-            self.skip_space();
-            match self.src.get(self.i) {
-                None => return Err("unclosed '[' in grammar".to_string()),
-                Some(b']') => {
-                    self.i += 1;
-                    return Ok(GVal::List(out));
-                }
-                _ => out.push(self.value()?),
-            }
-        }
-    }
-
-    /// A `'...'` or `"..."` string. A backslash escapes the next character.
-    fn quoted(&mut self) -> Result<String, String> {
-        let quote = self.src[self.i];
-        self.i += 1;
-        let mut out = String::new();
-        while self.i < self.src.len() {
-            let c = self.src[self.i];
-            if c == quote {
-                self.i += 1;
-                return Ok(out);
-            }
-            if c == b'\\' && self.i + 1 < self.src.len() {
-                self.i += 1;
-            }
-            let next = next_char_end(self.src, self.i);
-            out.push_str(&lossy(&self.src[self.i..next]));
-            self.i = next;
-        }
-        Err("unclosed string in grammar".to_string())
-    }
-
-    /// An unquoted token, up to the next structural character.
-    fn bare(&mut self) -> String {
-        let start = self.i;
-        while self.i < self.src.len() {
-            match self.src[self.i] {
-                b' ' | b'\t' | b'\r' | b'\n' | b',' | b':' | b'{' | b'}' | b'[' | b']' | b'#' => {
-                    break
-                }
-                _ => self.i += 1,
-            }
-        }
-        lossy(&self.src[start..self.i])
-    }
-}
-
-/// Classify a bare token: `true`/`false`, a number, or a string.
-fn scalar(token: String) -> GVal {
-    match token.as_str() {
-        "true" => return GVal::Bool(true),
-        "false" => return GVal::Bool(false),
-        _ => {}
-    }
-    match token.parse::<f64>() {
-        Ok(n) => GVal::Num(n),
-        Err(_) => GVal::Str(token),
-    }
-}
-
-/// The end of the UTF-8 character starting at `i`.
-fn next_char_end(src: &[u8], i: usize) -> usize {
-    let mut e = i + 1;
-    while e < src.len() && (src[e] & 0xC0) == 0x80 {
-        e += 1;
-    }
-    e
-}
-
-fn lossy(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).into_owned()
+/// Read the grammar text with jsonic, as `new Tabnas().use(jsonic)` does in
+/// the canonical port, and hand the engine the result as JSON.
+///
+/// The JSON is written by this crate's own writer rather than the engine's:
+/// jsonic reads every number as an `f64`, the engine's writer prints `1` as
+/// `1.0`, and the loader wants `b: 1`, an integer. The embedded text is this
+/// crate's own and shallow, so reading it is not a depth risk.
+pub(crate) fn specs() -> Result<&'static Specs, String> {
+    static SPECS: OnceLock<Result<Specs, String>> = OnceLock::new();
+    SPECS
+        .get_or_init(|| {
+            let options = GrammarSpec::from_json(OPTIONS_DOC).map_err(|e| e.0)?;
+            let parsed = tabnas_jsonic::make()
+                .parse(GRAMMAR_TEXT)
+                .map_err(|e| format!("css-grammar.jsonic does not read as jsonic: {e}"))?;
+            let rules =
+                GrammarSpec::from_json(&Value::from_engine(&parsed).to_json()).map_err(|e| e.0)?;
+            Ok(Specs { options, rules })
+        })
+        .as_ref()
+        .map_err(Clone::clone)
 }
