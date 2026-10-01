@@ -254,8 +254,7 @@ crates.io has `tabnas-css` 0.5.9: the earlier crate, with its own lexer
 and rule machine and no dependencies. The published pages (README and
 `doc/`) call it a different implementation and carry no history, since
 they ship in the package. `.github/workflows/crates-release.yml`
-publishes `rs/` from the release tag once the `TABNAS_CRATES` variable is
-on, rewriting each sibling path dependency into a requirement on that
+publishes `rs/` from the release tag on every release, rewriting each sibling path dependency into a requirement on that
 crate's newest version on crates.io, where `tabnas-parser`,
 `tabnas-jsonic` and `tabnas-json` are published. The engine-based crate
 removes `mod machine`, `Css::grammar`, `grammar::{Grammar, Alt,
