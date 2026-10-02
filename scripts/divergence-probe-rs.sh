@@ -86,6 +86,11 @@ const toks = [
   // comment behind one is where the Rust engine once reported the wrong
   // code. Without these the alphabet cannot build that sequence.
   "\\\"","\\'"'"'","\\(","\\[",
+  // And the three quote characters alone. A quote the cssToken matcher
+  // declines reaches the grammar, and the string matcher of the engine
+  // must stay off there. The Go port once left it on (test/spec/quotes.tsv),
+  // and without a lone quote no draw can reach that path.
+  "\"","'"'"'","`",
 ]
 const out = []
 for (let i = 0; i < Number(process.argv[2]); i++) {

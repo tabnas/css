@@ -296,7 +296,21 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 		TokenSet: map[string][]string{
 			"KEY": {"#TX"},
 		},
-		String: &jsonic.StringOptions{Chars: ""},
+		// TS says `string: { chars: '' }`: no quote characters, so the
+		// string matcher never matches. Go cannot say that. Chars is a
+		// plain string whose zero value "" means UNSET, and the default
+		// quotes stay in force (StringOptions.Chars in the engine, and its
+		// empty_chars_test.go). With Chars: "" here, a quote the cssToken
+		// matcher declined, such as the one in a"b or a{b:c}`, lexed as the
+		// start of a string: unterminated_string, or unprintable before a
+		// newline, or invalid_unicode / invalid_ascii before a \u or \x
+		// escape, where TS raises unexpected. Lex: false is the engine's
+		// way to turn string matching off, and test/spec/quotes.tsv pins
+		// the TS verdicts. No other override here has that trap: the rest
+		// are pointers, maps, slices or non-empty strings, and none sets
+		// the engine's other empty-means-unset fields (the space, line,
+		// row, multiline-quote and escape characters).
+		String: &jsonic.StringOptions{Lex: boolPtr(false)},
 		Number: &jsonic.NumberOptions{Lex: boolPtr(false)},
 		Text:   &jsonic.TextOptions{Lex: boolPtr(false)},
 		Value:  &jsonic.ValueOptions{Lex: boolPtr(false)},
