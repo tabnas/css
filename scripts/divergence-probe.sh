@@ -21,6 +21,18 @@
 # whatever it finds as a fixture in test/spec/ once both runtimes agree: a
 # fixture names the case forever, while the probe only says a seed found it.
 #
+# A rejection is compared by its ERROR CODE, not only as a rejection. The
+# probe used to write a bare ERR for both, so it reported NO DIVERGENCE
+# while Go raised unterminated_string on a stray quote where TS raised
+# unexpected (test/spec/quotes.tsv): its alphabet could not build a lone
+# quote either, and now has all three.
+#
+# The corpus is one input per line, in the escape codec the shared fixtures
+# use (\n \r \t \\, from @tabnas/support and its Go half), so an input
+# with a newline in it is probed rather than dropped. The probe used to
+# write inputs raw and skip every one that held a newline, which is where
+# a quote before a line break (unprintable in the old Go) lived.
+#
 # Usage:  bash scripts/divergence-probe.sh [count] [--report-only]
 #
 #   count          how many inputs to generate (default 4000)
@@ -45,8 +57,9 @@ done
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-node -e '
+(cd "$HERE/ts" && node -e '
 const fs = require("fs")
+const { escape } = require("@tabnas/support")
 let s = 123456789
 const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff }
 const toks = [
@@ -55,30 +68,32 @@ const toks = [
   "@supports","@-webkit-keyframes","screen","from","0%","\"s\"","'"'"'s'"'"'",
   "url(x)","(",")","[","]","!important","--v","&",">","+","~",
   "<!--","-->","\\","1px","red","e:f","g:h;","\r",
+  "\"","'"'"'","`",
 ]
 const out = []
 for (let i = 0; i < Number(process.argv[2]); i++) {
   const n = 1 + Math.floor(rnd() * 9)
   let str = ""
   for (let j = 0; j < n; j++) str += toks[Math.floor(rnd() * toks.length)]
-  if (str.includes("\n")) continue
-  out.push(str)
+  out.push(escape(str))
 }
 fs.writeFileSync(process.argv[1], out.join("\n") + "\n")
 console.error("probe: generated " + out.length + " inputs")
-' "$WORK/in.txt" "$COUNT"
+' "$WORK/in.txt" "$COUNT")
 
 (cd "$HERE/ts" && node -e '
 const fs = require("fs")
 const { Tabnas } = require("@tabnas/parser")
 const { jsonic } = require("@tabnas/jsonic")
 const { Css } = require("./dist/css")
+const { unescape } = require("@tabnas/support")
 const out = []
-for (const src of fs.readFileSync(process.argv[1], "utf8").split("\n")) {
+for (const line of fs.readFileSync(process.argv[1], "utf8").split("\n")) {
+  const src = unescape(line)
   try {
     const v = new Tabnas().use(jsonic).use(Css).parse(src)
     out.push(JSON.stringify(src) + "\tOK " + JSON.stringify(v === undefined ? null : v))
-  } catch { out.push(JSON.stringify(src) + "\tERR") }
+  } catch (e) { out.push(JSON.stringify(src) + "\tERR:" + (e && e.code)) }
 }
 fs.writeFileSync(process.argv[2], out.join("\n") + "\n")
 ' "$WORK/in.txt" "$WORK/ts.out")
@@ -99,7 +114,7 @@ const load = (p) => {
     const i = line.indexOf("\t")
     const src = JSON.parse(line.slice(0, i))
     const rest = line.slice(i + 1)
-    m.set(src, rest === "ERR" ? "ERR" : "OK " + JSON.stringify(canon(JSON.parse(rest.slice(3)))))
+    m.set(src, rest.startsWith("ERR:") ? rest : "OK " + JSON.stringify(canon(JSON.parse(rest.slice(3)))))
   }
   return m
 }

@@ -13,11 +13,13 @@ package tabnascss
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
 
 	jsonic "github.com/tabnas/jsonic/go"
+	support "github.com/tabnas/support/go"
 )
 
 // probeParse parses with the documented stack and reports failure as an error
@@ -28,6 +30,17 @@ func probeParse(src string) (any, error) {
 		return nil, err
 	}
 	return j.Parse(src)
+}
+
+// probeCode is a rejection's error code, which the script compares along
+// with the rejection itself: TS and Go rejecting an input with different
+// codes is a divergence. An error that is not the engine's has no code.
+func probeCode(err error) string {
+	var je *jsonic.JsonicError
+	if errors.As(err, &je) {
+		return je.Code
+	}
+	return "?"
 }
 
 // probeNorm normalises a value through JSON so the Go and TS dumps are
@@ -58,12 +71,16 @@ func TestDivergenceProbeDump(t *testing.T) {
 		t.Fatalf("read %s: %v", in, err)
 	}
 
+	// One input per line, in the shared fixtures' escape codec, so an
+	// input holding a newline reaches here instead of being dropped; the
+	// TS half decodes each line with the same codec.
 	var b strings.Builder
-	for _, src := range strings.Split(string(raw), "\n") {
+	for _, line := range strings.Split(string(raw), "\n") {
+		src := support.Unescape(line)
 		q, _ := json.Marshal(src)
 		v, perr := probeParse(src)
 		if nil != perr {
-			b.WriteString(string(q) + "\tERR\n")
+			b.WriteString(string(q) + "\tERR:" + probeCode(perr) + "\n")
 			continue
 		}
 		n, nerr := probeNorm(v)
