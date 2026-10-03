@@ -428,18 +428,16 @@ fn recovery_returns_a_partial_stylesheet() {
             "{src:?}"
         );
     }
-    // An unclosed comment behind a good token: the canonical engine throws
-    // the bad token as it is fetched, and records and skips it under
-    // recovery; this one buffers it. The lex subscriber makes it the error
-    // without recovery (`comments.tsv`), and steps aside under recovery,
-    // where the engine's recovery reads the lookahead: dropping it there
-    // doubles the recovered values that differ from the canonical port's
-    // over the review corpus. So the first error is `unexpected` at the
-    // property, where the canonical port's is `unterminated_comment` at 1:5.
+    // An unclosed comment behind a good token, under recovery: the engine
+    // records the bad token as it is fetched and skips it, as the canonical
+    // engine does (tabnas/parser#274), so the first error is the canonical
+    // port's, `unterminated_comment` at 1:5. Before #274 the Rust engine
+    // buffered the token and the first error was `unexpected` at the
+    // property.
     let got = parser.parse_recover("a{b\\\"x;\"/*");
     let error = Error::from(got.errors.into_iter().next().expect("an error"));
     assert_eq!(
-        ("unexpected", 1, 3),
+        ("unterminated_comment", 1, 5),
         (error.code.as_str(), error.line, error.column)
     );
     // `parse` with recovery on returns the same partial value.
@@ -453,9 +451,8 @@ fn recovery_returns_a_partial_stylesheet() {
 #[test]
 fn relexing_leaves_the_lookahead_alone() {
     // With relexing on, the canonical engine reports the good token ahead
-    // of the unclosed comment, and so does this one: the lex subscriber
-    // leaves the lookahead alone. Without relexing the comment is the error
-    // (`comments.tsv`).
+    // of the unclosed comment, and so does this one. Without relexing the
+    // comment is the error (`comments.tsv`).
     let parser = make()
         .derive(|options| options.lex.relex = true)
         .expect("derives");
