@@ -18,8 +18,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use tabnas::{
-    Context, Lexer, Rule, TabnasError, Tin as EngineTin, Token, Value, TIN_BD, TIN_TX, TIN_VL,
-    TIN_ZZ,
+    Context, Lexer, Rule, TabnasError, Tin as EngineTin, Token, Value, TIN_TX, TIN_VL, TIN_ZZ,
 };
 
 /// A token kind.
@@ -965,31 +964,18 @@ pub(crate) fn css_token(
 /// - The end-of-source token takes the column overshoot [`css_token`]
 ///   recorded, so the stylesheet's end and an error at the end of the source
 ///   land where the canonical port puts them.
-/// - A bad token fetched behind a good one becomes the first token of the
-///   lookahead. The canonical engine throws a bad token the moment it is
-///   fetched; this engine buffers it, and an error with no alternative
-///   takes its code and position from the FIRST token only, so an unclosed
-///   comment seen as the second token of an alternate (behind a property
-///   whose escaped quote hid it from the property scan) came out as
-///   `unexpected` at the property. Dropping the unconsumed lookahead makes
-///   the bad token the one the error reports, which is what the throw did.
-///   The subscriber does this only with neither recovery nor relexing on;
-///   in those modes the lookahead is left alone. With relexing on the
-///   canonical engine reports the good token too, and under recovery the
-///   engine's recovery reads the lookahead: dropping it there doubled the
-///   recovered values that differ from the canonical port's, over the
-///   review's 12,000-input corpus. `tests/plugin.rs` pins both modes.
+/// - It once dropped the unconsumed lookahead when a bad token arrived
+///   behind a good one, so that an unclosed comment hidden from the
+///   property scan was the error reported rather than `unexpected` at the
+///   property. tabnas/parser#274 made the engine raise a fetched bad token
+///   at once, as the canonical does, and record and skip it under
+///   recovery, so that work is the engine's now. `test/spec/comments.tsv`
+///   and `tests/plugin.rs` pin the answers in every mode.
 pub(crate) fn lex_subscriber(token: &mut Token, _rule: &mut Rule, ctx: &mut Context) {
     if TIN_ZZ == token.tin {
         if let Some(Value::Number(n)) = ctx.u.get(OVERSHOOT) {
             token.site.ci += *n as usize;
         }
-    } else if TIN_BD == token.tin
-        && !ctx.options.parse.recover.enabled
-        && !ctx.options.lex.relex
-        && ctx.t.first().is_some_and(|t| TIN_BD != t.tin)
-    {
-        ctx.t.clear();
     }
 }
 

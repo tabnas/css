@@ -109,17 +109,18 @@ memory profile or a stack overflow.
   `es_is_whitespace` from `lex.rs` at every site that produces AST text.
   The two sets differ by U+FEFF and U+0085, and both change the tree; see
   the divergence register.
-- **The lex subscriber reports a bad token fetched behind a good one.**
-  The canonical engine throws a bad token when it is fetched; this one
-  buffers it, and an error with no alternative takes its code from the
-  first lookahead token only. With recovery and relexing both off, the
-  subscriber clears the unconsumed lookahead when a bad token arrives
-  behind a good one, so `a{b\"x;"/*` fails as `unterminated_comment`, as
-  the rows in `../test/spec/comments.tsv` require. Leave the recovery and
-  relex modes alone: with relexing on the canonical engine reports the
-  good token too, and under recovery the engine's recovery reads the
-  lookahead (dropping it there doubled the recovered values that differ
-  from the canonical port's). `tests/plugin.rs` pins both.
+- **A bad token fetched behind a good one is the engine's to report.**
+  The canonical engine throws a bad token when it is fetched, and records
+  and skips it under recovery; since tabnas/parser#274 the Rust engine
+  does the same. Before that it buffered the token, an error with no
+  alternative took its code from the first lookahead token only, and the
+  lex subscriber cleared the unconsumed lookahead when a bad token
+  arrived behind a good one (with recovery and relexing off) so that
+  `a{b\"x;"/*` failed as `unterminated_comment`. That clearing is gone;
+  do not bring it back. `../test/spec/comments.tsv` pins the fail-fast
+  rows, and `tests/plugin.rs` pins recovery (`unterminated_comment` at
+  1:5, the canonical port's first error) and relexing (the good token is
+  reported, as the canonical engine reports it).
 - **The matcher emits the grammar's own tokens by name.** `#CC`, `#GC`
   and the at-rule tokens carry `lex::BY_NAME` (-1), which the engine
   resolves as it lexes. Never capture a token number at install:

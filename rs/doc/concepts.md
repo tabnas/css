@@ -131,24 +131,24 @@ code for the same document.
 
 ## A bad token behind a good one
 
-Lazy lookahead has one case where the two engines part company. The
-canonical engine throws a bad token, such as an unclosed comment, the
-moment the lexer produces it. This engine keeps it in the lookahead,
-and an error with no matching alternate takes its code and position
-from the first lookahead token only.
+Lazy lookahead once had a case where the two engines parted company.
+The canonical engine throws a bad token, such as an unclosed comment,
+the moment the lexer produces it. The Rust engine kept it in the
+lookahead, and an error with no matching alternate took its code and
+position from the first lookahead token only. So in `a{b\"x;"/*`, where
+the escaped quote hides the comment from the property scan, the unclosed
+comment is the second token of the declaration alternate, and the error
+came out as `unexpected` at the property rather than
+`unterminated_comment`. The plugin's lex subscriber closed that gap by
+dropping the unconsumed lookahead when a bad token arrived behind a good
+one.
 
-So in `a{b\"x;"/*`, where the escaped quote hides the comment from the
-property scan, the unclosed comment is the second token of the
-declaration alternate, and left alone the error would be `unexpected`
-at the property rather than `unterminated_comment`. The plugin's lex
-subscriber closes that gap: when a bad token arrives behind an
-unconsumed good one, it drops the unconsumed lookahead, so the bad token
-comes first and is the one the error reports, as the throw reports it.
-It does so only with the engine's `parse.recover` and `lex.relex` off; in those
-modes the lookahead is left as the engine keeps it. With `lex.relex` on, the
-canonical engine reports the good token too; recovery is the subject of
-[its own section](#recovery). The shared comment fixtures pin the
-reported code for inputs of this shape.
+Since tabnas/parser#274 the Rust engine raises a bad token the moment
+the lexer produces it, as the canonical does, and the subscriber no
+longer touches the lookahead. With `lex.relex` on, both engines report
+the good token. Recovery is the subject of [its own section](#recovery).
+The shared comment fixtures pin the reported code for inputs of this
+shape.
 
 ## Node ownership
 
@@ -371,18 +371,19 @@ can follow it.
 `Css::parse` has no recovery mode, and neither has the canonical port's
 `parse`. The engine has one, and under it the tree form returns a
 partial stylesheet that is usually the canonical port's, though not
-always. The canonical engine throws a bad token, such as an unclosed
-comment, as it is fetched, and under recovery records it and skips it.
-This engine keeps the token in its lookahead, as [a bad token behind a
-good one](#a-bad-token-behind-a-good-one) describes, so a recovery can stop
+always. Both engines throw a bad token, such as an unclosed comment, the
+moment the lexer produces it, and under recovery record it and skip it.
+The Rust engine has done so since tabnas/parser#274. Before that it kept
+the token in its lookahead, as [a bad token behind a good
+one](#a-bad-token-behind-a-good-one) describes, so a recovery could stop
 elsewhere, keep a node the canonical port drops or drop one it keeps,
-and report an error the canonical port does not. Separately, the engine
-can report a recovery's terminal error twice, with no bad token involved
-(`a{` does it), because it compares errors including the record of how
-each was recovered. And a recovering parse takes time quadratic in the
-input, since the engine walks the whole partial value on every step: a
-valid 16 KB stylesheet takes about 16 s. The repairs belong to the
-engine.
+and report an error the canonical port never reports. Two differences
+remain. The engine can report a recovery's terminal error twice, with
+no bad token involved (`a{` does it), because it compares errors
+including the record of how each was recovered. And a recovering parse
+takes time quadratic in the input, since the engine walks the whole
+partial value on every step: a valid 16 KB stylesheet takes about 16 s.
+Those repairs belong to the engine.
 
 One difference is this port's choice. Where a statement, a declaration
 or a keyframe fails before its node is built, the canonical pusher puts

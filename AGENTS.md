@@ -512,18 +512,20 @@ match as-is.
   subscriber adds it to the end-of-source token's column. That is how
   `@host\` gets a `host` node ending at column 7 and a stylesheet ending at
   8, the canonical columns (item 3 of the divergence section).
-- **Rust: a bad token fetched behind a good one is the one reported.** The
-  canonical engine throws a bad token the moment it is fetched; the Rust
-  engine buffers it, and an error with no alternative takes its code and
-  position from the first lookahead token. The lex subscriber therefore
-  drops the unconsumed lookahead when a bad token arrives behind a good one
-  (only with recovery and relexing off). Without that, an unclosed comment
-  behind a property whose escaped quote or paren hid it from the property
-  scan (`a{b\"x;"/*`) came out as `unexpected` at the property, not
-  `unterminated_comment`. `test/spec/comments.tsv` pins those rows. With
-  relexing on TS reports the good token too; under recovery, dropping the
-  lookahead doubled the recovered values that differ from TS's.
-  `rs/tests/plugin.rs` pins both modes.
+- **Rust: a bad token fetched behind a good one is the one reported, by
+  the engine.** The canonical engine throws a bad token the moment it is
+  fetched, and records and skips it under recovery; since tabnas/parser#274
+  the Rust engine does the same. Until then it buffered the token, and an
+  error with no alternative took its code and position from the first
+  lookahead token, so the lex subscriber dropped the unconsumed lookahead
+  when a bad token arrived behind a good one (with recovery and relexing
+  off); without that, an unclosed comment behind a property whose escaped
+  quote or paren hid it from the property scan (`a{b\"x;"/*`) came out as
+  `unexpected` at the property, not `unterminated_comment`. That drop is
+  gone. `test/spec/comments.tsv` pins the fail-fast rows, and
+  `rs/tests/plugin.rs` pins recovery (`unterminated_comment` at 1:5, the
+  canonical port's first error) and relexing (TS reports the good token,
+  and so does this port).
 - **Rust: the matcher emits the grammar's own tokens by NAME.** `#CC`,
   `#GC` and the four at-rule tokens carry the tin `-1` (`lex::BY_NAME`),
   and the engine resolves the name as it lexes. `Tabnas::merge` renumbers
