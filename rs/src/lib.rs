@@ -139,7 +139,7 @@ pub use tabnas_jsonic;
 /// `ts/src/css.ts` and `const VERSION` in `go/css.go`. The release
 /// orchestrator rewrites all of them together; `tests/version.rs` (and its
 /// TypeScript and Go counterparts) fail the build if any drifts.
-pub const VERSION: &str = "0.5.9";
+pub const VERSION: &str = "0.5.10";
 
 /// The plugin's options: `CssOptions` in the canonical port.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
