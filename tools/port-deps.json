@@ -1,0 +1,13 @@
+{
+  "note": "Register of tabnas runtime dependencies that differ between this repository's ports (tabnas/admin ADR-24). tools/port-deps.cjs fails on a difference that is not listed here, and on an entry that no longer matches the manifests, so the list cannot outlive what it records. Every entry states the ports that have the dependency today, the reason, and the repair.",
+  "differ": {
+    "parser": {
+      "ports": [
+        "rs",
+        "ts"
+      ],
+      "reason": "TypeScript: ts/src/css.ts imports `Tabnas`, `Rule`, `Context`, `Plugin`, `Config`, `TabnasOptions` and `Lex` from '@tabnas/parser' in a plain import, not `import type`; `Tabnas` is used as a value (`new Tabnas().use(jsonic).parse(grammarText)` in the `Css` plugin), `Rule`, `Plugin`, `Config`, `TabnasOptions` and `Lex` are used only as types, and `Context` is imported but never used; ts/package.json declares the engine as a peer. Rust: rs/src/lib.rs, plugin.rs, lex.rs, grammar.rs and value.rs all use the `tabnas` crate (`Tabnas`, `Plugin`, `Rule`, `Token`, `Value`, `GrammarSpec`) and lib.rs re-exports it whole with `pub use tabnas`, so rs/Cargo.toml lists `tabnas-parser` under [dependencies]. Go: the only tabnas module that go/css.go imports is github.com/tabnas/jsonic/go, and it takes every engine name from the aliases in that package's engine.go (`jsonic.Jsonic` is `tabnas.Tabnas`; also `jsonic.Rule`, `jsonic.Token`, `jsonic.GrammarSpec`, `jsonic.MakeLexMatcher`, `jsonic.Options`); go/clib/core.go imports no tabnas module but the css package itself, no .go file under go/ imports github.com/tabnas/parser/go, and go/go.mod lists the engine as `// indirect`, so it is still built in through jsonic.",
+      "repair": "Either the Go port imports the engine: go/css.go would import github.com/tabnas/parser/go for the names it now takes from the jsonic aliases, and go/go.mod would require it directly instead of `// indirect`. Or the TypeScript and Rust ports take the engine through jsonic as Go does: ts/src/css.ts would import from '@tabnas/jsonic', which re-exports `Tabnas` and the engine types (the engine's `Plugin` as `TabnasPlugin`, `TabnasOptions` as `Options`), and ts/package.json would drop the @tabnas/parser peer; rs/Cargo.toml cannot drop `tabnas` until tabnas-jsonic re-exports the engine: today its rs/src/lib.rs re-exports only `TabnasError`, as `JsonicError`. Undecided: awaits the maintainer's ruling."
+    }
+  }
+}
