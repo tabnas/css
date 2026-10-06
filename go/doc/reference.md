@@ -20,7 +20,7 @@ import tabnascss "github.com/tabnas/css/go"
 |---|---|
 | Module | `github.com/tabnas/css/go` |
 | Package | `tabnascss` |
-| Engine | `github.com/tabnas/jsonic/go` (pulled in transitively) |
+| Engine | `github.com/tabnas/parser/go`, imported as `tabnas`, with the base grammar from `github.com/tabnas/jsonic/go` |
 | `VERSION` | exported `const` string of the module version, always equal to `ts/package.json` "version" (enforced by `go/version_test.go`) |
 
 ## Public API
@@ -43,9 +43,10 @@ ast, err := tabnascss.Parse(`a { color: red }`)
 //     map[string]any{"type": "declaration", "property": "color", "value": "red"}}}}}
 ```
 
-### `func MakeJsonic(opts ...CssOptions) *jsonic.Jsonic`
+### `func MakeJsonic(opts ...CssOptions) *tabnas.Tabnas`
 
-Returns a reusable `*jsonic.Jsonic` instance configured for CSS
+Returns a reusable jsonic engine (`*tabnas.Tabnas`, the type jsonic's
+`Jsonic` aliases) configured for CSS
 parsing. Use this when parsing many strings with the same options:
 build once, call `.Parse()` per input.
 
@@ -57,7 +58,7 @@ ast, err := j.Parse(`@media screen { a { color: blue } }`)
 A plugin-registration failure (a programming error with static inputs)
 panics rather than misbehaving silently.
 
-### `func Css(j *jsonic.Jsonic, options map[string]any) error`
+### `func Css(j *tabnas.Tabnas, options map[string]any) error`
 
 The raw plugin function. Usually invoked indirectly through
 `j.UseDefaults(tabnascss.Css, tabnascss.Defaults, opts...)` or via

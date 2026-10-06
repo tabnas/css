@@ -24,9 +24,9 @@ options change plus a set of rules, not a new parser. The plugin
 embeds the canonical grammar text (from the repo-root
 `css-grammar.jsonic`, kept in sync with the TypeScript source by the
 build), parses it with a throwaway jsonic instance into a
-`*jsonic.GrammarSpec`, attaches its `*jsonic.Options` overrides and its
+`*tabnas.GrammarSpec`, attaches its `*tabnas.Options` overrides and its
 node-building action refs to that spec, and applies the whole thing
-atomically via `j.Grammar(gs, &jsonic.GrammarSetting{Rule: ...G:
+atomically via `j.Grammar(gs, &tabnas.GrammarSetting{Rule: ...G:
 "css"})`.
 
 ## The output model: a reworkcss-style AST
