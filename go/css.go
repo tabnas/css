@@ -30,6 +30,7 @@ import (
 	"sync"
 
 	jsonic "github.com/tabnas/jsonic/go"
+	tabnas "github.com/tabnas/parser/go"
 )
 
 // VERSION is this module's version. It MUST equal ts/package.json
@@ -250,7 +251,7 @@ const grammarText = `
 
 // Css is a jsonic plugin that adds CSS parsing support.
 // Options are pre-merged with Defaults by jsonic.UseDefaults.
-func Css(j *jsonic.Jsonic, options map[string]any) error {
+func Css(j *tabnas.Tabnas, options map[string]any) error {
 	// Guard against re-invocation: SetOptions triggers plugin re-application.
 	if j.Decoration("css-init") != nil {
 		return nil
@@ -281,12 +282,12 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 	// All jsonic option overrides live on the grammar object so the plugin
 	// applies them atomically alongside its rule alts.
 	semi := ";"
-	gs.Options = &jsonic.Options{
-		Rule: &jsonic.RuleOptions{
+	gs.Options = &tabnas.Options{
+		Rule: &tabnas.RuleOptions{
 			Exclude: "jsonic,imp",
 			Start:   "stylesheet",
 		},
-		Fixed: &jsonic.FixedOptions{
+		Fixed: &tabnas.FixedOptions{
 			Token: map[string]*string{
 				"#CA": &semi,
 				"#OS": nil,
@@ -310,19 +311,19 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 		// are pointers, maps, slices or non-empty strings, and none sets
 		// the engine's other empty-means-unset fields (the space, line,
 		// row, multiline-quote and escape characters).
-		String: &jsonic.StringOptions{Lex: boolPtr(false)},
-		Number: &jsonic.NumberOptions{Lex: boolPtr(false)},
-		Text:   &jsonic.TextOptions{Lex: boolPtr(false)},
-		Value:  &jsonic.ValueOptions{Lex: boolPtr(false)},
-		Comment: &jsonic.CommentOptions{
+		String: &tabnas.StringOptions{Lex: boolPtr(false)},
+		Number: &tabnas.NumberOptions{Lex: boolPtr(false)},
+		Text:   &tabnas.TextOptions{Lex: boolPtr(false)},
+		Value:  &tabnas.ValueOptions{Lex: boolPtr(false)},
+		Comment: &tabnas.CommentOptions{
 			Lex: boolPtr(true),
-			Def: map[string]*jsonic.CommentDef{
+			Def: map[string]*tabnas.CommentDef{
 				"hash":  {Line: boolPtr(true), Start: "#", Lex: boolPtr(false)},
 				"slash": {Line: boolPtr(true), Start: "//", Lex: boolPtr(false)},
 				"multi": {Line: boolPtr(false), Start: "/*", End: "*/", Lex: boolPtr(true)},
 			},
 		},
-		Lex: &jsonic.LexOptions{
+		Lex: &tabnas.LexOptions{
 			// The engine short-circuits an exactly-empty source before the
 			// rule loop runs (parser.go Start: `if "" == src { return
 			// j.emptyResult }`), so the start rule never builds its node and
@@ -333,14 +334,14 @@ func Css(j *jsonic.Jsonic, options map[string]any) error {
 				"type":  "stylesheet",
 				"rules": []any{},
 			},
-			Match: map[string]*jsonic.MatchSpec{
+			Match: map[string]*tabnas.MatchSpec{
 				"cssToken": {Order: 100000, Make: buildCssTokenMatcher(lowercaseProperties, tins)},
 			},
 		},
 	}
 
-	setting := &jsonic.GrammarSetting{
-		Rule: &jsonic.GrammarSettingRule{Alt: &jsonic.GrammarSettingAlt{G: "css"}},
+	setting := &tabnas.GrammarSetting{
+		Rule: &tabnas.GrammarSettingRule{Alt: &tabnas.GrammarSettingAlt{G: "css"}},
 	}
 	if err := j.Grammar(gs, setting); err != nil {
 		return fmt.Errorf("css: failed to apply grammar: %w", err)
@@ -377,7 +378,7 @@ func (o CssOptions) toMap() map[string]any {
 }
 
 // MakeJsonic returns a reusable Jsonic instance configured for CSS parsing.
-func MakeJsonic(opts ...CssOptions) *jsonic.Jsonic {
+func MakeJsonic(opts ...CssOptions) *tabnas.Tabnas {
 	j := jsonic.Make()
 	var m map[string]any
 	if len(opts) > 0 {
@@ -391,7 +392,7 @@ func MakeJsonic(opts ...CssOptions) *jsonic.Jsonic {
 
 var (
 	defaultOnce   sync.Once
-	defaultParser *jsonic.Jsonic
+	defaultParser *tabnas.Tabnas
 )
 
 // Parse parses a CSS string and returns its AST. The no-options path reuses a
@@ -407,19 +408,19 @@ func Parse(src string, opts ...CssOptions) (any, error) {
 
 // --- Grammar actions: build the AST ---------------------------------------
 
-func node(r *jsonic.Rule) map[string]any {
+func node(r *tabnas.Rule) map[string]any {
 	m, _ := r.Node.(map[string]any)
 	return m
 }
 
-func tokenVal(r *jsonic.Rule) any {
+func tokenVal(r *tabnas.Rule) any {
 	if r.O0 == nil {
 		return nil
 	}
 	return r.O0.Val
 }
 
-func childMap(r *jsonic.Rule) (map[string]any, bool) {
+func childMap(r *tabnas.Rule) (map[string]any, bool) {
 	if r.Child == nil {
 		return nil, false
 	}
@@ -427,7 +428,7 @@ func childMap(r *jsonic.Rule) (map[string]any, bool) {
 	return m, ok
 }
 
-func appendField(r *jsonic.Rule, field string, v any) {
+func appendField(r *tabnas.Rule, field string, v any) {
 	m := node(r)
 	if m == nil {
 		return
@@ -441,12 +442,12 @@ func appendField(r *jsonic.Rule, field string, v any) {
 // append a finished child node to a parent array. When position is on, the
 // constructors record node["position"]["start"] (and single-token nodes their
 // end); @cssEnd records the closing-brace end.
-func makeActions(_lowercaseProperties bool, position bool) map[jsonic.FuncRef]any {
-	mk := func(f func(*jsonic.Rule)) jsonic.AltAction {
-		return jsonic.AltAction(func(r *jsonic.Rule, _ *jsonic.Context) { f(r) })
+func makeActions(_lowercaseProperties bool, position bool) map[tabnas.FuncRef]any {
+	mk := func(f func(*tabnas.Rule)) tabnas.AltAction {
+		return tabnas.AltAction(func(r *tabnas.Rule, _ *tabnas.Context) { f(r) })
 	}
 	// withPos records a node's start (and optionally end) from a token.
-	withPos := func(n map[string]any, tok *jsonic.Token, end bool) map[string]any {
+	withPos := func(n map[string]any, tok *tabnas.Token, end bool) map[string]any {
 		if position && tok != nil {
 			p := map[string]any{"start": startPos(tok)}
 			if end {
@@ -458,36 +459,36 @@ func makeActions(_lowercaseProperties bool, position bool) map[jsonic.FuncRef]an
 		}
 		return n
 	}
-	return map[jsonic.FuncRef]any{
+	return map[tabnas.FuncRef]any{
 		// Node constructors.
-		"@cssSheet": mk(func(r *jsonic.Rule) {
+		"@cssSheet": mk(func(r *tabnas.Rule) {
 			r.Node = map[string]any{"type": "stylesheet", "rules": []any{}}
 			if position {
 				r.Node.(map[string]any)["position"] = map[string]any{
 					"start": map[string]any{"line": 1, "column": 1}, "end": nil}
 			}
 		}),
-		"@cssRule": mk(func(r *jsonic.Rule) {
+		"@cssRule": mk(func(r *tabnas.Rule) {
 			r.Node = withPos(map[string]any{"type": "rule", "selectors": []any{}, "declarations": []any{}}, r.O0, false)
 		}),
-		"@cssDecl": mk(func(r *jsonic.Rule) {
+		"@cssDecl": mk(func(r *tabnas.Rule) {
 			r.Node = withPos(map[string]any{"type": "declaration", "property": tokenVal(r), "value": ""}, r.O0, false)
 		}),
-		"@cssComment": mk(func(r *jsonic.Rule) {
+		"@cssComment": mk(func(r *tabnas.Rule) {
 			r.Node = withPos(map[string]any{"type": "comment", "comment": tokenVal(r)}, r.O0, true)
 		}),
-		"@cssKeyframe": mk(func(r *jsonic.Rule) {
+		"@cssKeyframe": mk(func(r *tabnas.Rule) {
 			r.Node = withPos(map[string]any{"type": "keyframe", "values": []any{}, "declarations": []any{}}, r.O0, false)
 		}),
-		"@cssAtRules":   mk(func(r *jsonic.Rule) { r.Node = withPos(makeAtRules(r.O0), r.O0, false) }),
-		"@cssAtDecls":   mk(func(r *jsonic.Rule) { r.Node = withPos(makeAtDecls(r.O0), r.O0, false) }),
-		"@cssKeyframes": mk(func(r *jsonic.Rule) { r.Node = withPos(makeKeyframes(r.O0), r.O0, false) }),
-		"@cssAtStmt":    mk(func(r *jsonic.Rule) { r.Node = withPos(makeAtStmt(r.O0), r.O0, true) }),
+		"@cssAtRules":   mk(func(r *tabnas.Rule) { r.Node = withPos(makeAtRules(r.O0), r.O0, false) }),
+		"@cssAtDecls":   mk(func(r *tabnas.Rule) { r.Node = withPos(makeAtDecls(r.O0), r.O0, false) }),
+		"@cssKeyframes": mk(func(r *tabnas.Rule) { r.Node = withPos(makeKeyframes(r.O0), r.O0, false) }),
+		"@cssAtStmt":    mk(func(r *tabnas.Rule) { r.Node = withPos(makeAtStmt(r.O0), r.O0, true) }),
 
 		// Field setters.
-		"@cssSelector": mk(func(r *jsonic.Rule) { appendField(r, "selectors", tokenVal(r)) }),
-		"@cssKfValue":  mk(func(r *jsonic.Rule) { appendField(r, "values", tokenVal(r)) }),
-		"@cssDeclVal": mk(func(r *jsonic.Rule) {
+		"@cssSelector": mk(func(r *tabnas.Rule) { appendField(r, "selectors", tokenVal(r)) }),
+		"@cssKfValue":  mk(func(r *tabnas.Rule) { appendField(r, "values", tokenVal(r)) }),
+		"@cssDeclVal": mk(func(r *tabnas.Rule) {
 			if m := node(r); m != nil {
 				m["value"] = tokenVal(r)
 				if position {
@@ -500,7 +501,7 @@ func makeActions(_lowercaseProperties bool, position bool) map[jsonic.FuncRef]an
 
 		// Record the closing-brace / end-of-input end position. Runs in a
 		// close phase, so the matched }/end token is in r.C0.
-		"@cssEnd": mk(func(r *jsonic.Rule) {
+		"@cssEnd": mk(func(r *tabnas.Rule) {
 			if !position {
 				return
 			}
@@ -512,17 +513,17 @@ func makeActions(_lowercaseProperties bool, position bool) map[jsonic.FuncRef]an
 		}),
 
 		// Array pushers.
-		"@cssPushRule": mk(func(r *jsonic.Rule) {
+		"@cssPushRule": mk(func(r *tabnas.Rule) {
 			if c, ok := childMap(r); ok {
 				appendField(r, "rules", c)
 			}
 		}),
-		"@cssPushDecl": mk(func(r *jsonic.Rule) {
+		"@cssPushDecl": mk(func(r *tabnas.Rule) {
 			if c, ok := childMap(r); ok {
 				appendField(r, "declarations", c)
 			}
 		}),
-		"@cssPushKf": mk(func(r *jsonic.Rule) {
+		"@cssPushKf": mk(func(r *tabnas.Rule) {
 			if c, ok := childMap(r); ok {
 				appendField(r, "keyframes", c)
 			}
@@ -530,7 +531,7 @@ func makeActions(_lowercaseProperties bool, position bool) map[jsonic.FuncRef]an
 	}
 }
 
-func atRuleVal(tok *jsonic.Token) (kw, prelude string) {
+func atRuleVal(tok *tabnas.Token) (kw, prelude string) {
 	if tok == nil {
 		return "", ""
 	}
@@ -543,7 +544,7 @@ func atRuleVal(tok *jsonic.Token) (kw, prelude string) {
 	return kw, prelude
 }
 
-func makeAtRules(tok *jsonic.Token) map[string]any {
+func makeAtRules(tok *tabnas.Token) map[string]any {
 	kw, prelude := atRuleVal(tok)
 	switch {
 	case kw == "media":
@@ -567,7 +568,7 @@ func makeAtRules(tok *jsonic.Token) map[string]any {
 	}
 }
 
-func makeAtDecls(tok *jsonic.Token) map[string]any {
+func makeAtDecls(tok *tabnas.Token) map[string]any {
 	kw, prelude := atRuleVal(tok)
 	switch kw {
 	case "font-face":
@@ -584,7 +585,7 @@ func makeAtDecls(tok *jsonic.Token) map[string]any {
 	}
 }
 
-func makeKeyframes(tok *jsonic.Token) map[string]any {
+func makeKeyframes(tok *tabnas.Token) map[string]any {
 	kw, name := atRuleVal(tok)
 	n := map[string]any{"type": "keyframes", "name": name}
 	if v := vendorPrefix(kw); v != "" {
@@ -594,7 +595,7 @@ func makeKeyframes(tok *jsonic.Token) map[string]any {
 	return n
 }
 
-func makeAtStmt(tok *jsonic.Token) map[string]any {
+func makeAtStmt(tok *tabnas.Token) map[string]any {
 	kw := ""
 	params := ""
 	if tok != nil {
@@ -657,7 +658,7 @@ func vendorPrefix(kw string) string {
 // --- Lexer ----------------------------------------------------------------
 
 type cssTins struct {
-	cc, gc, atr, atd, atk, ats jsonic.Tin
+	cc, gc, atr, atd, atk, ats tabnas.Tin
 }
 
 // commentNodeRules: rule names at which a comment is captured as a node (the
@@ -686,9 +687,9 @@ var declsKw = map[string]bool{
 
 // buildCssTokenMatcher builds the single lex matcher. See the TypeScript
 // plugin (src/css.ts) for the canonical commentary; the two are kept in step.
-func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLexMatcher {
-	return func(_ *jsonic.LexConfig, _ *jsonic.Options) jsonic.LexMatcher {
-		return func(lex *jsonic.Lex, rule *jsonic.Rule) *jsonic.Token {
+func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) tabnas.MakeLexMatcher {
+	return func(_ *tabnas.LexConfig, _ *tabnas.Options) tabnas.LexMatcher {
+		return func(lex *tabnas.Lex, rule *tabnas.Rule) *tabnas.Token {
 			pnt := lex.Cursor()
 			src := lex.Src
 			sI := pnt.SI
@@ -732,7 +733,7 @@ func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLex
 					return lex.Bad("unterminated_comment")
 				}
 				val := strings.TrimSpace(stripComments(src[sI:endI]))
-				tkn := lex.Token("#VL", jsonic.TinVL, val, src[sI:endI])
+				tkn := lex.Token("#VL", tabnas.TinVL, val, src[sI:endI])
 				advance(pnt, src, sI, endI)
 				return tkn
 			}
@@ -765,7 +766,7 @@ func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLex
 					return lex.Bad("unterminated_comment")
 				}
 				sel := strings.TrimSpace(stripComments(src[sI:end]))
-				tkn := lex.Token("#TX", jsonic.TinTX, sel, src[sI:end])
+				tkn := lex.Token("#TX", tabnas.TinTX, sel, src[sI:end])
 				advance(pnt, src, sI, end)
 				return tkn
 			}
@@ -783,14 +784,14 @@ func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) jsonic.MakeLex
 			if lowercaseProperties {
 				prop = strings.ToLower(prop)
 			}
-			tkn := lex.Token("#TX", jsonic.TinTX, prop, src[sI:eI])
+			tkn := lex.Token("#TX", tabnas.TinTX, prop, src[sI:eI])
 			advance(pnt, src, sI, eI)
 			return tkn
 		}
 	}
 }
 
-func matchAtRule(lex *jsonic.Lex, src string, sI int, tins cssTins) *jsonic.Token {
+func matchAtRule(lex *tabnas.Lex, src string, sI int, tins cssTins) *tabnas.Token {
 	pnt := lex.Cursor()
 	kEnd := sI + 1
 	for kEnd < len(src) && isAtChar(src[kEnd]) {
@@ -805,7 +806,7 @@ func matchAtRule(lex *jsonic.Lex, src string, sI int, tins cssTins) *jsonic.Toke
 	if kind == selectorKind {
 		prelude := strings.TrimSpace(src[kEnd:idx])
 		var tinName string
-		var tin jsonic.Tin
+		var tin tabnas.Tin
 		switch {
 		case keyframesRe.MatchString(kw):
 			tinName, tin = "#ATK", tins.atk
@@ -834,7 +835,7 @@ func matchAtRule(lex *jsonic.Lex, src string, sI int, tins cssTins) *jsonic.Toke
 	return tkn
 }
 
-func advance(pnt *jsonic.Point, src string, sI, end int) {
+func advance(pnt *tabnas.Point, src string, sI, end int) {
 	rows := 0
 	lastNL := -1
 	for i := sI; i < end; i++ {
@@ -868,12 +869,12 @@ func colWidth(s string) int {
 }
 
 // startPos is a token's first-character position (1-based line/column).
-func startPos(tok *jsonic.Token) map[string]any {
+func startPos(tok *tabnas.Token) map[string]any {
 	return map[string]any{"line": tok.RI, "column": tok.CI}
 }
 
 // endPos is the position just after a token's last character.
-func endPos(tok *jsonic.Token) map[string]any {
+func endPos(tok *tabnas.Token) map[string]any {
 	s := tok.Src
 	rows := 0
 	lastNL := -1
@@ -1161,30 +1162,30 @@ func isAtChar(c byte) bool {
 
 // --- Grammar text -> GrammarSpec ------------------------------------------
 
-func parseGrammarText(text string, refs map[jsonic.FuncRef]any) (*jsonic.GrammarSpec, error) {
+func parseGrammarText(text string, refs map[tabnas.FuncRef]any) (*tabnas.GrammarSpec, error) {
 	parsed, err := jsonic.Make().Parse(text)
 	if err != nil {
 		return nil, fmt.Errorf("css: failed to parse grammar text: %w", err)
 	}
 	// The parser now builds insertion-ordered *OrderedMap object nodes; this
 	// grammar spec is order-agnostic config, so flatten to plain map trees.
-	parsed = jsonic.Plainify(parsed)
+	parsed = tabnas.Plainify(parsed)
 	parsedMap, ok := parsed.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("css: grammar text did not parse to a map")
 	}
-	gs := &jsonic.GrammarSpec{Ref: refs}
+	gs := &tabnas.GrammarSpec{Ref: refs}
 	ruleMap, ok := parsedMap["rule"].(map[string]any)
 	if !ok {
 		return gs, nil
 	}
-	gs.Rule = make(map[string]*jsonic.GrammarRuleSpec, len(ruleMap))
+	gs.Rule = make(map[string]*tabnas.GrammarRuleSpec, len(ruleMap))
 	for name, rDef := range ruleMap {
 		rd, ok := rDef.(map[string]any)
 		if !ok {
 			continue
 		}
-		grs := &jsonic.GrammarRuleSpec{}
+		grs := &tabnas.GrammarRuleSpec{}
 		if openDef, ok := rd["open"]; ok {
 			grs.Open = buildGrammarAlts(openDef)
 		}
@@ -1196,19 +1197,19 @@ func parseGrammarText(text string, refs map[jsonic.FuncRef]any) (*jsonic.Grammar
 	return gs, nil
 }
 
-func buildGrammarAlts(def any) []*jsonic.GrammarAltSpec {
+func buildGrammarAlts(def any) []*tabnas.GrammarAltSpec {
 	arr, ok := def.([]any)
 	if !ok {
 		return nil
 	}
-	alts := make([]*jsonic.GrammarAltSpec, 0, len(arr))
+	alts := make([]*tabnas.GrammarAltSpec, 0, len(arr))
 	for _, item := range arr {
 		m, ok := item.(map[string]any)
 		if !ok {
-			alts = append(alts, &jsonic.GrammarAltSpec{})
+			alts = append(alts, &tabnas.GrammarAltSpec{})
 			continue
 		}
-		ga := &jsonic.GrammarAltSpec{}
+		ga := &tabnas.GrammarAltSpec{}
 		if s, ok := m["s"]; ok {
 			switch sv := s.(type) {
 			case string:
@@ -1238,12 +1239,12 @@ func buildGrammarAlts(def any) []*jsonic.GrammarAltSpec {
 		if a, ok := m["a"]; ok {
 			switch av := a.(type) {
 			case string:
-				ga.A = jsonic.FuncRef(av)
+				ga.A = tabnas.FuncRef(av)
 			case []any:
 				refs := make([]any, len(av))
 				for i, v := range av {
 					if s, ok := v.(string); ok {
-						refs[i] = jsonic.FuncRef(s)
+						refs[i] = tabnas.FuncRef(s)
 					} else {
 						refs[i] = v
 					}
