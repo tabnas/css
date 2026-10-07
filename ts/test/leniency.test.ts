@@ -20,7 +20,7 @@
 // stack and the plugin alone must classify (and value) every probe
 // identically — rather than pinning particular verdicts, so it stays honest
 // even where a current verdict may be arguable. `test/spec/leniency.tsv` pins
-// the verdicts themselves, in both runtimes.
+// the verdicts themselves, in all three runtimes.
 
 import { describe, test } from 'node:test'
 import assert from 'node:assert'

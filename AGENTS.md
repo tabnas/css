@@ -848,15 +848,13 @@ The steps, in order:
    publishes `rs/` from the tag, rewriting each sibling path dependency into
    a requirement on that crate's newest version on crates.io and dropping
    the path-only dev-dependency, and `cargo publish` verify-builds against
-   those versions. crates.io has `tabnas-css` 0.5.9, the crate as it was
-   before the engine, with no dependencies; `tabnas-parser`, `tabnas-jsonic`
-   and `tabnas-json` are on crates.io too, so the plugin crate can follow.
-   The plugin crate removes public items 0.5.9 has (the `machine` module,
-   `grammar::{Grammar, Alt, RuleDef}`, `Css::grammar()`, `lex::{Token, Lex,
-   Point, start_pos, end_pos}`), which breaks Rust callers of those; which
-   version carries that is the maintainer's release decision, since the
-   version moves in lockstep with `ts/package.json`. Do not paper over any
-   of this with a local `cargo publish`, for the same reason a local `npm
+   those versions. crates.io has carried this plugin crate since 0.5.10,
+   built on `tabnas-parser` and `tabnas-jsonic`. Its 0.5.9 is the crate as
+   it was before the engine, with no dependencies; the plugin crate removed
+   public items 0.5.9 has (the `machine` module, `grammar::{Grammar, Alt,
+   RuleDef}`, `Css::grammar()`, `lex::{Token, Lex, Point, start_pos,
+   end_pos}`), which broke Rust callers of those. Do not paper over any of
+   this with a local `cargo publish`, for the same reason a local `npm
    publish` is not the release path.
 2. Verify against the **published** dependencies rather than your checkout.
    The release runner installs fresh from the registry; a working tree
@@ -878,12 +876,13 @@ The steps, in order:
    suite then passes against unreleased code while appearing to verify the
    published one. Reinstalling is the part that matters.
 
-   One thing a clean install does **not** isolate:
-   `ts/test/doc-examples.test.*` resolves `@tabnas/*` by filesystem path
-   (`const TABNAS = path.join(REPO, '..')`), not through `node_modules`. If
-   unbuilt sibling checkouts sit beside this repo, those blocks fail with
-   `MODULE_NOT_FOUND` no matter what you installed — build the siblings, or
-   verify somewhere they are absent.
+   The doc examples are covered too. `ts/test/doc-examples.test.*`
+   resolves a doc example's `require` through `node_modules` first; only a
+   `@tabnas/*` package that is not installed falls back to the sibling
+   checkout `../<x>/ts` (`const TABNAS = path.join(REPO, '..')`), and
+   `@tabnas/css` itself to this repository's `ts/`. Every package the
+   tested examples require, `@tabnas/parser` and `@tabnas/jsonic`, is
+   declared in `ts/package.json`, so a clean install supplies them.
 
    `npm test` already compiles here: `ts/package.json` sets `pretest` to
    `npm run build`, which npm runs automatically. No separate build step is
@@ -897,13 +896,17 @@ The steps, in order:
    ```bash
    (
      cd go
-     go mod edit -json | grep -q '"Replace": null' || { echo 'go.mod has a replace'; exit 1; }
+     go mod edit -json | jq -e '.Replace == null' >/dev/null || { echo 'go.mod has a replace'; exit 1; }
      GOWORK=off go test -count=1 ./...
    )
    ```
 
    `-count=1` because shared fixtures live outside the Go module, so a
-   changed corpus does not invalidate the test cache.
+   changed corpus does not invalidate the test cache. The check asks `jq`,
+   not `grep`: current Go leaves the `Replace` key out when there is no
+   replace, where older Go printed `"Replace": null`, and `jq` reads a
+   missing key as null, so the check passes on a clean `go.mod` and fails
+   on a replace either way.
 3. **Merge the bump through a reviewed PR.** That is the house convention —
    `CONTRIBUTING.md` squash-merges PRs and takes the title as the commit
    message — and what `release.yml`'s own header describes. A direct push to

@@ -26,9 +26,8 @@ npm install @tabnas/parser @tabnas/jsonic @tabnas/css
 # Go
 go get github.com/tabnas/css/go@latest
 
-# Rust: this repository's crate, from git, with the [patch] tables its
-# own dependencies need: add the TOML in rs/README.md#install to
-# Cargo.toml (crates.io's tabnas-css 0.5.9 is a different implementation)
+# Rust
+cargo add tabnas-css
 ```
 
 ## One tiny example

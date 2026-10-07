@@ -63,7 +63,7 @@ there.
 ## Rules
 
 - Prefer adding a fixture here over a one-off in-language assertion when a
-  case is expressible as input → output. That is what keeps the two
+  case is expressible as input → output. That is what keeps the three
   runtimes honest against each other.
 - `leniency.tsv` is a guard, not a wish-list: every row is a relaxed-JSON
   document that a CSS parser must REJECT, pinning that jsonic's base leniency

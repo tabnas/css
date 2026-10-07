@@ -20,8 +20,9 @@ package tabnascss
 // skips, because a conformance suite that quietly does not run reports green
 // while measuring nothing.
 //
-// ts/test/reworkcss.test.ts runs the SAME corpus with the SAME derivation, so
-// the two runtimes cannot drift without one of them going red.
+// ts/test/reworkcss.test.ts and rs/tests/reworkcss.rs run the SAME corpus
+// with the SAME derivation, so the three runtimes cannot drift without one
+// of them going red.
 
 import (
 	"encoding/json"
