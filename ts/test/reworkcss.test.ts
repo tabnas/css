@@ -17,8 +17,9 @@
 // skips, because a conformance suite that quietly does not run reports green
 // while measuring nothing.
 //
-// `go/reworkcss_test.go` runs the SAME corpus with the SAME derivation, so the
-// two runtimes cannot drift without one of them going red.
+// `go/reworkcss_test.go` and `rs/tests/reworkcss.rs` run the SAME corpus with
+// the SAME derivation, so the three runtimes cannot drift without one of
+// them going red.
 //
 // There is no per-case skip list. The one case this plugin does not match,
 // `empty`, is asserted explicitly below as a documented divergence.

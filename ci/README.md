@@ -42,11 +42,11 @@ Both of these were staged here and now run from `.github/workflows/`:
 ### Why the divergence probe is worth a CI job
 
 The probe generates a deterministic pseudo-random corpus of CSS-ish inputs,
-parses each with both runtimes, and reports every input they classify or
-value differently. It is the instrument that would have caught audit item
-C1 — a `slice bounds out of range` panic in the Go scanner, live and
-unrecorded, which no shared fixture could see because no fixture happened
-to contain the shape that triggered it.
+parses each with the TypeScript and Go runtimes, and reports every input
+they classify or value differently. It is the instrument that would have
+caught audit item C1 — a `slice bounds out of range` panic in the Go
+scanner, live and unrecorded, which no shared fixture could see because no
+fixture happened to contain the shape that triggered it.
 
 Running it by hand catches that class only when someone remembers to run it.
 
@@ -75,8 +75,8 @@ the fix restored it reports NO DIVERGENCE and exits 0.
 
 ### What it does not replace
 
-A fixture. When the probe finds something, pin it in `test/spec/` once both
-runtimes agree on the answer: a fixture names the case forever and is read
+A fixture. When the probe finds something, pin it in `test/spec/` once all
+three runtimes agree on the answer: a fixture names the case forever and is read
 by a human, while the probe only says that one seed found it once.
 
 ### Why the Rust job is worth a workflow

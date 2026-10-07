@@ -12,29 +12,15 @@ tree is the same tree and only the Rust types are new. Skip to
 
 ## 1. Install
 
-This page uses the crate this repository builds, a plugin on the tabnas
-engine, taken from the repository (the `tabnas-css` on crates.io is a
-different implementation). Add it to `Cargo.toml`, with the `[patch]`
-tables that point the crate's own dependencies at their repositories:
+This page uses `tabnas-css`, the crate this repository builds, a plugin on
+the tabnas engine published on crates.io. Add it to your crate (Cargo
+fetches the engine and the jsonic grammar with it):
 
-```toml
-[dependencies]
-tabnas-css = { git = "https://github.com/tabnas/css" }
-
-[patch."https://github.com/tabnas/css"]
-tabnas = { package = "tabnas-parser", git = "https://github.com/tabnas/parser" }
-tabnas-jsonic = { git = "https://github.com/tabnas/jsonic" }
-
-[patch."https://github.com/tabnas/jsonic"]
-tabnas = { package = "tabnas-parser", git = "https://github.com/tabnas/parser" }
-tabnas-json = { git = "https://github.com/tabnas/json" }
-
-[patch."https://github.com/tabnas/json"]
-tabnas = { package = "tabnas-parser", git = "https://github.com/tabnas/parser" }
+```bash
+cargo add tabnas-css
 ```
 
-Cargo finds the crate in `rs/` and fetches the engine with it. The
-[README](../README.md#install) explains why the patch tables are needed.
+The crate re-exports both, so no other entry is needed.
 
 ## 2. Parse a rule
 

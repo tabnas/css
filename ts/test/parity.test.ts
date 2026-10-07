@@ -5,8 +5,9 @@
 //
 // The fixture loader, the escape codec, the `ERROR:<code>` contract and the
 // row loop all come from @tabnas/support, whose Go half `go/parity_test.go`
-// uses to run the SAME files — so the two implementations cannot drift
-// without one of them going red, and neither can the two loaders.
+// uses to run the SAME files, as `rs/tests/parity.rs` does with its own
+// loader — so the three implementations cannot drift without one of them
+// going red, and neither can support's two loaders.
 //
 // What is left here is only what is specific to css: how to build the
 // parser for a row's options.
@@ -31,5 +32,5 @@ makeRunner({
   // `findSpecDir` walks up from this file — `dist-test/` at runtime — to the
   // repo root's `test/spec`, so moving the suite does not mean recounting
   // `..` hops. `dir` then auto-discovers every fixture in it, so adding a
-  // .tsv runs it in both runtimes without touching either runner.
+  // .tsv runs it in every runtime without touching any runner.
   .dir(findSpecDir(__dirname))

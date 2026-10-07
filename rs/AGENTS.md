@@ -251,20 +251,20 @@ checks before anything else runs.
 makes, sibling versions aside, so a change to `Cargo.toml` commits the
 updated lock with it.
 
-crates.io has `tabnas-css` 0.5.9: the earlier crate, with its own lexer
-and rule machine and no dependencies. The published pages (README and
-`doc/`) call it a different implementation and carry no history, since
-they ship in the package. `.github/workflows/crates-release.yml`
-publishes `rs/` from the release tag on every release, rewriting each sibling path dependency into a requirement on that
-crate's newest version on crates.io, where `tabnas-parser`,
-`tabnas-jsonic` and `tabnas-json` are published. The engine-based crate
-removes `mod machine`, `Css::grammar`, `grammar::{Grammar, Alt,
-RuleDef}` and `lex::{Token, Lex, Point, start_pos, end_pos}`, which is
-breaking for a Rust caller of 0.5.9; the version moves in lockstep with
-`ts/package.json`, and when to publish is the maintainer's decision. A
-local `cargo publish` is not the release path.
+crates.io has carried this engine-based crate since 0.5.10. Its 0.5.9 is
+the earlier crate, with its own lexer and rule machine and no
+dependencies. The published pages (README and `doc/`) call 0.5.9 a
+different implementation and carry no history, since they ship in the
+package. `.github/workflows/crates-release.yml` publishes `rs/` from the
+release tag on every release, rewriting each sibling path dependency into
+a requirement on that crate's newest version on crates.io, where
+`tabnas-parser`, `tabnas-jsonic` and `tabnas-json` are published. The
+engine-based crate removed `mod machine`, `Css::grammar`,
+`grammar::{Grammar, Alt, RuleDef}` and `lex::{Token, Lex, Point,
+start_pos, end_pos}`, which broke a Rust caller of 0.5.9. A local `cargo
+publish` is not the release path.
 
-Until then a consumer takes the crate from git, with a `[patch]` table
-per repository whose manifest names siblings by path (the README's
-Install section); `aless`'s `Cargo.toml` uses the same pattern for every
-tabnas crate it takes from git.
+A consumer adds the crate with `cargo add tabnas-css` (the README's
+Install section). A crate taken from git instead needs a `[patch]` table
+per repository whose manifest names siblings by path; `aless`'s
+`Cargo.toml` uses that pattern for every tabnas crate it takes from git.

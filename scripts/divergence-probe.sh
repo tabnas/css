@@ -18,8 +18,9 @@
 # than no gate because the green tick is read as evidence.
 #
 # Still run it by hand when changing the grammar or porting a fix, and pin
-# whatever it finds as a fixture in test/spec/ once both runtimes agree: a
-# fixture names the case forever, while the probe only says a seed found it.
+# whatever it finds as a fixture in test/spec/ once all three runtimes
+# agree: a fixture names the case forever, while the probe only says a
+# seed found it.
 #
 # A rejection is compared by its ERROR CODE, not only as a rejection. The
 # probe used to write a bare ERR for both, so it reported NO DIVERGENCE

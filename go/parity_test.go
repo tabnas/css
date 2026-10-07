@@ -7,9 +7,10 @@ package tabnascss
 //
 // The fixture loader, the escape codec, the ERROR:<code> contract and the
 // row loop all come from github.com/tabnas/support/go, whose TypeScript
-// half ts/test/parity.test.ts uses to run the SAME files — so the two
+// half ts/test/parity.test.ts uses to run the SAME files, as
+// rs/tests/parity.rs does with its own loader — so the three
 // implementations cannot drift without one of them going red, and neither
-// can the two loaders.
+// can support's two loaders.
 //
 // What is left here is only what is specific to css: how to build the
 // parser for a row's options, and how to flatten a result for comparison.
@@ -24,7 +25,7 @@ import (
 
 // TestSpec runs every fixture in the spec directory. FindSpecDir walks up
 // from the package directory, and Dir discovers the files by listing, so
-// adding a .tsv runs it in both runtimes without touching either runner.
+// adding a .tsv runs it in every runtime without touching any runner.
 func TestSpec(t *testing.T) {
 	dir, err := support.FindSpecDir("")
 	if err != nil {

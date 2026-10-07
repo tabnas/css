@@ -1,8 +1,10 @@
 # Build, test and publish the TypeScript (ts/), Go (go/) and Rust (rs/)
 # implementations. ts/ is canonical; go/ and rs/ track it.
 #
-# Local build/test resolve the unpublished @tabnas siblings via the
-# repo-set go.work + node_modules symlinks (admin/scripts/link.sh).
+# TypeScript and Go build against the published @tabnas siblings (npm, the
+# Go module proxy); admin/scripts/link.sh can point them at local checkouts
+# instead (node_modules symlinks and a go.work one level up). rs/ takes its
+# tabnas crates by path, so it needs the sibling checkouts.
 
 .PHONY: all build test clean build-ts build-go build-rs \
         test-ts test-go test-rs gate-rs version-rs clean-ts clean-go clean-rs \

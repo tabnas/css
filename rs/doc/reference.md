@@ -20,19 +20,18 @@ pages link back to this one rather than restating it.
 use tabnas_css::{Css, Error, Node, Options, Value};
 ```
 
-This page documents the crate this repository builds, which is taken
-from the repository with the `[patch]` tables the
-[README](../README.md#install) lists, because its own dependencies are
-sibling path dependencies. The `tabnas-css` 0.5.9 on crates.io is a
-different implementation: it has no dependencies, and none of the
-plugin API below.
+This page documents the crate this repository builds, which is published
+on crates.io as `tabnas-css`, and the [README](../README.md#install) shows
+how to add it. Version 0.5.9 there is a different implementation: it has
+no dependencies, and none of the plugin API below.
 
 The engine's types appear in this API as `tabnas::…`: `Tabnas`,
 `Plugin`, `PluginError`, `Value` and `TabnasError`. The crate re-exports
 the engine as `tabnas_css::tabnas` and jsonic as `tabnas_css::tabnas_jsonic`;
 name their types through those paths. A dependency of your own on
-either can resolve to another copy of the crate, one from crates.io for
-instance, whose types are not the ones this API takes and returns.
+either can resolve to another copy of the crate, one at a different minor
+version for instance, whose types are not the ones this API takes and
+returns.
 
 `tabnas_css::VERSION` is the crate's version as a `&'static str`. It
 equals the version in `Cargo.toml`, and equals the version the

@@ -218,8 +218,8 @@ for every input.
 
 ## Relationship to the Go port
 
-The plugin ships in two implementations (this TypeScript one and a Go
-port) built from the same canonical `css-grammar.jsonic`. The
-TypeScript version is the reference. For the Go API shape, value types,
-and any accepted differences, see
+The plugin ships in three implementations (this TypeScript one, a Go
+port and a Rust port) built from the same canonical `css-grammar.jsonic`.
+The TypeScript version is the reference. For the Go API shape, value
+types, and any accepted differences, see
 [../../go/doc/concepts.md](../../go/doc/concepts.md).

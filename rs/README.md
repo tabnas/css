@@ -23,34 +23,25 @@ and Go have no limit. `parse` and `Css::parse` have no limit either.
 
 ## Install
 
-The crate is taken from the repository. The `tabnas-css` 0.5.9 on
-crates.io is a different implementation: it has no dependencies, and none
-of the plugin API this page describes.
+The crate is published on crates.io, where it depends on the engine,
+`tabnas-parser`, and on `tabnas-jsonic`:
 
-Its own dependencies are named by relative path to sibling checkouts
-(`path = "../../parser/rs"`). Inside a git source, cargo resolves such a
-path within that same repository, where it does not exist, so a crate
-taken from git needs a `[patch]` table for each repository that carries
-one, pointing it at its own repository:
-
-```toml
-[dependencies]
-tabnas-css = { git = "https://github.com/tabnas/css" }
-
-[patch."https://github.com/tabnas/css"]
-tabnas = { package = "tabnas-parser", git = "https://github.com/tabnas/parser" }
-tabnas-jsonic = { git = "https://github.com/tabnas/jsonic" }
-
-[patch."https://github.com/tabnas/jsonic"]
-tabnas = { package = "tabnas-parser", git = "https://github.com/tabnas/parser" }
-tabnas-json = { git = "https://github.com/tabnas/json" }
-
-[patch."https://github.com/tabnas/json"]
-tabnas = { package = "tabnas-parser", git = "https://github.com/tabnas/parser" }
+```bash
+cargo add tabnas-css
 ```
 
-Cargo finds the crate in `rs/`. Once the engine-based crate is published,
-a version requirement replaces all of this.
+It re-exports both, as `tabnas_css::tabnas` and `tabnas_css::tabnas_jsonic`,
+so the examples on this page need no other entry. Version 0.5.9 on crates.io
+is a different implementation: it has no dependencies, and none of the plugin
+API this page describes.
+
+The `Cargo.toml` in this repository differs from the published one. Its own
+dependencies are named by relative path to sibling checkouts
+(`path = "../../parser/rs"`), so a build here needs `tabnas/parser`,
+`tabnas/json`, `tabnas/jsonic` and, for the tests, `tabnas/debug` to be
+cloned beside it. The release workflow swaps those paths for crates.io
+versions when it publishes the crate. A crate taken from git does not get
+that swap.
 
 The crate needs Rust 1.85 or later, the engine's own floor.
 
