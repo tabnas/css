@@ -972,3 +972,6 @@ const VERSION = '0.5.13'
 
 export { Css, VERSION }
 export type { CssOptions }
+
+export { translate } from './translate'
+export type { TranslationPart, TranslationParts } from './translate'

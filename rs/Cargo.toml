@@ -20,12 +20,13 @@ keywords = ["css", "stylesheet", "parser", "ast", "tabnas"]
 categories = ["parser-implementations", "web-programming"]
 # `doc/` ships because the `#[cfg(doctest)]` module in src/lib.rs includes
 # those pages, so a crate without them is one whose own doctests cannot
-# build. `tests/` does NOT ship: every integration test reads something
-# from the repository (the shared test/spec fixtures, css-grammar.jsonic,
-# ts/package.json), none of which can be included from outside rs/, so
-# shipping them would leave `cargo test` on the unpacked crate failing on
-# a missing repository root.
-include = ["src/**", "examples/**", "doc/**", "README.md", "LICENSE"]
+# build, and `translate/` because `translate()` in src/lib.rs includes the
+# crate's copies of the manifest and the render. `tests/` does NOT ship:
+# every integration test reads something from the repository (the shared
+# test/spec fixtures, css-grammar.jsonic, ts/package.json), none of which
+# can be included from outside rs/, so shipping them would leave
+# `cargo test` on the unpacked crate failing on a missing repository root.
+include = ["src/**", "examples/**", "doc/**", "translate/**", "README.md", "LICENSE"]
 
 [lib]
 name = "tabnas_css"

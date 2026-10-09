@@ -339,3 +339,56 @@ pub fn parse(src: &str) -> Result<Value, Error> {
 pub fn parse_with(src: &str, options: Options) -> Result<Value, Error> {
     Css::with_options(options).parse(src)
 }
+
+/// One alchemy translation source and the entry point a host calls in it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TranslationPart {
+    /// The definition a host calls after linking the source.
+    pub entry: &'static str,
+    /// The source text, or `None` for an entry supplied by alchemy.
+    pub source: Option<&'static str>,
+}
+
+/// The package-local structural translation interface: the manifest and
+/// the alchemy sources a host composes a translation from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TranslationParts {
+    /// The complete `tabnas.plugin.json` text.
+    pub manifest: &'static str,
+    /// An optional lift from the grammar's events to its first read shape.
+    pub lift: Option<TranslationPart>,
+    /// An optional embedding of a plain tree in the format's schema, with its reverse.
+    pub embed: Option<TranslationPart>,
+    /// An optional render from the write shape to text.
+    pub render: Option<TranslationPart>,
+}
+
+const TRANSLATION: TranslationParts = TranslationParts {
+    manifest: include_str!("../translate/manifest.json"),
+    lift: None,
+    embed: None,
+    render: Some(TranslationPart {
+        entry: "css-render",
+        source: Some(include_str!("../translate/render.alc")),
+    }),
+};
+
+/// CSS's translation parts. The manifest's `translate` object says that CSS
+/// is read as and written from a tree of its own shape, the reader's
+/// stylesheet (the schema `css-ast`, whose root is an object), and the
+/// render, `css-render`, writes that tree back as CSS text. There is no
+/// embed: a host composes a translation into CSS only from CSS itself or
+/// from a program that builds the tree. The texts are the crate's copies
+/// in `translate/` of `tabnas.plugin.json` and `alchemy/render.alc`, which
+/// `npm run embed` in `ts/` writes and `tests/translate.rs` holds to the
+/// files.
+///
+/// ```
+/// let parts = tabnas_css::translate().expect("CSS carries translation parts");
+/// assert_eq!(parts.render.map(|part| part.entry), Some("css-render"));
+/// assert!(parts.embed.is_none());
+/// ```
+#[must_use]
+pub const fn translate() -> Option<TranslationParts> {
+    Some(TRANSLATION)
+}
