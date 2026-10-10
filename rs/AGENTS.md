@@ -9,11 +9,12 @@ rules. This file covers only what is specific to this crate.
 
 | Path | |
 |---|---|
-| `src/lib.rs` | the public surface: `plugin`, `css`, `make`, `make_with`, `Options` (with `from_value` and `to_value`), `Css`, `parse`, `parse_with`, `VERSION`, the re-exports of `tabnas` and `tabnas_jsonic`, and the `#[cfg(doctest)]` module that makes every Markdown example a doctest |
+| `src/lib.rs` | the public surface: `plugin`, `css`, `make`, `make_with`, `Options` (with `from_value` and `to_value`), `Css`, `parse`, `parse_with`, `VERSION`, the re-exports of `tabnas` and `tabnas_jsonic`, the translation parts (`translate`, `TranslationParts`, `TranslationPart`, `include_str!` of the copies in `translate/`), and the `#[cfg(doctest)]` module that makes every Markdown example a doctest |
 | `src/plugin.rs` | the install, the actions that build the nodes, the two node stores (tree and arena), UTF-16 positions (`col16`), the arena meta, the `tabnas-css/depth` guard and `TREE_RULE_DEPTH` |
 | `src/lex.rs` | the `cssToken` matcher and its scanners (with `BraceScans`, a group scanned once), the lex subscriber (end-of-input overshoot, bad-token lookahead), `Tin`, `Error` and `From<TabnasError>`, and the ECMAScript whitespace helpers |
 | `src/grammar.rs` | `GRAMMAR_TEXT` (the embedded `css-grammar.jsonic`), `OPTIONS_DOC` (the canonical option overrides, plus `rule.history: 1` and the `@css-prepare` hook), `RULES`, and `specs()`, which reads the text with jsonic once per process |
 | `src/value.rs` | `Value` and `Node`, with every tree walk written as a stack machine, and `from_arena`, which builds the tree from the arena without recursion |
+| `translate/` | the crate's copies of `../tabnas.plugin.json` (as `manifest.json`) and `../alchemy/render.alc`, which a packaged crate needs (`include` in `Cargo.toml` names the directory); `npm run embed` in `../ts` writes them |
 | `tests/parity.rs` | every shared `../test/spec/*.tsv` row three ways: `Css::parse`, the plugin on jsonic, and the plugin on a bare engine |
 | `tests/divergent.rs` | the `rust` column of `../test/divergent.tsv`, read through the engine's API, and `Css::parse` against the `ts` cell on every row |
 | `tests/css.rs` | what a fixture cannot express, plus the crate's API: key order, an absent `position.end`, error positions taken from the TypeScript suite, 20,000-level nesting on a 2 MiB thread |
@@ -24,6 +25,7 @@ rules. This file covers only what is specific to this crate.
 | `tests/memory.rs` | a counting allocator holding a parse's peak memory, flat and nested, under ceilings |
 | `tests/reworkcss.rs` | the pinned reworkcss/css corpus, fetched by the test itself |
 | `tests/perf.rs`, `tests/version.rs` | the instance-reuse guard and the version sites |
+| `tests/translate.rs` | the translation parts: the manifest and the render `translate()` carries are the repository's files, there is no embed, the manifest's shapes (`tree`, root `object`, schema `css-ast`) and loss lines, and every render definition named `css-...` |
 | `tests/support/mod.rs` | the crate's own fixture loader, JSON reader and canonical compare; `tabnas-support` is not a dependency |
 | `doc/*.md`, `README.md` | the four Diátaxis pages and the crate front page, all gated by the prose gate |
 | `examples/parse.rs` | the binary the TS/Rust differential probe drives |
