@@ -35,4 +35,21 @@ var translationParts = TranslationParts{
 // render, css-render, which writes that tree back as CSS text. There is no
 // embed, so a host composes a translation into CSS only from CSS itself or
 // from a program that builds the tree.
-func Translate() *TranslationParts { return &translationParts }
+// Each call returns a copy of its own, so that what one caller changes
+// is not what another reads.
+func Translate() *TranslationParts {
+	parts := translationParts
+	parts.Lift = copyPart(parts.Lift)
+	parts.Embed = copyPart(parts.Embed)
+	parts.Render = copyPart(parts.Render)
+	return &parts
+}
+
+// copyPart is a part of its own, so that no caller reaches another's.
+func copyPart(part *TranslationPart) *TranslationPart {
+	if part == nil {
+		return nil
+	}
+	copied := *part
+	return &copied
+}
