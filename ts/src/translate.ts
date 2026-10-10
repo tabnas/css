@@ -73,9 +73,8 @@ const TRANSLATION: TranslationParts = Object.freeze({
 ; The profile writes the reader's own tree and no other, as the
 ; translation design says a render of a format whose value has a shape of
 ; its own does: the manifest names that shape \`css-ast\`, the reworkcss/css
-; model the reader builds. Every node is an object whose first member is
-; \`type\`, and its other members follow in the order the reader builds
-; them in, which a walked value keeps:
+; model the reader builds. Every node is an object with a \`type\` and the
+; members its type gives it:
 ;
 ;   stylesheet    rules (the root, and only the root)
 ;   rule          selectors, declarations
@@ -89,27 +88,38 @@ const TRANSLATION: TranslationParts = Object.freeze({
 ;   host          rules
 ;
 ; and every other at-rule is named by its \`type\`: a block whose body is
-; rules holds a member named after the type, the prelude, then \`rules\`
+; rules holds a member named after the type, the prelude, and \`rules\`
 ; (\`media\`, \`supports\`, \`layer\`, ...); a block whose body is declarations
 ; holds \`declarations\` alone (\`font-face\`, \`viewport\`, \`counter-style\`,
 ; ...); a statement holds the member named after the type alone, its
-; params (\`import\`, \`charset\`, \`namespace\`, ...). The member after \`type\`
-; that is not one the list above gives a meaning is taken as that
-; at-rule's own, since alchemy compares a name only with a written one.
-; A node may end with \`position\`, which the reader adds when asked to;
-; it is read and not written, since a reader derives it from the text
-; again. Selectors, values, preludes, params, properties and comments are
-; the raw text the reader keeps (quotes, escapes and comments inside a
+; params (\`import\`, \`charset\`, \`namespace\`, ...). A member whose name no
+; node type gives a meaning is taken as an at-rule's own, its prelude,
+; since alchemy compares a name only with a written one, and a node holds
+; at most one. A node may also hold \`position\`, which the reader adds when
+; asked to: an object, \`start\` and \`end\`, read and not written, since a
+; reader derives it from the text again. A \`position\` that holds a string
+; is no source position but the prelude of an at-rule named \`position\`,
+; as \`@position x {}\` reads, and is written as one.
+;
+; The members may come in any order. The reader builds them in the order
+; above, \`type\` first, and the TypeScript and Rust trees keep it; the Go
+; port's nodes are plain maps, which a Go host walks in sorted key order,
+; where \`type\` comes after the members whose text it decides. So a node
+; writes nothing until what it writes is decided, and its text is the
+; same whatever order its members came in.
+;
+; Selectors, values, preludes, params, properties and comments are the
+; raw text the reader keeps (quotes, escapes and comments inside a
 ; prelude as written), so each is written as it is, and the render checks
 ; neither its characters nor how CSS reads an at-rule's keyword: a tree
 ; the reader could not have built (a comment holding \`*/\`, a selector
 ; holding a top-level comma, declarations under a keyword CSS reads as
 ; rules) is written as its members say and does not read back as itself.
-; Any other member, a member out of its place, a root that is not a
-; stylesheet, a declaration outside a block of declarations, a keyframe
-; outside a block of keyframes, a rule with no selector and a keyframe
-; with no value fail with TARGET_VALUE_UNREPRESENTABLE, naming what was
-; met.
+; Any other member, a member a node's type does not give it, a root that
+; is not a stylesheet, a declaration outside a block of declarations, a
+; keyframe outside a block of keyframes, a rule with no selector and a
+; keyframe with no value fail with TARGET_VALUE_UNREPRESENTABLE, naming
+; what was met.
 ;
 ; The text: the stylesheet's nodes one after another, a blank line
 ; between two, and one line feed after the last; an empty stylesheet is
@@ -127,20 +137,41 @@ const TRANSLATION: TranslationParts = Object.freeze({
 ; \`@type name;\`, and one of a type with rules, other than \`host\`,
 ; \`@type name {\` and its rules. Every statement ends with \`;\`.
 ;
-; The state is a vector of frames that grows with the stylesheet's
-; nesting and never with its width. A list (the stylesheet's rules, a
-; block's rules, declarations or keyframes) is
-; \`[:list kind indentation parent's-indentation written]\`, where written
-; says whether a node came before, which decides the separator; selectors
-; and a keyframe's values are \`[:strings kind indentation written]\`; a node
-; is a phase, its indentation, the kind of list it is in, and what it holds
-; until its text can be written: its type, an at-rule's prelude until the
-; members after it say whether it is a statement or a block, a keyframes'
-; name until its vendor, a document's prelude and vendor until its rules.
-; A position being passed over is \`[:skip opens]\`, one marker in opens per
-; container open inside it. Once the stylesheet ends the state is
-; \`[:done]\`, and nothing may follow it. Events no tree has fail with
-; PROTOCOL_ORDER_ERROR, saying so.
+; The state is two vectors: the frames, which grow with the stylesheet's
+; nesting and never with its width, and the blocks held back, innermost
+; last. A node is \`[:node indentation kind type members block]\`: the kind
+; of list it is in, its type once it has come, its other members so far as
+; \`[slot value]\` pairs, a slot for each name some node type gives a meaning
+; and one for a name none does (\`css-slot-of\`), and its block, \`:none\`
+; until one begins. What a node writes is decided by its type, its list
+; and its members together (\`css-compose\`), and a block's text comes after
+; its opening. So when a block begins, the opening is written and the
+; block follows it as it comes (\`:streamed\`) if the members so far decide
+; the opening and no member the node may still hold would change it;
+; otherwise the block is held back (\`:held\`) until the node ends, which
+; decides the opening, and is written then, after it. The reader's order
+; decides every opening before its block but three, which a later member
+; could still change and so are held: an unprefixed \`@keyframes\` (a
+; vendor), \`@host\` and a node of a type alone with rules (a prelude). A
+; block held back is a rope of four strings, each taking in the next's
+; text when that passes a size, so it stays four strings however long it
+; grows and a character is copied a bounded number of times; its text
+; counts toward the state's bound, \`max_metadata_bytes\`, which bounds what
+; can be held. Text goes to the output, or to the innermost block held
+; back when there is one.
+;
+; A list (the stylesheet's rules, a block's rules, declarations or
+; keyframes) is \`[:list kind indentation parent's-indentation written]\`,
+; where written says whether a node came before, which decides the
+; separator. A node's selectors or a keyframe's values are \`[:strs name
+; indentation one-per-line one-line written]\`, written both ways a list of
+; selectors is, each a rope, until the node's type says which. A member's
+; value due is \`[:member indentation kind type members block name]\`, and
+; the root's \`[:root-member type rules name]\`; the root is \`[:root type
+; rules]\`, whether each has come. A source position being passed over is
+; \`[:skip opens]\`, one marker in opens per container open inside it. Once
+; the stylesheet ends the frames are \`[:done]\`, and nothing may follow it.
+; Events no tree has fail with PROTOCOL_ORDER_ERROR, saying so.
 
 ; The top frame, or :none before the root.
 def css-top [s]
@@ -184,359 +215,525 @@ def css-close [lk pind written]
     case [_ false] "}"
     case _ (string-join "" ["\\n" pind "}"])
 
-; What comes before a selector or a value: a rule's selectors one per
-; line, a page's after \`@page\` and a space, a keyframe's values on one
-; line.
-def css-string-lead [sk ind written]
-  match [sk written]
-    case [:page false] " "
-    case [_ false] ""
-    case [:sel true] (string-join "" [",\\n" ind])
-    case _ ", "
+; A text held back: four strings, the newest text last. A piece joins the
+; last, and a string that passes its size joins the one before it, so a
+; character is copied a few times however long the text grows, and the
+; rope stays four strings.
+def css-rope-empty ["" "" "" ""]
 
-def css-out-of-place []
-  fail :unrepresentable "the tree is not a CSS stylesheet: a node's members are not the ones its type has, in the order the reader builds them"
+def css-rope-add [r x]
+  match r
+    case [a b c d] (css-rope-d a b c (string-join "" [d x]))
 
-def css-not-keyframe []
-  fail :unrepresentable "the tree is not a CSS stylesheet: a block of keyframes holds a node that is not a keyframe or a comment"
+def css-rope-d [a b c d]
+  match (compare (length d) 256)
+    case :less [a b c d]
+    case _ (css-rope-c a b (string-join "" [c d]))
+
+def css-rope-c [a b c]
+  match (compare (length c) 8192)
+    case :less [a b c ""]
+    case _ (css-rope-b a (string-join "" [b c]))
+
+def css-rope-b [a b]
+  match (compare (length b) 262144)
+    case :less [a b "" ""]
+    case _ [(string-join "" [a b]) "" "" ""]
+
+def css-rope-text [r]
+  string-join "" r
+
+; The slot of a member named for a meaning some node type gives it, which
+; a node of the type named the same holds as its own, its prelude; null
+; for any other name.
+def css-own-slot [name]
+  match name
+    case "property" 6
+    case "value" 7
+    case "selectors" 1
+    case "declarations" 3
+    case "rules" 4
+    case "values" 2
+    case "keyframes" 5
+    case "name" 8
+    case "vendor" 9
+    case "media" 10
+    case "comment" 11
+    case "supports" 12
+    case "document" 13
+    case "position" 14
+    case _ null
+
+; The slot a member is held in: its own, or the last.
+def css-slot-of [name]
+  match (css-own-slot name)
+    case null 15
+    case i i
+
+; A node's members so far, \`[slot value]\` each, in the order they came:
+; a node holds a few, each once.
+def css-slot [i f]
+  match (filter (partial css-in-slot i) f)
+    case [] null
+    case [[k v]] v
+    case _ :twice
+
+def css-in-slot [i p]
+  match p
+    case [k v] (css-same i k)
+
+def css-same [i k]
+  match (compare i k)
+    case :equal true
+    case _ false
+
+; What a member's slot holds: its value, and the name of one whose name no
+; node type gives a meaning.
+def css-held [i name value]
+  match i
+    case 15 [name value]
+    case _ value
+
+; A block a slot holds, by its kind, or null.
+def css-block-in [x]
+  match x
+    case [:body lk] lk
+    case _ null
+
+def css-out-of-place-text "a node's members are not the ones its type has"
+
+def css-not-keyframe-text "a block of keyframes holds a node that is not a keyframe or a comment"
+
+def css-no-declarations-text "a rule, a page or a keyframe has no declarations"
+
+def css-prelude-text "an at-rule's prelude is not a string"
+
+def css-selectors-text "a rule's or a page's selectors are not an array"
+
+def css-bad [message]
+  fail :unrepresentable (string-join "" ["the tree is not a CSS stylesheet: " message])
+
+; What a node writes, decided by its type, the kind of list it is in and
+; its members, whatever order they came in: \`[:block opening pending]\`,
+; what opens its block, and whether a member it may still hold would
+; change that; \`[:leaf text]\`, all of a node with no block; or
+; \`[:bad message]\`, for a node CSS has no form for. The first case is a
+; declaration, the commonest node, whose members are held in that order
+; whether its type comes first or last.
+def css-compose [ctx t f]
+  match [t ctx f]
+    case ["declaration" :decls [[6 property] [7 value]]] [:leaf (string-join "" [property ":" (css-words "" value) ";"])]
+    case [null _ _] [:bad "a node has no type"]
+    case [_ :kfs _] (css-in-keyframes t f)
+    case _ (css-in-block ctx t f)
+
+; A node in a block of keyframes: a keyframe or a comment.
+def css-in-keyframes [t f]
+  match t
+    case "keyframe" (css-keyframe f)
+    case "comment" (css-kf-comment f)
+    case _ [:bad css-not-keyframe-text]
+
+def css-keyframe [f]
+  match [(css-slot 2 f) (css-slot 3 f) (count f)]
+    case [[:strs nl cs true] [:body :decls] 2] [:block cs false]
+    case [[:strs nl cs false] [:body :decls] 2] [:bad "a keyframe has no value, which CSS has no form for"]
+    case [[:strs nl cs any] null 1] [:bad css-no-declarations-text]
+    case _ [:bad css-not-keyframe-text]
+
+def css-kf-comment [f]
+  match [(css-slot 11 f) (count f)]
+    case [null _] [:bad css-not-keyframe-text]
+    case [c 1] [:leaf (css-comment c)]
+    case _ [:bad css-not-keyframe-text]
+
+; A node in the stylesheet or a block of rules or declarations: a type
+; whose members are its own when it holds the member that marks them, and
+; otherwise an at-rule.
+def css-in-block [ctx t f]
+  match t
+    case "declaration" (css-declaration-or ctx t f)
+    case "rule" (css-rule-or ctx t f)
+    case "page" (css-page-or ctx t f)
+    case "keyframes" (css-keyframes-or ctx t f)
+    case "custom-media" (css-custom-media-or ctx t f)
+    case "keyframe" (css-keyframe-outside ctx t f)
+    case _ (css-at-rule ctx t f)
+
+def css-rule-or [ctx t f]
+  match (css-slot 1 f)
+    case [:strs nl cs any] (css-rule nl any f)
+    case null (css-at-rule ctx t f)
+    case _ [:bad css-selectors-text]
+
+def css-rule [nl any f]
+  match [any (css-slot 3 f) (count f)]
+    case [true [:body :decls] 2] [:block nl false]
+    case [false [:body :decls] 2] [:bad "a rule has no selector, which CSS has no form for"]
+    case [_ null 1] [:bad css-no-declarations-text]
+    case _ [:bad css-out-of-place-text]
+
+def css-page-or [ctx t f]
+  match (css-slot 1 f)
+    case [:strs nl cs any] (css-page cs any f)
+    case null (css-at-rule ctx t f)
+    case _ [:bad css-selectors-text]
+
+def css-page [cs any f]
+  match [any (css-slot 3 f) (count f)]
+    case [true [:body :decls] 2] [:block (string-join " " ["@page" cs]) false]
+    case [false [:body :decls] 2] [:block "@page" false]
+    case [_ null 1] [:bad css-no-declarations-text]
+    case _ [:bad css-out-of-place-text]
+
+def css-declaration-or [ctx t f]
+  match (css-slot 6 f)
+    case null (css-at-rule ctx t f)
+    case property (css-declaration ctx property f)
+
+def css-declaration [ctx property f]
+  match [ctx (css-slot 7 f) (count f)]
+    case [:decls null 1] [:bad "a declaration has no value"]
+    case [:decls value 2] [:leaf (string-join "" [property ":" (css-words "" value) ";"])]
+    case [:decls _ _] [:bad css-out-of-place-text]
+    case _ [:bad "a declaration is outside a block of declarations"]
+
+def css-keyframes-or [ctx t f]
+  match (css-slot 8 f)
+    case null (css-at-rule ctx t f)
+    case name (css-keyframes name f)
+
+def css-keyframes [name f]
+  match [(css-slot 5 f) (css-slot 9 f) (count f)]
+    case [[:body :kfs] null 2] [:block (css-words "@keyframes" name) true]
+    case [[:body :kfs] vendor 3] [:block (css-words (string-join "" ["@" vendor "keyframes"]) name) false]
+    case [null null 1] [:bad "a keyframes has no keyframes"]
+    case [null vendor 2] [:bad "a keyframes has no keyframes"]
+    case _ [:bad css-out-of-place-text]
+
+def css-custom-media-or [ctx t f]
+  match (css-slot 8 f)
+    case null (css-at-rule ctx t f)
+    case name (css-custom-media name f)
+
+def css-custom-media [name f]
+  match [(css-slot 10 f) (count f)]
+    case [null 1] [:bad "a custom media query has no media"]
+    case [media 2] [:leaf (string-join "" [(css-words (css-words "@custom-media" name) media) ";"])]
+    case _ [:bad css-out-of-place-text]
+
+def css-keyframe-outside [ctx t f]
+  match (css-slot 2 f)
+    case null (css-at-rule ctx t f)
+    case _ [:bad "a keyframe is outside a block of keyframes"]
+
+; An at-rule: its prelude is the member named after its type, when that
+; name has a meaning, or the member whose name has none, and it holds at
+; most one; \`rules\` named after the type is the block of \`@rules\`.
+def css-at-rule [ctx t f]
+  css-at-rule-own ctx t (css-own-value t f) (css-slot 15 f) f
+
+def css-own-value [t f]
+  match (css-own-slot t)
+    case null null
+    case i (css-slot i f)
+
+def css-at-rule-own [ctx t own other f]
+  match [own other]
+    case [null null] (css-no-prelude t f)
+    case [null [n p]] (css-prelude t p f)
+    case [[:body :rules] null] (css-no-prelude t f)
+    case [[:body :rules] [n p]] (css-prelude t p f)
+    case [[:body lk] _] [:bad css-prelude-text]
+    case [[:strs nl cs any] _] [:bad css-prelude-text]
+    case [:twice _] [:bad css-out-of-place-text]
+    case [p null] (css-prelude t p f)
+    case _ [:bad css-out-of-place-text]
+
+; An at-rule with no prelude: a type alone, or a block.
+def css-no-prelude [t f]
+  match [(css-block-in (css-slot 4 f)) (css-block-in (css-slot 3 f))]
+    case [null null] (css-lone t f)
+    case [:rules null] (css-rules-only t f)
+    case [null :decls] (css-decls-only t f)
+    case _ [:bad css-out-of-place-text]
+
+def css-lone [t f]
+  match (count f)
+    case 0 [:leaf (string-join "" [(css-words "@type" t) ";"])]
+    case _ [:bad css-out-of-place-text]
+
+; A block of rules with no prelude, which a later prelude would change.
+def css-rules-only [t f]
+  match (count f)
+    case 1 [:block (css-rules-opening t) true]
+    case _ [:bad css-out-of-place-text]
+
+def css-rules-opening [t]
+  match t
+    case "host" "@host"
+    case "rules" "@rules"
+    case _ (css-words "@type" t)
+
+def css-decls-only [t f]
+  match [t (count f)]
+    case ["rule" _] [:bad css-out-of-place-text]
+    case ["page" _] [:bad css-out-of-place-text]
+    case ["keyframe" _] [:bad css-out-of-place-text]
+    case [_ 1] [:block (css-at t) false]
+    case _ [:bad css-out-of-place-text]
+
+; An at-rule with its prelude p: a statement, or a block of rules, and a
+; document's vendor before its keyword.
+def css-prelude [t p f]
+  match [(css-block-in (css-slot 4 f)) (css-block-in (css-slot 3 f)) t]
+    case [:rules null "document"] (css-document p f)
+    case [:rules null _] (css-prelude-block t p f)
+    case [null null "document"] (css-document-statement p f)
+    case [null null _] (css-statement t p f)
+    case _ [:bad css-out-of-place-text]
+
+def css-prelude-block [t p f]
+  match (count f)
+    case 2 [:block (css-words (css-at t) p) false]
+    case _ [:bad css-out-of-place-text]
+
+def css-statement [t p f]
+  match [t (count f)]
+    case ["comment" 1] [:leaf (css-comment p)]
+    case [_ 1] [:leaf (string-join "" [(css-words (css-at t) p) ";"])]
+    case _ [:bad css-out-of-place-text]
+
+; A document's block, its vendor, which a later vendor would change when
+; it has none, before its keyword.
+def css-document [p f]
+  match [(css-slot 9 f) (count f)]
+    case [null 2] [:block (css-words "@document" p) true]
+    case [vendor 3] [:block (css-words (string-join "" ["@" vendor "document"]) p) false]
+    case _ [:bad css-out-of-place-text]
+
+def css-document-statement [p f]
+  match [(css-slot 9 f) (count f)]
+    case [null _] (css-statement "document" p f)
+    case [_ 2] [:bad "a document has no rules"]
+    case _ [:bad css-out-of-place-text]
+
+; What a member's value is not, named by the member.
+def css-not-string [name]
+  match name
+    case "type" "a node's type is not a string"
+    case "selectors" css-selectors-text
+    case "values" "a keyframe's values are not an array"
+    case "declarations" "a node's declarations are not an array"
+    case "rules" "a node's rules are not an array"
+    case "keyframes" "a keyframes' keyframes are not an array"
+    case "property" "a declaration's property is not a string"
+    case "value" "a declaration's value is not a string"
+    case "name" "a keyframes' or a custom media query's name is not a string"
+    case "vendor" "a vendor prefix is not a string"
+    case "media" "a media query list is not a string"
+    case "comment" "a comment's text is not a string"
+    case "position" "a node's position is neither a source position, an object, nor an at-rule's prelude, a string"
+    case _ css-prelude-text
 
 ; A value met where the tree's shape has no place for it.
 def css-misplaced [s]
   match (css-top s)
-    case :none (fail :unrepresentable "the tree is not a CSS stylesheet: its root is not a node")
-    case :root-type (fail :unrepresentable "the tree is not a CSS stylesheet: its root's type is not stylesheet")
-    case :root-rules-start (fail :unrepresentable "the tree is not a CSS stylesheet: its rules are not an array")
-    case [:list lk ind pind written] (fail :unrepresentable "the tree is not a CSS stylesheet: a list of rules, declarations or keyframes holds a value that is not a node")
-    case [:strings :sel ind written] (fail :unrepresentable "the tree is not a CSS stylesheet: a selector is not a string")
-    case [:strings :page ind written] (fail :unrepresentable "the tree is not a CSS stylesheet: a page's selector is not a string")
-    case [:strings :values ind written] (fail :unrepresentable "the tree is not a CSS stylesheet: a keyframe's value is not a string")
-    case [:n-type ind ctx] (fail :unrepresentable "the tree is not a CSS stylesheet: a node's type is not a string")
-    case [:n-prelude ind ctx t] (fail :unrepresentable "the tree is not a CSS stylesheet: an at-rule's prelude is not a string")
-    case [:n-rules-own ind ctx] (fail :unrepresentable "the tree is not a CSS stylesheet: a node's rules are not an array")
-    case [:n-doc-vendor ind ctx p] (fail :unrepresentable "the tree is not a CSS stylesheet: a document's vendor is not a string")
-    case [:n-kf-name ind ctx] (fail :unrepresentable "the tree is not a CSS stylesheet: a keyframes' name is not a string")
-    case [:n-kf-vendor ind ctx n] (fail :unrepresentable "the tree is not a CSS stylesheet: a keyframes' vendor is not a string")
-    case [:n-cm-name ind ctx] (fail :unrepresentable "the tree is not a CSS stylesheet: a custom media query's name is not a string")
-    case [:n-cm-media ind ctx n] (fail :unrepresentable "the tree is not a CSS stylesheet: a custom media query's media is not a string")
-    case [:n-property ind ctx] (fail :unrepresentable "the tree is not a CSS stylesheet: a declaration's property is not a string")
-    case [:n-value ind ctx] (fail :unrepresentable "the tree is not a CSS stylesheet: a declaration's value is not a string")
-    case [:n-open ind ctx :rules opener] (fail :unrepresentable "the tree is not a CSS stylesheet: a node's rules are not an array")
-    case [:n-open ind ctx :decls opener] (fail :unrepresentable "the tree is not a CSS stylesheet: a node's declarations are not an array")
-    case [:n-open ind ctx :kfs opener] (fail :unrepresentable "the tree is not a CSS stylesheet: a keyframes' keyframes are not an array")
-    case [:n-rule-sels ind ctx] (fail :unrepresentable "the tree is not a CSS stylesheet: a rule's selectors are not an array")
-    case [:n-page-sels ind ctx] (fail :unrepresentable "the tree is not a CSS stylesheet: a page's selectors are not an array")
-    case [:n-kf-values ind ctx] (fail :unrepresentable "the tree is not a CSS stylesheet: a keyframe's values are not an array")
+    case :none (css-bad "its root is not a node")
+    case [:root-member ty ru "type"] (css-bad "its root's type is not stylesheet")
+    case [:root-member ty ru "rules"] (css-bad "its rules are not an array")
+    case [:root-member ty ru name] (css-bad "its root's position is not a source position, an object")
+    case [:list lk ind pind written] (css-bad "a list of rules, declarations or keyframes holds a value that is not a node")
+    case [:strs "values" ind nl cs any] (css-bad "a keyframe's value is not a string")
+    case [:strs name ind nl cs any] (css-bad "a selector is not a string")
+    case [:member ind ctx t f body name] (css-bad (css-not-string name))
     case _ (fail :protocol-order "the events hold a value where a key is due, which a tree's never do")
 
-; A member read and not written: its value, of any shape, is passed over.
-def css-skip-member [s]
-  transition (push [:skip []] s) []
+; Text written: to the output, or to the innermost block held back.
+def css-write [s held text]
+  match [text held]
+    case ["" _] (transition [s held] [])
+    case [_ []] (transition [s held] [text])
+    case _ (transition [s (css-mark (css-rope-add (top held) text) held)] [])
 
-def css-skip [opens event s]
+; A source position, an object, passed over from just inside it.
+def css-skip [opens event s held]
   match event
-    case object-start (transition (css-mark [:skip (push :open opens)] s) [])
-    case array-start (transition (css-mark [:skip (push :open opens)] s) [])
-    case object-end (css-skip-end opens s)
-    case array-end (css-skip-end opens s)
-    case (key name)
-      match (count opens)
-        case 0 (fail :protocol-order "the events hold a key where a value is due, which a tree's never do")
-        case _ (transition s [])
-    case (scalar value)
-      match (count opens)
-        case 0 (transition (pop s) [])
-        case _ (transition s [])
+    case object-start (transition [(css-mark [:skip (push :open opens)] s) held] [])
+    case array-start (transition [(css-mark [:skip (push :open opens)] s) held] [])
+    case object-end (css-skip-end opens s held)
+    case array-end (css-skip-end opens s held)
+    case _ (transition [s held] [])
 
-def css-skip-end [opens s]
+def css-skip-end [opens s held]
   match (count opens)
-    case 0 (fail :protocol-order "the events end a container where a value is due, which a tree's never do")
-    case 1 (transition (pop s) [])
-    case _ (transition (css-mark [:skip (pop opens)] s) [])
+    case 1 (transition [(pop s) held] [])
+    case _ (transition [(css-mark [:skip (pop opens)] s) held] [])
 
-; A node's body, opened at its array's start.
-def css-open [ind ctx lk opener s]
-  transition (css-mark [:n-open ind ctx lk opener] s) []
+; The root's members: its type, its rules and its position, in any order.
+def css-root-key [name ty ru s held]
+  match [name ty ru]
+    case ["type" false _] (transition [(css-mark [:root-member ty ru name] s) held] [])
+    case ["rules" _ false] (transition [(css-mark [:root-member ty ru name] s) held] [])
+    case ["position" _ _] (transition [(css-mark [:root-member ty ru name] s) held] [])
+    case ["type" true _] (css-bad "its root holds two types")
+    case ["rules" _ true] (css-bad "its root holds two lists of rules")
+    case _ (css-bad "its root holds a member other than type, rules and position")
 
-; An at-rule's own member, its prelude or its params, due next.
-def css-prelude [ind ctx t s]
-  transition (css-mark [:n-prelude ind ctx t] s) []
+; A node's member, and after a block written as it came only its source
+; position. A member a node holds twice is found when the node is
+; composed.
+def css-node-key [name ind ctx t f body s held]
+  match [body name]
+    case [:streamed "position"] (transition [(css-mark [:member ind ctx t f body name] s) held] [])
+    case [:streamed _] (css-bad "a node holds a member after the ones its type has")
+    case _ (transition [(css-mark [:member ind ctx t f body name] s) held] [])
 
-def css-declaration [ind ctx s]
-  match ctx
-    case :decls (transition (css-mark [:n-property ind ctx] s) [])
-    case _ (fail :unrepresentable "the tree is not a CSS stylesheet: a declaration is outside a block of declarations")
-
-; The member after a node's type, in a block of keyframes: a keyframe's
-; values, or a comment's text.
-def css-kf-member [name ind ctx t s]
-  match [name t]
-    case ["values" "keyframe"] (transition (css-mark [:n-kf-values ind ctx] s) [])
-    case ["comment" "comment"] (css-prelude ind ctx t s)
-    case ["position" "position"] (css-not-keyframe)
-    case ["position" _] (css-skip-member s)
-    case _ (css-not-keyframe)
-
-; A member some node type gives a meaning, met after another type: the
-; at-rule's own when it is named after the type, and out of its place
-; otherwise; any other name is the at-rule's own.
-def css-own [name ind ctx t s]
-  match [name t]
-    case ["value" "value"] (css-prelude ind ctx t s)
-    case ["vendor" "vendor"] (css-prelude ind ctx t s)
-    case ["keyframes" "keyframes"] (css-prelude ind ctx t s)
-    case ["comment" "comment"] (css-prelude ind ctx t s)
-    case ["media" "media"] (css-prelude ind ctx t s)
-    case ["supports" "supports"] (css-prelude ind ctx t s)
-    case ["document" "document"] (css-prelude ind ctx t s)
-    case ["type" _] (css-out-of-place)
-    case ["value" _] (css-out-of-place)
-    case ["vendor" _] (css-out-of-place)
-    case ["keyframes" _] (css-out-of-place)
-    case ["comment" _] (css-out-of-place)
-    case ["media" _] (css-out-of-place)
-    case ["supports" _] (css-out-of-place)
-    case ["document" _] (css-out-of-place)
-    case _ (css-prelude ind ctx t s)
-
-; The member after a node's type, in the stylesheet or a block of rules or
-; declarations, which says what the node is.
-def css-node-member [name ind ctx t s]
-  match name
-    case "selectors"
-      match t
-        case "rule" (transition (css-mark [:n-rule-sels ind ctx] s) [])
-        case "page" (transition (css-mark [:n-page-sels ind ctx] s) [])
-        case "selectors" (css-prelude ind ctx t s)
-        case _ (css-out-of-place)
-    case "declarations"
-      match t
-        case "declarations" (css-prelude ind ctx t s)
-        case "rule" (css-out-of-place)
-        case "page" (css-out-of-place)
-        case "keyframe" (css-out-of-place)
-        case _ (css-open ind ctx :decls (css-at t) s)
-    case "rules"
-      match t
-        case "rules" (transition (css-mark [:n-rules-own ind ctx] s) [])
-        case "host" (css-open ind ctx :rules "@host" s)
-        case _ (css-open ind ctx :rules (css-words "@type" t) s)
-    case "property"
-      match t
-        case "declaration" (css-declaration ind ctx s)
-        case "property" (css-prelude ind ctx t s)
-        case _ (css-out-of-place)
-    case "values"
-      match t
-        case "values" (css-prelude ind ctx t s)
-        case "keyframe" (fail :unrepresentable "the tree is not a CSS stylesheet: a keyframe is outside a block of keyframes")
-        case _ (css-out-of-place)
-    case "name"
-      match t
-        case "keyframes" (transition (css-mark [:n-kf-name ind ctx] s) [])
-        case "custom-media" (transition (css-mark [:n-cm-name ind ctx] s) [])
-        case "name" (css-prelude ind ctx t s)
-        case _ (css-out-of-place)
-    case "position"
-      match t
-        case "position" (css-prelude ind ctx t s)
-        case _ (css-skip-member s)
-    case _ (css-own name ind ctx t s)
-
-def css-member [name ind ctx t s]
-  match ctx
-    case :kfs (css-kf-member name ind ctx t s)
-    case _ (css-node-member name ind ctx t s)
-
-; The member after an at-rule's prelude: rules make it a block, a
-; document's vendor comes before its rules, and its end makes it a
-; statement.
-def css-after-prelude [name ind ctx t p s]
-  match name
-    case "rules"
-      match ctx
-        case :kfs (css-not-keyframe)
-        case _ (css-open ind ctx :rules (css-words (css-at t) p) s)
-    case "vendor"
-      match t
-        case "document" (transition (css-mark [:n-doc-vendor ind ctx p] s) [])
-        case _ (css-out-of-place)
-    case "position" (css-skip-member s)
-    case _ (css-out-of-place)
-
-; A member after the last one a node's type has: only its position.
-def css-last-member [name s]
-  match name
-    case "position" (css-skip-member s)
-    case _ (fail :unrepresentable "the tree is not a CSS stylesheet: a node holds a member after the ones its type has")
-
-def css-key [name s]
+def css-key [name s held]
   match (css-top s)
-    case :root-type-key
-      match name
-        case "type" (transition (css-mark :root-type s) [])
-        case _ (fail :unrepresentable "the tree is not a CSS stylesheet: its root's first member is not type")
-    case :root-rules-key
-      match name
-        case "rules" (transition (css-mark :root-rules-start s) [])
-        case _ (fail :unrepresentable "the tree is not a CSS stylesheet: its root's member after type is not rules")
-    case :root-end (css-last-member name s)
-    case [:n-type-key ind ctx]
-      match name
-        case "type" (transition (css-mark [:n-type ind ctx] s) [])
-        case _ (fail :unrepresentable "the tree is not a CSS stylesheet: a node's first member is not type")
-    case [:n-after-type ind ctx t] (css-member name ind ctx t s)
-    case [:n-after-prelude ind ctx t p] (css-after-prelude name ind ctx t p s)
-    case [:n-doc-rules ind ctx p v]
-      match name
-        case "rules" (css-open ind ctx :rules (css-words (string-join "" ["@" v "document"]) p) s)
-        case _ (css-out-of-place)
-    case [:n-decls-key ind ctx]
-      match name
-        case "declarations" (css-open ind ctx :decls "" s)
-        case _ (css-out-of-place)
-    case [:n-value-key ind ctx]
-      match name
-        case "value" (transition (css-mark [:n-value ind ctx] s) [])
-        case _ (css-out-of-place)
-    case [:n-kf-after-name ind ctx n]
-      match name
-        case "vendor" (transition (css-mark [:n-kf-vendor ind ctx n] s) [])
-        case "keyframes" (css-open ind ctx :kfs (css-words "@keyframes" n) s)
-        case _ (css-out-of-place)
-    case [:n-kf-key ind ctx n v]
-      match name
-        case "keyframes" (css-open ind ctx :kfs (css-words (string-join "" ["@" v "keyframes"]) n) s)
-        case _ (css-out-of-place)
-    case [:n-cm-media-key ind ctx n]
-      match name
-        case "media" (transition (css-mark [:n-cm-media ind ctx n] s) [])
-        case _ (css-out-of-place)
-    case [:n-end ind ctx] (css-last-member name s)
+    case [:node ind ctx t f body] (css-node-key name ind ctx t f body s held)
+    case [:root ty ru] (css-root-key name ty ru s held)
     case _ (fail :protocol-order "the events hold a key where a value is due, which a tree's never do")
 
-; A string, in the phase that awaits it.
-def css-string [v s]
-  match (css-top s)
-    case :root-type
-      match v
-        case "stylesheet" (transition (css-mark :root-rules-key s) [])
-        case _ (fail :unrepresentable "the tree is not a CSS stylesheet: its root's type is not stylesheet")
-    case [:n-type ind ctx] (transition (css-mark [:n-after-type ind ctx v] s) [])
-    case [:n-prelude ind ctx t] (transition (css-mark [:n-after-prelude ind ctx t v] s) [])
-    case [:n-rules-own ind ctx] (transition (css-mark [:n-after-prelude ind ctx "rules" v] s) [])
-    case [:n-doc-vendor ind ctx p] (transition (css-mark [:n-doc-rules ind ctx p v] s) [])
-    case [:n-kf-name ind ctx] (transition (css-mark [:n-kf-after-name ind ctx v] s) [])
-    case [:n-kf-vendor ind ctx n] (transition (css-mark [:n-kf-key ind ctx n v] s) [])
-    case [:n-cm-name ind ctx] (transition (css-mark [:n-cm-media-key ind ctx v] s) [])
-    case [:n-cm-media ind ctx n]
-      transition (css-mark [:n-end ind ctx] s) [(css-words (css-words "@custom-media" n) v) ";"]
-    case [:n-property ind ctx] (transition (css-mark [:n-value-key ind ctx] s) [v ":"])
-    case [:n-value ind ctx] (transition (css-mark [:n-end ind ctx] s) [(css-words "" v) ";"])
-    case [:strings sk ind written]
-      transition (css-mark [:strings sk ind true] s) [(css-string-lead sk ind written) v]
+; A member's string: the type, or another member's held in its slot.
+def css-member-string [name value ind ctx t f body s held]
+  match [(kind value) body name t]
+    case [:string :streamed _ _] (css-bad "a node holds a member after the ones its type has")
+    case [:string _ "type" null] (transition [(css-mark [:node ind ctx value f body] s) held] [])
+    case [:string _ "type" _] (css-bad "a node holds two types")
+    case [:string _ _ _] (css-keep (css-slot-of name) name value ind ctx t f body s held)
     case _ (css-misplaced s)
 
-def css-scalar [value s]
-  match (kind value)
-    case :string (css-string value s)
+def css-keep [i name value ind ctx t f body s held]
+  transition [(css-mark [:node ind ctx t (push [i (css-held i name value)] f) body] s) held] []
+
+; A selector, or a keyframe's value, written both ways a list of them is:
+; one per line, a comma after each but the last, and on one line, joined
+; by \`, \`.
+def css-strs-string [name value ind nl cs any s held]
+  match [(kind value) any]
+    case [:string false] (transition [(css-mark [:strs name ind (css-rope-add nl value) (css-rope-add cs value) true] s) held] [])
+    case [:string true]
+      transition [(css-mark [:strs name ind (css-rope-add nl (string-join "" [",\\n" ind value])) (css-rope-add cs (string-join "" [", " value])) true] s) held] []
     case _ (css-misplaced s)
 
-; An object: the root stylesheet, or a node of a list.
-def css-object [s]
+def css-scalar [value s held]
   match (css-top s)
-    case :none (transition [:root-type-key] [])
+    case [:member ind ctx t f body name] (css-member-string name value ind ctx t f body s held)
+    case [:strs name ind nl cs any] (css-strs-string name value ind nl cs any s held)
+    case [:root-member false ru "type"]
+      match value
+        case "stylesheet" (transition [(css-mark [:root true ru] s) held] [])
+        case _ (css-misplaced s)
+    case _ (css-misplaced s)
+
+; An object: a node of a list, a source position, or the root stylesheet.
+def css-object [s held]
+  match (css-top s)
     case [:list lk ind pind written]
-      transition
-        push [:n-type-key ind lk] (css-mark [:list lk ind pind true] s)
-        [(css-lead lk ind written)]
+      css-write (push [:node ind lk null [] :none] (css-mark [:list lk ind pind true] s)) held (css-lead lk ind written)
+    case [:member ind ctx t f body "position"] (transition [(push [:skip [:open]] (css-mark [:node ind ctx t f body] s)) held] [])
+    case :none (transition [[[:root false false]] held] [])
+    case [:root-member ty ru "position"] (transition [(push [:skip [:open]] (css-mark [:root ty ru] s)) held] [])
     case _ (css-misplaced s)
 
-; A node's body begins: its opening line ends with \` {\`, and its list is
-; two spaces deeper.
-def css-body [ind ctx lk opener s]
-  transition
-    push [:list lk (string-join "" [ind "  "]) ind false] (css-mark [:n-end ind ctx] s)
-    [opener " {"]
+; A block begins: written after its opening when the members so far
+; decide it for good, and held back otherwise.
+def css-block [lk i ind ctx t f body s held]
+  match body
+    case :none (css-block-start lk t (push [i [:body lk]] f) ind ctx s held)
+    case _ (css-bad "a node holds two blocks")
 
-; An array: the stylesheet's rules, a node's body, a rule's or a page's
-; selectors, or a keyframe's values.
-def css-array [s]
-  match (css-top s)
-    case :root-rules-start (transition (push [:list :sheet "" "" false] (css-mark :root-end s)) [])
-    case [:n-open ind ctx lk opener] (css-body ind ctx lk opener s)
-    case [:n-rules-own ind ctx] (css-body ind ctx :rules "@rules" s)
-    case [:n-rule-sels ind ctx] (transition (push [:strings :sel ind false] (css-mark [:n-decls-key ind ctx] s)) [])
-    case [:n-page-sels ind ctx] (transition (push [:strings :page ind false] (css-mark [:n-decls-key ind ctx] s)) ["@page"])
-    case [:n-kf-values ind ctx] (transition (push [:strings :values ind false] (css-mark [:n-decls-key ind ctx] s)) [])
+def css-block-start [lk t f ind ctx s held]
+  match (css-compose ctx t f)
+    case [:block opening false]
+      css-write (push [:list lk (string-join "" [ind "  "]) ind false] (css-mark [:node ind ctx t f :streamed] s)) held (string-join "" [opening " {"])
+    case _
+      transition [(push [:list lk (string-join "" [ind "  "]) ind false] (css-mark [:node ind ctx t f :held] s)) (push css-rope-empty held)] []
+
+; An array: a node's block, a rule's or a page's selectors, a keyframe's
+; values, or the stylesheet's rules.
+def css-member-array [name ind ctx t f body s held]
+  match name
+    case "rules" (css-block :rules 4 ind ctx t f body s held)
+    case "declarations" (css-block :decls 3 ind ctx t f body s held)
+    case "keyframes" (css-block :kfs 5 ind ctx t f body s held)
+    case "selectors" (transition [(push [:strs name ind css-rope-empty css-rope-empty false] (css-mark [:node ind ctx t f body] s)) held] [])
+    case "values" (transition [(push [:strs name ind css-rope-empty css-rope-empty false] (css-mark [:node ind ctx t f body] s)) held] [])
     case _ (css-misplaced s)
 
-; A statement: a comment's text between its delimiters, and an at-rule's
-; keyword and params with its \`;\`.
-def css-statement [ctx t p s]
-  match [ctx t]
-    case [_ "comment"] (transition (pop s) [(css-comment p)])
-    case [:kfs _] (css-not-keyframe)
-    case _ (transition (pop s) [(css-words (css-at t) p) ";"])
-
-; A node of a type alone.
-def css-lone-type [ctx t s]
-  match ctx
-    case :kfs (css-not-keyframe)
-    case _ (transition (pop s) [(css-words "@type" t) ";"])
-
-def css-object-end [s]
+def css-array [s held]
   match (css-top s)
-    case :root-end (transition [:done] [])
-    case [:n-end ind ctx] (transition (pop s) [])
-    case [:n-after-type ind ctx t] (css-lone-type ctx t s)
-    case [:n-after-prelude ind ctx t p] (css-statement ctx t p s)
-    case :root-type-key (fail :unrepresentable "the tree is not a CSS stylesheet: its root has no type")
-    case :root-rules-key (fail :unrepresentable "the tree is not a CSS stylesheet: its root has no rules")
-    case [:n-type-key ind ctx] (fail :unrepresentable "the tree is not a CSS stylesheet: a node has no type")
-    case [:n-doc-rules ind ctx p v] (fail :unrepresentable "the tree is not a CSS stylesheet: a document has no rules")
-    case [:n-decls-key ind ctx] (fail :unrepresentable "the tree is not a CSS stylesheet: a rule, a page or a keyframe has no declarations")
-    case [:n-value-key ind ctx] (fail :unrepresentable "the tree is not a CSS stylesheet: a declaration has no value")
-    case [:n-kf-after-name ind ctx n] (fail :unrepresentable "the tree is not a CSS stylesheet: a keyframes has no keyframes")
-    case [:n-kf-key ind ctx n v] (fail :unrepresentable "the tree is not a CSS stylesheet: a keyframes has no keyframes")
-    case [:n-cm-media-key ind ctx n] (fail :unrepresentable "the tree is not a CSS stylesheet: a custom media query has no media")
+    case [:member ind ctx t f body name] (css-member-array name ind ctx t f body s held)
+    case [:root-member ty false "rules"] (transition [(push [:list :sheet "" "" false] (css-mark [:root ty true] s)) held] [])
+    case _ (css-misplaced s)
+
+; A node ends: its block was written as it came, or is written now after
+; its opening, or the node is written whole.
+def css-node-end [ctx t f body s held]
+  match body
+    case :streamed (transition [(pop s) held] [])
+    case _ (css-node-written body (css-compose ctx t f) (pop s) held)
+
+def css-node-written [body c s held]
+  match [body c]
+    case [:none [:leaf text]] (css-write s held text)
+    case [:held [:block opening pending]] (css-write s (pop held) (string-join "" [opening " {" (css-rope-text (top held))]))
+    case [_ [:bad message]] (css-bad message)
+    case _ (css-bad css-out-of-place-text)
+
+def css-object-end [s held]
+  match (css-top s)
+    case [:node ind ctx t f body] (css-node-end ctx t f body s held)
+    case [:root true true] (transition [[:done] held] [])
+    case [:root false ru] (css-bad "its root has no type")
+    case [:root ty false] (css-bad "its root has no rules")
     case :none (fail :protocol-order "the events end an object that is not open, which a tree's never do")
     case [:list lk ind pind written] (fail :protocol-order "the events end an object inside an array, which a tree's never do")
-    case [:strings sk ind written] (fail :protocol-order "the events end an object inside an array, which a tree's never do")
+    case [:strs name ind nl cs any] (fail :protocol-order "the events end an object inside an array, which a tree's never do")
     case _ (fail :protocol-order "the events end an object after a key and before its value, which a tree's never do")
 
-def css-array-end [s]
+; A node's selectors or values end, held in its slot both ways.
+def css-strs-end [name nl cs any s held]
   match (css-top s)
-    case [:list lk ind pind written] (transition (pop s) [(css-close lk pind written)])
-    case [:strings :sel ind false] (fail :unrepresentable "the tree is not a CSS stylesheet: a rule has no selector, which CSS has no form for")
-    case [:strings :values ind false] (fail :unrepresentable "the tree is not a CSS stylesheet: a keyframe has no value, which CSS has no form for")
-    case [:strings sk ind written] (transition (pop s) [])
+    case [:node ind ctx t f body]
+      transition [(css-mark [:node ind ctx t (push [(css-slot-of name) [:strs (css-rope-text nl) (css-rope-text cs) any]] f) body] s) held] []
+
+def css-array-end [s held]
+  match (css-top s)
+    case [:list lk ind pind written] (css-write (pop s) held (css-close lk pind written))
+    case [:strs name ind nl cs any] (css-strs-end name nl cs any (pop s) held)
     case _ (fail :protocol-order "the events end an array that is not open, which a tree's never do")
 
-def css-event [s event]
+def css-event [s held event]
   match event
-    case object-start (css-object s)
-    case array-start (css-array s)
-    case (key name) (css-key name s)
-    case (scalar value) (css-scalar value s)
-    case object-end (css-object-end s)
-    case array-end (css-array-end s)
+    case object-start (css-object s held)
+    case array-start (css-array s held)
+    case (key name) (css-key name s held)
+    case (scalar value) (css-scalar value s held)
+    case object-end (css-object-end s held)
+    case array-end (css-array-end s held)
 
-def css-step [s event]
-  match (css-top s)
-    case :done (fail :protocol-order "the events hold more after the stylesheet, which a tree's never do")
-    case [:skip opens] (css-skip opens event s)
-    case _ (css-event s event)
+def css-step [state event]
+  match state
+    case [s held]
+      match (css-top s)
+        case :done (fail :protocol-order "the events hold more after the stylesheet, which a tree's never do")
+        case [:skip opens] (css-skip opens event s held)
+        case _ (css-event s held event)
 
-def css-finish [s]
-  match (css-top s)
-    case :done []
-    case :none (fail :protocol-order "the events hold no value, where a tree's hold one")
-    case _ (fail :protocol-order "the events ended inside a container, which a tree's never do")
+def css-finish [state]
+  match state
+    case [s held]
+      match (css-top s)
+        case :done []
+        case :none (fail :protocol-order "the events hold no value, where a tree's hold one")
+        case _ (fail :protocol-order "the events ended inside a container, which a tree's never do")
 
 ; The render: the stylesheet's events in, its text out.
 def css-render [input]
   join ""
-    scan-emit [] css-step css-finish (events input)
+    scan-emit [[] []] css-step css-finish (events input)
 ` })
 })
 

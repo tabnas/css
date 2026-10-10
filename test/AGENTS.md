@@ -78,6 +78,13 @@ there.
   the external conformance behaviour offline, in every runtime, whether or not
   `test/reworkcss-css/` has been fetched. Do not hand-edit an expected value
   there — regenerate it from upstream, or the file stops meaning what it says.
+- `render.tsv` is special too: every input is a document CSS's render
+  (`alchemy/render.alc`) wrote, as alchemy ran it, for the tree its comment
+  names, with that tree's members in the reader's order and in sorted key
+  order (a Go host's), and every expected value is what the reader reads
+  back. This repository does not run alchemy, so the rows pin the reading of
+  those documents; a change to the render's text means running it again and
+  replacing the rows, never editing an input by hand.
 - TypeScript is canonical. If the runtimes disagree, the TS behaviour is the
   expected value — unless a port has exposed a genuine TS defect, in which
   case fix TS first and pin the corrected behaviour here.

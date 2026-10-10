@@ -32,9 +32,11 @@ var translationParts = TranslationParts{
 // Translate returns CSS's immutable translation parts: the manifest, whose
 // translate object says CSS is read as and written from the reader's own
 // tree (the schema css-ast, a stylesheet object at the root), and the
-// render, css-render, which writes that tree back as CSS text. There is no
-// embed, so a host composes a translation into CSS only from CSS itself or
-// from a program that builds the tree.
+// render, css-render, which writes that tree back as CSS text. The render
+// takes a node's members in any order, so the plain maps Parse returns,
+// which a host walks in sorted key order, are written as the TypeScript and
+// Rust trees are. There is no embed, so a host composes a translation into
+// CSS only from CSS itself or from a program that builds the tree.
 // Each call returns a copy of its own, so that what one caller changes
 // is not what another reads.
 func Translate() *TranslationParts {
