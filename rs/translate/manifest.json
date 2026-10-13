@@ -43,6 +43,7 @@
       "An at-rule whose node keeps no prelude is written without one: @host, and @font-face and the other at-rules whose block holds declarations, @page apart, whose selectors are kept.",
       "Source positions are not written, since a reader derives them from the written text.",
       "A statement that ends a document with params ending in a lone backslash, an escape the document ended before it finished, is written with its semicolon, which that backslash then escapes."
-    ]
+    ],
+    "whole": "The reader builds each rule, at-rule, declaration and comment before it adds the node to the list that holds it, so a node's place in the tree is known only once the node is complete: a document is read whole before anything is written."
   }
 }
