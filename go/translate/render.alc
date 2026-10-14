@@ -105,6 +105,12 @@
 ; `[:skip opens]`, one marker in opens per container open inside it. Once
 ; the stylesheet ends the frames are `[:done]`, and nothing may follow it.
 ; Events no tree has fail with PROTOCOL_ORDER_ERROR, saying so.
+;
+; Each node of the stylesheet's own list (a rule, an at-rule, a comment)
+; is a record of the text: the step that ends one answers alchemy's
+; `:record-end` after its outputs, and so does the step that opens the
+; list, so a host's writer holds a node until its end, and a run that
+; fails part way leaves whole nodes behind.
 
 ; The top frame, or :none before the root.
 def css-top [s]
@@ -482,6 +488,22 @@ def css-misplaced [s]
     case [:member ind ctx t f body name] (css-bad (css-not-string name))
     case _ (fail :protocol-order "the events hold a value where a key is due, which a tree's never do")
 
+; The outputs of a step that ends a node of the list at the top of s,
+; with the end of a record after them when the list is the stylesheet's
+; own and nothing is held back: the node is written whole.
+def css-ended [s held outputs]
+  match [(css-top s) held]
+    case [[:list :sheet ind pind written] []] (push :record-end outputs)
+    case _ outputs
+
+; Text that ends a node of the list at the top of s, written as
+; css-write writes it, with the end of a record after it where css-ended
+; says.
+def css-write-ended [s held text]
+  match held
+    case [] (transition [s held] (css-ended s held [text]))
+    case _ (css-write s held text)
+
 ; Text written: to the output, or to the innermost block held back.
 def css-write [s held text]
   match [text held]
@@ -598,20 +620,20 @@ def css-member-array [name ind ctx t f body s held]
 def css-array [s held]
   match (css-top s)
     case [:member ind ctx t f body name] (css-member-array name ind ctx t f body s held)
-    case [:root-member ty false "rules"] (transition [(push [:list :sheet "" "" false] (css-mark [:root ty true] s)) held] [])
+    case [:root-member ty false "rules"] (transition [(push [:list :sheet "" "" false] (css-mark [:root ty true] s)) held] [:record-end])
     case _ (css-misplaced s)
 
 ; A node ends: its block was written as it came, or is written now after
 ; its opening, or the node is written whole.
 def css-node-end [ctx t f body s held]
   match body
-    case :streamed (transition [(pop s) held] [])
+    case :streamed (transition [(pop s) held] (css-ended (pop s) held []))
     case _ (css-node-written body (css-compose ctx t f) (pop s) held)
 
 def css-node-written [body c s held]
   match [body c]
-    case [:none [:leaf text]] (css-write s held text)
-    case [:held [:block opening pending]] (css-write s (pop held) (string-join "" [opening " {" (css-rope-text (top held))]))
+    case [:none [:leaf text]] (css-write-ended s held text)
+    case [:held [:block opening pending]] (css-write-ended s (pop held) (string-join "" [opening " {" (css-rope-text (top held))]))
     case [_ [:bad message]] (css-bad message)
     case _ (css-bad css-out-of-place-text)
 
