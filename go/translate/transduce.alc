@@ -60,7 +60,11 @@ def css-transduce-mark [stack rule]
     case _ (push :skip stack)
 
 ; The members of an at-rule's head as [name value] pairs, in the record's
-; order, but one named as the body is, which the body's array replaces.
+; order: every one, or for a block at-rule all but the one named as the
+; body is, which the body's array replaces.
+def css-transduce-head [head]
+  map (fn [k] [k (get k head)]) (keys head)
+
 def css-transduce-members [head body]
   map (fn [k] [k (get k head)]) (filter (fn [k] (if (equal k body) false true)) (keys head))
 
@@ -68,9 +72,11 @@ def css-transduce-members [head body]
 def css-transduce-at [head body]
   push-all [(key body) array-start] (push-all (css-transduce-members head body) [object-start])
 
-; A statement at-rule: its object, whole.
+; A statement at-rule: its object, whole, with every member of its head:
+; an empty at-keyword (`@ x;`) names its params member "", a member like
+; any other.
 def css-transduce-statement [head]
-  push-all [object-end] (push-all (css-transduce-members head "") [object-start])
+  push-all [object-end] (push-all (css-transduce-head head) [object-start])
 
 ; The node a statement, a decl or a keyframe builds, from its first token.
 def css-transduce-node [stack rule]
