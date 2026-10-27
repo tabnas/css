@@ -37,10 +37,7 @@ use std::sync::{Arc, OnceLock};
 use tabnas::{ActionError, Context, GrammarSetting, PluginError, Rule, Tabnas, Token, Value};
 
 use crate::grammar::{specs, RULES};
-use crate::lex::{
-    self, col_width, es_is_whitespace, es_trim, split_selectors, vendor_prefix, BRACE_SCAN,
-    OVERSHOOT,
-};
+use crate::lex::{self, col_width, BRACE_SCAN, OVERSHOOT};
 use crate::Options;
 
 /// The most rules the tree form lets be open at once.
@@ -97,7 +94,7 @@ fn arena(ctx: &Context) -> bool {
     }
 }
 
-fn object() -> Value {
+pub(crate) fn object() -> Value {
     Value::object(Default::default())
 }
 
@@ -105,7 +102,7 @@ fn list() -> Value {
     Value::array(Vec::new())
 }
 
-fn text(s: &str) -> Value {
+pub(crate) fn text(s: &str) -> Value {
     Value::String(s.to_string())
 }
 
@@ -114,7 +111,7 @@ fn text(s: &str) -> Value {
 /// array index, which JavaScript enumerates first, in ascending order. An
 /// at-keyword is a key (`@0 x;` is `{"0": "x", "type": "0"}` in the
 /// canonical port), so the order reaches the JSON.
-fn put(target: &mut Value, key: &str, value: Value) {
+pub(crate) fn put(target: &mut Value, key: &str, value: Value) {
     let Some(fields) = target.as_object_mut() else {
         return;
     };
@@ -297,10 +294,7 @@ fn set_end(rule: &Rule, ctx: &mut Context, end: Value) {
 }
 
 // ---------------------------------------------------------------------------
-// Node builders: `makeAtRules`, `makeAtDecls`, `makeKeyframes` and
-// `makeAtStmt` in the canonical port. Key order is JavaScript's: a key
-// assigned twice keeps its first place.
-
+/// A token's text: the string a `#TX`, `#VL` or `#CC` token carries.
 fn token_text(token: &Token) -> String {
     match &token.val {
         Value::String(s) => s.clone(),
@@ -308,89 +302,18 @@ fn token_text(token: &Token) -> String {
     }
 }
 
-fn use_text(token: &Token, key: &str) -> String {
-    match token.use_data().get(key) {
-        Some(Value::String(s)) => s.clone(),
-        _ => String::new(),
+/// An at-rule's node: the head the lexer put in the token's value (the
+/// node's type and the fields read from the at-keyword and the prelude or
+/// params, in the node's order: `lex::at_rules_head` and its siblings),
+/// copied, and the body array after it where the at-rule has a block.
+fn at_rule_node(token: &Token, body: Option<&str>) -> Value {
+    let mut node = match &token.val {
+        Value::Object(_) => token.val.clone(),
+        _ => object(),
+    };
+    if let Some(body) = body {
+        put(&mut node, body, list());
     }
-}
-
-/// A block at-rule whose body is a list of rules (`@media`, `@supports`,
-/// `@document`, `@host`, and any other with a rules body).
-fn make_at_rules(token: &Token) -> Value {
-    let kw = token_text(token);
-    let prelude = use_text(token, "prelude");
-    let mut node = object();
-    match kw.as_str() {
-        "host" => put(&mut node, "type", text("host")),
-        _ if "document" == kw || kw.ends_with("-document") => {
-            // `vendor` is always present on a document node, the empty
-            // string when the at-keyword carries no prefix.
-            put(&mut node, "type", text("document"));
-            put(&mut node, "document", text(&prelude));
-            put(&mut node, "vendor", text(vendor_prefix(&kw).unwrap_or("")));
-        }
-        _ => {
-            put(&mut node, "type", text(&kw));
-            put(&mut node, &kw, text(&prelude));
-        }
-    }
-    put(&mut node, "rules", list());
-    node
-}
-
-/// A block at-rule whose body is declarations (`@font-face`, `@page`, and
-/// any other with a declarations body). A `@page` prelude is a selector
-/// group: `@page toc, index:blank`.
-fn make_at_decls(token: &Token) -> Value {
-    let kw = token_text(token);
-    let mut node = object();
-    put(&mut node, "type", text(&kw));
-    if "page" == kw {
-        let selectors = split_selectors(&use_text(token, "prelude"))
-            .into_iter()
-            .map(Value::String)
-            .collect();
-        put(&mut node, "selectors", Value::array(selectors));
-    }
-    put(&mut node, "declarations", list());
-    node
-}
-
-/// A `@keyframes` block, possibly vendor-prefixed.
-fn make_keyframes(token: &Token) -> Value {
-    let kw = token_text(token);
-    let mut node = object();
-    put(&mut node, "type", text("keyframes"));
-    put(&mut node, "name", text(&use_text(token, "prelude")));
-    if let Some(vendor) = vendor_prefix(&kw) {
-        put(&mut node, "vendor", text(vendor));
-    }
-    put(&mut node, "keyframes", list());
-    node
-}
-
-/// A statement at-rule (`@import`, `@charset`, `@namespace`, …): the
-/// at-keyword is the node type and the field carrying its params.
-///
-/// `@custom-media --name <query>` splits its params into a name and a media
-/// query, as `/^(--\S+)\s*([\s\S]*)$/` does in the canonical port: `--` and
-/// at least one non-space character, then the rest, trimmed.
-fn make_at_stmt(token: &Token) -> Value {
-    let kw = token_text(token);
-    let params = use_text(token, "params");
-    let mut node = object();
-    if "custom-media" == kw && params.starts_with("--") {
-        let name_end = params.find(es_is_whitespace).unwrap_or(params.len());
-        if 2 < name_end {
-            put(&mut node, "type", text("custom-media"));
-            put(&mut node, "name", text(&params[..name_end]));
-            put(&mut node, "media", text(es_trim(&params[name_end..])));
-            return node;
-        }
-    }
-    put(&mut node, "type", text(&kw));
-    put(&mut node, &kw, text(&params));
     node
 }
 
@@ -500,16 +423,18 @@ fn register_actions(parser: &mut Tabnas, position: bool) {
         });
     }
 
-    type AtBuild = fn(&Token) -> Value;
-    let at_rules: [(&str, AtBuild, bool); 4] = [
-        ("@cssAtRules", make_at_rules, false),
-        ("@cssAtDecls", make_at_decls, false),
-        ("@cssKeyframes", make_keyframes, false),
-        ("@cssAtStmt", make_at_stmt, true),
+    let at_rules: [(&str, Option<&'static str>, bool); 4] = [
+        ("@cssAtRules", Some("rules"), false),
+        ("@cssAtDecls", Some("declarations"), false),
+        ("@cssKeyframes", Some("keyframes"), false),
+        ("@cssAtStmt", None, true),
     ];
-    for (name, build, end) in at_rules {
+    for (name, body, end) in at_rules {
         parser.action_with_context(name, move |rule, ctx| -> Outcome {
-            let mut node = rule.o0().map(build).unwrap_or_else(object);
+            let mut node = rule
+                .o0()
+                .map(|token| at_rule_node(token, body))
+                .unwrap_or_else(object);
             if let Some(at) = with_pos(rule, ctx, position, end) {
                 put(&mut node, "position", at);
             }

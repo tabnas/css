@@ -21,6 +21,8 @@ use tabnas::{
     Context, Lexer, Rule, TabnasError, Tin as EngineTin, Token, Value, TIN_TX, TIN_VL, TIN_ZZ,
 };
 
+use crate::plugin::{object, put, text};
+
 /// A token kind.
 ///
 /// `Ob`/`Cb`/`Cl`/`Ca` are the fixed punctuation the canonical port borrows
@@ -193,6 +195,81 @@ fn is_keyframes_kw(kw: &str) -> bool {
         Some(v) => &kw[v.len()..] == "keyframes",
         None => false,
     }
+}
+
+// The heads of the at-rule nodes: `makeAtRules`, `makeAtDecls`,
+// `makeKeyframes` and `makeAtStmt` in the canonical port, each without the
+// body array the grammar's constructor adds. Key order is JavaScript's: a
+// key assigned twice keeps its first place.
+
+/// The head of a block at-rule whose body is a list of rules (`@media`,
+/// `@supports`, `@document`, `@host`, and any other with a rules body).
+pub(crate) fn at_rules_head(kw: &str, prelude: &str) -> Value {
+    let mut node = object();
+    match kw {
+        "host" => put(&mut node, "type", text("host")),
+        _ if "document" == kw || kw.ends_with("-document") => {
+            // `vendor` is always present on a document node, the empty
+            // string when the at-keyword carries no prefix.
+            put(&mut node, "type", text("document"));
+            put(&mut node, "document", text(prelude));
+            put(&mut node, "vendor", text(vendor_prefix(kw).unwrap_or("")));
+        }
+        _ => {
+            put(&mut node, "type", text(kw));
+            put(&mut node, kw, text(prelude));
+        }
+    }
+    node
+}
+
+/// The head of a block at-rule whose body is declarations (`@font-face`,
+/// `@page`, and any other with a declarations body). A `@page` prelude is a
+/// selector group: `@page toc, index:blank`.
+pub(crate) fn at_decls_head(kw: &str, prelude: &str) -> Value {
+    let mut node = object();
+    put(&mut node, "type", text(kw));
+    if "page" == kw {
+        let selectors = split_selectors(prelude)
+            .into_iter()
+            .map(Value::String)
+            .collect();
+        put(&mut node, "selectors", Value::array(selectors));
+    }
+    node
+}
+
+/// The head of a `@keyframes` block, possibly vendor-prefixed.
+pub(crate) fn keyframes_head(kw: &str, name: &str) -> Value {
+    let mut node = object();
+    put(&mut node, "type", text("keyframes"));
+    put(&mut node, "name", text(name));
+    if let Some(vendor) = vendor_prefix(kw) {
+        put(&mut node, "vendor", text(vendor));
+    }
+    node
+}
+
+/// A statement at-rule (`@import`, `@charset`, `@namespace`, …), whole: the
+/// at-keyword is the node type and the field carrying its params.
+///
+/// `@custom-media --name <query>` splits its params into a name and a media
+/// query, as `/^(--\S+)\s*([\s\S]*)$/` does in the canonical port: `--` and
+/// at least one non-space character, then the rest, trimmed.
+pub(crate) fn at_stmt_head(kw: &str, params: &str) -> Value {
+    let mut node = object();
+    if "custom-media" == kw && params.starts_with("--") {
+        let name_end = params.find(es_is_whitespace).unwrap_or(params.len());
+        if 2 < name_end {
+            put(&mut node, "type", text("custom-media"));
+            put(&mut node, "name", text(&params[..name_end]));
+            put(&mut node, "media", text(es_trim(&params[name_end..])));
+            return node;
+        }
+    }
+    put(&mut node, "type", text(kw));
+    put(&mut node, kw, text(params));
+    node
 }
 
 /// `^(-[a-z]+-)`: a vendor prefix on an at-keyword, e.g. `-webkit-keyframes`.
@@ -716,9 +793,8 @@ enum Plan {
     Emit {
         name: &'static str,
         tin: EngineTin,
-        val: String,
+        val: Value,
         raw: String,
-        use_kv: Option<(&'static str, String)>,
         end: usize,
     },
 }
@@ -745,12 +821,11 @@ fn plan_token(
     if c == b' ' || c == b'\t' || c == b'\r' || c == b'\n' {
         return Plan::Decline;
     }
-    let emit = |name, tin, val: String, raw: &str, use_kv, end| Plan::Emit {
+    let emit = |name, tin, val: String, raw: &str, end| Plan::Emit {
         name,
         tin,
-        val,
+        val: Value::String(val),
         raw: raw.to_string(),
-        use_kv,
         end,
     };
 
@@ -767,7 +842,6 @@ fn plan_token(
                 BY_NAME,
                 safe_slice(src, s_i + 2, e).to_string(),
                 safe_slice(src, s_i, e + 2),
-                None,
                 e + 2,
             ),
         };
@@ -785,17 +859,20 @@ fn plan_token(
         }
         let raw = safe_slice(src, s_i, end);
         let val = es_trim(&strip_comments(raw)).to_string();
-        return emit("#VL", TIN_VL, val, raw, None, end);
+        return emit("#VL", TIN_VL, val, raw, end);
     }
 
     // A top-level selector-group comma.
     if c == b',' {
-        return emit("#GC", BY_NAME, ",".to_string(), ",", None, s_i + 1);
+        return emit("#GC", BY_NAME, ",".to_string(), ",", s_i + 1);
     }
 
     // An at-rule: block or statement by `{`-before-`;` lookahead, and a
-    // block's body by keyword. The keyword rides in the value and the
-    // prelude (block) or params (statement) in the token's `use` bag.
+    // block's body by keyword. The token's value is the node's head: its
+    // type and the fields read from the keyword and the prelude (block) or
+    // params (statement), so that a reader of the rule passes (the
+    // transducer part, `alchemy/transduce.alc`) sees the node as the walk
+    // builds it, a pass carrying a token's value and never its `use` bag.
     if c == b'@' {
         let mut k_end = s_i + 1;
         while k_end < bytes.len() && is_at_char(bytes[k_end]) {
@@ -817,8 +894,19 @@ fn plan_token(
             } else {
                 ("#ATR", BY_NAME)
             };
+            let head = match name {
+                "#ATK" => keyframes_head(&kw, &prelude),
+                "#ATD" => at_decls_head(&kw, &prelude),
+                _ => at_rules_head(&kw, &prelude),
+            };
             let raw = safe_slice(src, s_i, index);
-            return emit(name, tin, kw, raw, Some(("prelude", prelude)), index);
+            return Plan::Emit {
+                name,
+                tin,
+                val: head,
+                raw: raw.to_string(),
+                end: index,
+            };
         }
         // A statement at-rule's params run to the next top-level `;`/`}`. A
         // `;` is consumed (it ends the statement); a `}` or the end of the
@@ -834,7 +922,13 @@ fn plan_token(
             p_end
         };
         let raw = safe_slice(src, s_i, end);
-        return emit("#ATS", BY_NAME, kw, raw, Some(("params", params)), end);
+        return Plan::Emit {
+            name: "#ATS",
+            tin: BY_NAME,
+            val: at_stmt_head(&kw, &params),
+            raw: raw.to_string(),
+            end,
+        };
     }
 
     // Other fixed punctuation belongs to the grammar. `:` does not: a run
@@ -857,7 +951,7 @@ fn plan_token(
         }
         let raw = safe_slice(src, s_i, end);
         let val = es_trim(&strip_comments(raw)).to_string();
-        return emit("#TX", TIN_TX, val, raw, None, end);
+        return emit("#TX", TIN_TX, val, raw, end);
     }
 
     // A property name: the run of property characters up to `:`,
@@ -877,7 +971,7 @@ fn plan_token(
     if lower {
         prop = prop.to_lowercase();
     }
-    emit("#TX", TIN_TX, prop, raw, None, e_i)
+    emit("#TX", TIN_TX, prop, raw, e_i)
 }
 
 /// The `cssToken` matcher, registered as `@css-token` and named by the
@@ -940,7 +1034,6 @@ pub(crate) fn css_token(
             tin,
             val,
             raw,
-            use_kv,
             ..
         } => {
             lexer.advance_chars(chars);
@@ -948,13 +1041,7 @@ pub(crate) fn css_token(
                 ctx.u
                     .insert(OVERSHOOT.to_string(), Value::Number(overshoot as f64));
             }
-            let mut token = lexer.token(name, tin, Value::String(val), raw, point);
-            if let Some((key, text)) = use_kv {
-                token
-                    .use_data_mut()
-                    .insert(key.to_string(), Value::String(text));
-            }
-            Some(token)
+            Some(lexer.token(name, tin, val, raw, point))
         }
     }
 }
