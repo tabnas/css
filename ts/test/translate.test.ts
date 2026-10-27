@@ -24,6 +24,16 @@ test('translation parts expose the manifest, source and explicit entry', () => {
   assert.equal(parts.render?.source, readFileSync(path.join(root, manifest().translate.render), 'utf8'))
 })
 
+// The transducer part the manifest names is the one the package carries,
+// under the entry a host calls.
+test('translation parts carry the transducer the manifest names', () => {
+  const parts = translate()
+  assert.equal(parts.transduce?.entry, 'css-transduce')
+  assert.equal(
+    parts.transduce?.source,
+    readFileSync(path.join(root, manifest().translate.transduce), 'utf8'))
+})
+
 // An embed takes a plain tree into a format's own schema. CSS's tree is
 // the reader's stylesheet, and a plain tree has no CSS form, so its
 // manifest names none and the package carries none; a manifest that named

@@ -13,6 +13,7 @@ type TranslationParts = Readonly<{
   lift?: TranslationPart
   embed?: TranslationPart
   render?: TranslationPart
+  transduce?: TranslationPart
 }>
 
 const TRANSLATION: TranslationParts = Object.freeze({
@@ -54,6 +55,7 @@ const TRANSLATION: TranslationParts = Object.freeze({
     "root": "object",
     "schema": "css-ast",
     "render": "alchemy/render.alc",
+    "transduce": "alchemy/transduce.alc",
     "loss": [
       "Layout is not kept: the stylesheet is written with a blank line between its top-level nodes, each node of a block on a line of its own two spaces deeper than the line that opens the block, and a rule's selectors one per line.",
       "Every declaration is written as its property, a colon, a space and its value, and every declaration and every statement at-rule ends with a semicolon, one the document ended with a closing brace or with its end included.",
@@ -61,8 +63,7 @@ const TRANSLATION: TranslationParts = Object.freeze({
       "An at-rule whose node keeps no prelude is written without one: @host, and @font-face and the other at-rules whose block holds declarations, @page apart, whose selectors are kept.",
       "Source positions are not written, since a reader derives them from the written text.",
       "A statement that ends a document with params ending in a lone backslash, an escape the document ended before it finished, is written with its semicolon, which that backslash then escapes."
-    ],
-    "whole": "The reader builds each rule, at-rule, declaration and comment before it adds the node to the list that holds it, so a node's place in the tree is known only once the node is complete: a document is read whole before anything is written."
+    ]
   }
 }
 `,
@@ -757,6 +758,174 @@ def css-finish [state]
 def css-render [input]
   join ""
     scan-emit [[] []] css-step css-finish (events input)
+` }),
+  transduce: Object.freeze({ entry: "css-transduce", source: `; CSS's transducer part: the stylesheet's JSON events from the css grammar's
+; rule passes, for a host that reads parser events (dmog's \`translate\` and
+; \`run --grammar css\`). It is hand-written, since the grammar builds each
+; node in its actions, bottom up, which the passes do not show; every event
+; is the one the walk of the grammar's value under its default options
+; gives, a statement at a time.
+;
+; The passes: \`stylesheet\` opens and closes the document's object, whose
+; \`rules\` hold the statements; \`items\`, \`decls\` and \`kfitems\`, the lists'
+; replace loops, pass by, as do \`declbody\`, \`rulesbody\` and \`kfbody\`, the
+; blocks. A \`statement\`, a \`decl\` (a declaration list's item, which CSS
+; nesting lets be a rule or an at-rule too) and a \`keyframe\` open with the
+; token that says what node they build: \`#CC\`, a comment, whose text is the
+; token's value; \`#ATR\`, \`#ATD\` and \`#ATK\`, an at-rule with a block of
+; rules, of declarations or of keyframes; \`#ATS\`, a statement at-rule,
+; whole; \`#TX\` with \`#CL\`, a declaration, whose property is the token's
+; value; and no token at all, a rule or a keyframe, whose first \`#TX\` the
+; alternate gave back for \`sel\` or \`kfsel\` to take. An at-rule token's
+; value is the node's head, a record of the type and the fields the lexer
+; read from the at-keyword and the prelude or params (\`media\`, \`supports\`,
+; \`document\` and \`vendor\`, \`page\`'s \`selectors\`, \`keyframes\`' \`name\` and
+; \`vendor\`, a statement's params), in the node's order; the part writes
+; its members, then the body's key and its array, where the node has one.
+; Each \`sel\` and \`kfsel\` open yields one selector or keyframe value; the
+; one whose alternate pushes \`declbody\` is the last, and the \`declarations\`
+; array begins after it. \`declval\` yields the declaration's \`value\`: its
+; \`#VL\` token's value, or the empty string on the alternate that consumed
+; none. A rule replaced at its open (\`sel\` and \`kfsel\`, with \`r:\`) has no
+; close pass, so it leaves no marker.
+;
+; Two scans, since a step's outputs are one vector: the first yields each
+; event, and each member of an at-rule's head as a [name value] pair, and
+; the second writes a pair as its events (a vector value, \`page\`'s
+; selectors, as an array of strings). The first's state is [started stack]:
+; whether any pass came (a source that makes none, the empty document, is
+; the empty stylesheet at finish), and a marker per open rule whose close
+; will come, innermost last: :sheet, :block (a node whose body's array and
+; object the close ends), :declaration (an object the close ends), :done (a
+; node complete at its open) or :skip. Nothing grows with the document's
+; length, only with its nesting, under max_metadata_bytes.
+
+def css-transduce-replaced [rule]
+  match (get :alt rule)
+    case missing false
+    case alt
+      match (get :r alt)
+        case "" false
+        case _ true
+
+def css-transduce-pushes [rule]
+  match (get :alt rule)
+    case missing ""
+    case alt (get :p alt)
+
+; The stack with a marker for a rule whose close pass will come: none for
+; one replaced at its open.
+def css-transduce-mark [stack rule]
+  match (css-transduce-replaced rule)
+    case true stack
+    case _ (push :skip stack)
+
+; The members of an at-rule's head as [name value] pairs, in the record's
+; order: every one, or for a block at-rule all but the one named as the
+; body is, which the body's array replaces.
+def css-transduce-head [head]
+  map (fn [k] [k (get k head)]) (keys head)
+
+def css-transduce-members [head body]
+  map (fn [k] [k (get k head)]) (filter (fn [k] (if (equal k body) false true)) (keys head))
+
+; An at-rule with a block: its object, its head and its body's array, begun.
+def css-transduce-at [head body]
+  push-all [(key body) array-start] (push-all (css-transduce-members head body) [object-start])
+
+; A statement at-rule: its object, whole, with every member of its head:
+; an empty at-keyword (\`@ x;\`) names its params member "", a member like
+; any other.
+def css-transduce-statement [head]
+  push-all [object-end] (push-all (css-transduce-head head) [object-start])
+
+; The node a statement, a decl or a keyframe builds, from its first token.
+def css-transduce-node [stack rule]
+  match (transduce-token 0 rule)
+    case missing
+      match (get :name rule)
+        case "keyframe" (transition (push :block stack) [object-start (key "type") (scalar "keyframe") (key "values") array-start])
+        case _ (transition (push :block stack) [object-start (key "type") (scalar "rule") (key "selectors") array-start])
+    case token
+      match (get :name token)
+        case "#CC" (transition (push :done stack) [object-start (key "type") (scalar "comment") (key "comment") (scalar (get :val token)) object-end])
+        case "#ATR" (transition (push :block stack) (css-transduce-at (get :val token) "rules"))
+        case "#ATD" (transition (push :block stack) (css-transduce-at (get :val token) "declarations"))
+        case "#ATK" (transition (push :block stack) (css-transduce-at (get :val token) "keyframes"))
+        case "#ATS" (transition (push :done stack) (css-transduce-statement (get :val token)))
+        case _ (transition (push :declaration stack) [object-start (key "type") (scalar "declaration") (key "property") (scalar (get :val token))])
+
+; A selector of a rule, or a value of a keyframe: the last one, whose
+; alternate pushes the block, ends its array and begins the declarations.
+def css-transduce-selector [stack rule]
+  match (transduce-token 0 rule)
+    case missing (transition (css-transduce-mark stack rule) [])
+    case token
+      match (css-transduce-pushes rule)
+        case "declbody" (transition (css-transduce-mark stack rule) [(scalar (get :val token)) array-end (key "declarations") array-start])
+        case _ (transition (css-transduce-mark stack rule) [(scalar (get :val token))])
+
+; A declaration's value: its token's, or the empty string when the
+; alternate consumed none.
+def css-transduce-value [stack rule]
+  match (transduce-token 0 rule)
+    case missing (transition (css-transduce-mark stack rule) [(key "value") (scalar "")])
+    case token (transition (css-transduce-mark stack rule) [(key "value") (scalar (get :val token))])
+
+def css-transduce-open [stack rule]
+  match (get :name rule)
+    case "stylesheet" (transition (push :sheet stack) [object-start (key "type") (scalar "stylesheet") (key "rules") array-start])
+    case "statement" (css-transduce-node stack rule)
+    case "decl" (css-transduce-node stack rule)
+    case "keyframe" (css-transduce-node stack rule)
+    case "sel" (css-transduce-selector stack rule)
+    case "kfsel" (css-transduce-selector stack rule)
+    case "declval" (css-transduce-value stack rule)
+    case _ (transition (css-transduce-mark stack rule) [])
+
+def css-transduce-close [stack rule]
+  let [rest (pop stack)]
+    match (top stack)
+      case :sheet (transition rest [array-end object-end])
+      case :block (transition rest [array-end object-end])
+      case :declaration (transition rest [object-end])
+      case _ (transition rest [])
+
+def css-transduce-step [state pass]
+  match state
+    case [started stack]
+      match pass
+        case (open rule)
+          match (css-transduce-open stack rule)
+            case (transition next outputs) (transition [true next] outputs)
+        case (close rule)
+          match (css-transduce-close stack rule)
+            case (transition next outputs) (transition [true next] outputs)
+
+; A source that made no pass is the empty stylesheet.
+def css-transduce-finish [state]
+  match state
+    case [false stack] [object-start (key "type") (scalar "stylesheet") (key "rules") array-start array-end object-end]
+    case [true []] []
+    case _ (fail :protocol-order "the rule passes ended inside a container, which a tree's never do")
+
+; Each item of the first scan as its events: a [name value] pair as the
+; member, its value a string or an array of them; an event as it is.
+def css-transduce-expand [state item]
+  match (kind item)
+    case :vector
+      match item
+        case [name value]
+          match (kind value)
+            case :vector (transition state (push-all [array-end] (push-all (map (fn [s] (scalar s)) value) [(key name) array-start])))
+            case _ (transition state [(key name) (scalar value)])
+    case _ (transition state [item])
+
+def css-transduce-flush [state]
+  []
+
+def css-transduce [input]
+  as-events (scan-emit [] css-transduce-expand css-transduce-flush (scan-emit [false []] css-transduce-step css-transduce-finish (parser-events input)))
 ` })
 })
 

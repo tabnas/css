@@ -361,6 +361,9 @@ pub struct TranslationParts {
     pub embed: Option<TranslationPart>,
     /// An optional render from the write shape to text.
     pub render: Option<TranslationPart>,
+    /// An optional transducer: the format's JSON events from its parser's
+    /// rule passes, for a host that reads parser events.
+    pub transduce: Option<TranslationPart>,
 }
 
 const TRANSLATION: TranslationParts = TranslationParts {
@@ -371,6 +374,10 @@ const TRANSLATION: TranslationParts = TranslationParts {
         entry: "css-render",
         source: Some(include_str!("../translate/render.alc")),
     }),
+    transduce: Some(TranslationPart {
+        entry: "css-transduce",
+        source: Some(include_str!("../translate/transduce.alc")),
+    }),
 };
 
 /// CSS's translation parts. The manifest's `translate` object says that CSS
@@ -378,14 +385,18 @@ const TRANSLATION: TranslationParts = TranslationParts {
 /// stylesheet (the schema `css-ast`, whose root is an object), and the
 /// render, `css-render`, writes that tree back as CSS text. There is no
 /// embed: a host composes a translation into CSS only from CSS itself or
-/// from a program that builds the tree. The texts are the crate's copies
-/// in `translate/` of `tabnas.plugin.json` and `alchemy/render.alc`, which
-/// `npm run embed` in `ts/` writes and `tests/translate.rs` holds to the
-/// files.
+/// from a program that builds the tree. The transducer part,
+/// `css-transduce`, makes the stylesheet's JSON events from the grammar's
+/// rule passes, a statement at a time, for a host that reads parser events
+/// (its `translate.transduce`). The texts are the crate's copies in
+/// `translate/` of `tabnas.plugin.json`, `alchemy/render.alc` and
+/// `alchemy/transduce.alc`, which `npm run embed` in `ts/` writes and
+/// `tests/translate.rs` holds to the files.
 ///
 /// ```
 /// let parts = tabnas_css::translate().expect("CSS carries translation parts");
 /// assert_eq!(parts.render.map(|part| part.entry), Some("css-render"));
+/// assert_eq!(parts.transduce.map(|part| part.entry), Some("css-transduce"));
 /// assert!(parts.embed.is_none());
 /// ```
 #[must_use]

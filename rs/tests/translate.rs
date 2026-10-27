@@ -64,6 +64,22 @@ fn the_render_the_manifest_names_is_the_one_the_crate_embeds() {
     );
 }
 
+#[test]
+fn the_transducer_the_manifest_names_is_the_one_the_crate_embeds() {
+    let translate = translate_object();
+    let path = text(&translate, "transduce").expect("translate.transduce names a file");
+    let parts = tabnas_css::translate().expect("CSS carries translation parts");
+    let transduce = parts
+        .transduce
+        .expect("translate.transduce names a file, and the crate carries no transducer");
+    assert_eq!(transduce.entry, "css-transduce");
+    assert_eq!(
+        transduce.source,
+        Some(read(path).as_str()),
+        "translate.transduce names {path}, and the crate embeds another text: run npm run embed in ts"
+    );
+}
+
 /// An embed takes a plain tree into a format's own schema. CSS's tree is
 /// the reader's stylesheet, and a plain tree has no CSS form, so its
 /// manifest names none and the crate carries none; a manifest that named

@@ -389,16 +389,16 @@ function makeActions(
       )
     },
     '@cssAtRules': (r: Rule) => {
-      r.node = withPos(makeAtRules((r as any).o[0]), (r as any).o[0], false)
+      r.node = withPos(atRuleNode((r as any).o[0], 'rules'), (r as any).o[0], false)
     },
     '@cssAtDecls': (r: Rule) => {
-      r.node = withPos(makeAtDecls((r as any).o[0]), (r as any).o[0], false)
+      r.node = withPos(atRuleNode((r as any).o[0], 'declarations'), (r as any).o[0], false)
     },
     '@cssKeyframes': (r: Rule) => {
-      r.node = withPos(makeKeyframes((r as any).o[0]), (r as any).o[0], false)
+      r.node = withPos(atRuleNode((r as any).o[0], 'keyframes'), (r as any).o[0], false)
     },
     '@cssAtStmt': (r: Rule) => {
-      r.node = withPos(makeAtStmt((r as any).o[0]), (r as any).o[0])
+      r.node = withPos(atRuleNode((r as any).o[0]), (r as any).o[0])
     },
 
     // Field setters (mutate the current node, which the rule inherited).
@@ -459,39 +459,42 @@ function endPos(tok: any): { line: number; column: number } {
   return { line: tok.rI, column: tok.cI + s.length }
 }
 
-// Build a block at-rule node whose body is a list of rules (@media, @supports,
-// @document, @host, and generic block at-rules).
-function makeAtRules(tok: any): Node {
-  const kw: string = tok.val
-  const prelude: string = (tok.use && tok.use.prelude) || ''
-  if ('media' === kw) return { type: 'media', media: prelude, rules: [] }
-  if ('supports' === kw) return { type: 'supports', supports: prelude, rules: [] }
-  if ('host' === kw) return { type: 'host', rules: [] }
+// An at-rule's node: the head the lexer put in the token's value (the node's
+// type and the fields read from the at-keyword and the prelude or params, in
+// the node's order), copied, and the body array after it where the at-rule
+// has a block. The head is built in the lexer so that a reader of the rule
+// passes (the transducer part, `alchemy/transduce.alc`) sees the node as
+// the walk builds it: a pass carries a token's value, never its `use` bag.
+function atRuleNode(tok: any, body?: string): Node {
+  const node: Node = Object.assign({}, tok.val)
+  if (undefined !== body) node[body] = []
+  return node
+}
+
+// The head of a block at-rule node whose body is a list of rules (@media,
+// @supports, @document, @host, and generic block at-rules).
+function atRulesHead(kw: string, prelude: string): Node {
+  if ('media' === kw) return { type: 'media', media: prelude }
+  if ('supports' === kw) return { type: 'supports', supports: prelude }
+  if ('host' === kw) return { type: 'host' }
   if ('document' === kw || /-document$/.test(kw)) {
     // `vendor` is always present on a document node (the empty string when
     // the at-keyword carries no prefix), as in the reworkcss model.
-    return {
-      type: 'document',
-      document: prelude,
-      vendor: vendorPrefix(kw) || '',
-      rules: [],
-    }
+    return { type: 'document', document: prelude, vendor: vendorPrefix(kw) || '' }
   }
   // Generic block at-rule with a rules body (e.g. @container, @layer, @scope).
-  return { type: kw, [kw]: prelude, rules: [] }
+  return { type: kw, [kw]: prelude }
 }
 
-// Build a block at-rule node whose body is declarations (@font-face, @page,
-// and generic declaration at-rules).
-function makeAtDecls(tok: any): Node {
-  const kw: string = tok.val
-  const prelude: string = (tok.use && tok.use.prelude) || ''
-  if ('font-face' === kw) return { type: 'font-face', declarations: [] }
+// The head of a block at-rule node whose body is declarations (@font-face,
+// @page, and generic declaration at-rules).
+function atDeclsHead(kw: string, prelude: string): Node {
+  if ('font-face' === kw) return { type: 'font-face' }
   if ('page' === kw) {
     // A @page prelude is a selector group: `@page toc, index:blank`.
-    return { type: 'page', selectors: splitSelectors(prelude), declarations: [] }
+    return { type: 'page', selectors: splitSelectors(prelude) }
   }
-  return { type: kw, declarations: [] }
+  return { type: kw }
 }
 
 // Split a selector-group prelude on its top-level commas (commas inside
@@ -514,22 +517,17 @@ function splitSelectors(prelude: string): string[] {
   return out
 }
 
-// Build a @keyframes node (possibly vendor-prefixed).
-function makeKeyframes(tok: any): Node {
-  const kw: string = tok.val
-  const name: string = (tok.use && tok.use.prelude) || ''
+// The head of a @keyframes node (possibly vendor-prefixed).
+function keyframesHead(kw: string, name: string): Node {
   const node: Node = { type: 'keyframes', name }
   const v = vendorPrefix(kw)
   if (v) node.vendor = v
-  node.keyframes = []
   return node
 }
 
-// Build a statement at-rule node (@import, @charset, @namespace, …): the
+// A statement at-rule node (@import, @charset, @namespace, …), whole: the
 // at-keyword is the node type and the field carrying its params.
-function makeAtStmt(tok: any): Node {
-  const kw: string = tok.val
-  const params: string = (tok.use && tok.use.params) || ''
+function atStmtHead(kw: string, params: string): Node {
   // `@custom-media --name <media query>` splits its params into a name and a
   // media query, as in the reworkcss model.
   if ('custom-media' === kw) {
@@ -569,8 +567,9 @@ const COMMENT_NODE_RULES: Record<string, true> = {
 // grammar assembles them into nodes:
 //   - in `declval` (a value position) -> a value run up to `;`/`}` (#VL)
 //   - a `,` separating selectors of a group -> #GC
-//   - a `@`-rule -> #ATR / #ATD / #ATK / #ATS (keyword in val, prelude/params
-//     in use), classified block-vs-statement by `{`-before-`;` lookahead
+//   - a `@`-rule -> #ATR / #ATD / #ATK / #ATS (the node's head in val: its
+//     type and the fields read from the keyword and the prelude or params),
+//     classified block-vs-statement by `{`-before-`;` lookahead
 //   - a `/* */` comment at a list position -> #CC (else deferred / skipped)
 //   - otherwise a single selector (up to a top-level `,` or `{`) or a
 //     property name (up to `:`) -> #TX
@@ -657,8 +656,9 @@ function buildCssTokenMatcher(lowercaseProperties: boolean) {
 }
 
 // Lex an at-rule starting at `@`. Classifies it block-vs-statement by lookahead
-// and, for blocks, by keyword, emitting #ATR/#ATD/#ATK (with the prelude) or
-// #ATS (with the params).
+// and, for blocks, by keyword, emitting #ATR/#ATD/#ATK or #ATS, each with the
+// node's head as its value: what the grammar's constructor makes of the
+// keyword and the prelude or params.
 function matchAtRule(lex: Lex, src: string, sI: number, cI: number) {
   const { pnt } = lex
   let kEnd = sI + 1
@@ -672,9 +672,11 @@ function matchAtRule(lex: Lex, src: string, sI: number, cI: number) {
     const prelude = src.substring(kEnd, brace.index).trim()
     const tin =
       isKeyframesKw(kw) ? '#ATK' : isDeclsKw(kw) ? '#ATD' : '#ATR'
-    const tkn = lex.token(tin, kw, src.substring(sI, brace.index), pnt, {
-      prelude,
-    })
+    const head =
+      '#ATK' === tin ? keyframesHead(kw, prelude)
+        : '#ATD' === tin ? atDeclsHead(kw, prelude)
+          : atRulesHead(kw, prelude)
+    const tkn = lex.token(tin, head, src.substring(sI, brace.index), pnt)
     advance(pnt, src, sI, brace.index)
     return tkn
   }
@@ -684,7 +686,7 @@ function matchAtRule(lex: Lex, src: string, sI: number, cI: number) {
   if (UNTERMINATED === pEnd) return lex.bad('unterminated_comment', sI, src.length)
   const params = src.substring(kEnd, pEnd).trim()
   const end = ';' === src[pEnd] ? pEnd + 1 : pEnd
-  const tkn = lex.token('#ATS', kw, src.substring(sI, end), pnt, { params })
+  const tkn = lex.token('#ATS', atStmtHead(kw, params), src.substring(sI, end), pnt)
   advance(pnt, src, sI, end)
   return tkn
 }
