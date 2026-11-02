@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "tabnas-css"
-version = "0.5.16"
+version = "0.5.17"
 dependencies = [
  "tabnas-debug",
  "tabnas-jsonic",
