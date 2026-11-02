@@ -151,8 +151,11 @@ The single `cssToken` matcher emits, by position:
   the body array. The head is built in the lexer so that the transducer part
   ([`alchemy/transduce.alc`](alchemy/transduce.alc)), which reads the rule
   passes, sees the node as the walk builds it: a pass carries a token's
-  value, never its `use` bag. (`#ATR` = rules body, `#ATD` = declarations
-  body, `#ATK` = keyframes, `#ATS` = statement at-rule.)
+  value, never its `use` bag. In Go the head is an insertion-ordered map
+  (`*tabnas.OrderedMap`), since a plain Go map hands its members over in
+  no fixed order, and the part writes them in the order it holds them.
+  (`#ATR` = rules body, `#ATD` = declarations body, `#ATK` = keyframes,
+  `#ATS` = statement at-rule.)
 
 The grammar rules build the AST with grammar-local **actions** (named
 `@cssXxx`, never `@xxx$` — `$` is reserved for engine builtins):

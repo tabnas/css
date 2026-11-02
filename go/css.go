@@ -540,8 +540,9 @@ func makeActions(_lowercaseProperties bool, position bool) map[tabnas.FuncRef]an
 func atRuleNode(tok *tabnas.Token, body string) map[string]any {
 	node := map[string]any{}
 	if tok != nil {
-		if head, ok := tok.Val.(map[string]any); ok {
-			for k, v := range head {
+		if head, ok := tok.Val.(*tabnas.OrderedMap); ok {
+			for _, k := range head.Keys {
+				v, _ := head.Get(k)
 				node[k] = v
 			}
 		}
@@ -552,52 +553,60 @@ func atRuleNode(tok *tabnas.Token, body string) map[string]any {
 	return node
 }
 
+// head is an at-rule's head from its members, in the node's order: an
+// insertion-ordered map, since a reader of the rule passes (the transducer
+// part) writes the members in the order it holds them, as the Rust and
+// TypeScript lexers' records do, where a plain Go map would hand them over
+// in no fixed order. A key given twice (an at-keyword `type`, whose field
+// is `type` too) keeps its place and takes the later value, as the
+// TypeScript object literal does.
+func head(pairs ...any) *tabnas.OrderedMap {
+	m := tabnas.NewOrderedMap()
+	for i := 0; i+1 < len(pairs); i += 2 {
+		m.Set(pairs[i].(string), pairs[i+1])
+	}
+	return m
+}
+
 // atRulesHead is the head of a block at-rule node whose body is a list of
 // rules (@media, @supports, @document, @host, and generic block at-rules).
-func atRulesHead(kw, prelude string) map[string]any {
+func atRulesHead(kw, prelude string) *tabnas.OrderedMap {
 	switch {
 	case kw == "media":
-		return map[string]any{"type": "media", "media": prelude}
+		return head("type", "media", "media", prelude)
 	case kw == "supports":
-		return map[string]any{"type": "supports", "supports": prelude}
+		return head("type", "supports", "supports", prelude)
 	case kw == "host":
-		return map[string]any{"type": "host"}
+		return head("type", "host")
 	case kw == "document" || strings.HasSuffix(kw, "-document"):
 		// `vendor` is always present on a document node (the empty
 		// string when the at-keyword carries no prefix), as in the
 		// reworkcss model.
-		return map[string]any{
-			"type":     "document",
-			"document": prelude,
-			"vendor":   vendorPrefix(kw),
-		}
+		return head("type", "document", "document", prelude, "vendor", vendorPrefix(kw))
 	default:
-		return map[string]any{"type": kw, kw: prelude}
+		return head("type", kw, kw, prelude)
 	}
 }
 
 // atDeclsHead is the head of a block at-rule node whose body is
 // declarations (@font-face, @page, and generic declaration at-rules).
-func atDeclsHead(kw, prelude string) map[string]any {
+func atDeclsHead(kw, prelude string) *tabnas.OrderedMap {
 	switch kw {
 	case "font-face":
-		return map[string]any{"type": "font-face"}
+		return head("type", "font-face")
 	case "page":
 		// A @page prelude is a selector group: `@page toc, index:blank`.
-		return map[string]any{
-			"type":      "page",
-			"selectors": splitSelectors(prelude),
-		}
+		return head("type", "page", "selectors", splitSelectors(prelude))
 	default:
-		return map[string]any{"type": kw}
+		return head("type", kw)
 	}
 }
 
 // keyframesHead is the head of a @keyframes node (possibly vendor-prefixed).
-func keyframesHead(kw, name string) map[string]any {
-	n := map[string]any{"type": "keyframes", "name": name}
+func keyframesHead(kw, name string) *tabnas.OrderedMap {
+	n := head("type", "keyframes", "name", name)
 	if v := vendorPrefix(kw); v != "" {
-		n["vendor"] = v
+		n.Set("vendor", v)
 	}
 	return n
 }
@@ -605,19 +614,15 @@ func keyframesHead(kw, name string) map[string]any {
 // atStmtHead is a statement at-rule node (@import, @charset, @namespace,
 // ...), whole: the at-keyword is the node type and the field carrying its
 // params.
-func atStmtHead(kw, params string) map[string]any {
+func atStmtHead(kw, params string) *tabnas.OrderedMap {
 	// `@custom-media --name <media query>` splits its params into a name and
 	// a media query, as in the reworkcss model.
 	if kw == "custom-media" {
 		if m := customMediaRe.FindStringSubmatch(params); m != nil {
-			return map[string]any{
-				"type":  "custom-media",
-				"name":  m[1],
-				"media": strings.TrimSpace(m[2]),
-			}
+			return head("type", "custom-media", "name", m[1], "media", strings.TrimSpace(m[2]))
 		}
 	}
-	return map[string]any{"type": kw, kw: params}
+	return head("type", kw, kw, params)
 }
 
 var customMediaRe = regexp.MustCompile(`(?s)^(--\S+)\s*(.*)$`)
@@ -815,16 +820,16 @@ func matchAtRule(lex *tabnas.Lex, src string, sI int, tins cssTins) *tabnas.Toke
 		default:
 			tinName, tin = "#ATR", tins.atr
 		}
-		var head map[string]any
+		var h *tabnas.OrderedMap
 		switch tinName {
 		case "#ATK":
-			head = keyframesHead(kw, prelude)
+			h = keyframesHead(kw, prelude)
 		case "#ATD":
-			head = atDeclsHead(kw, prelude)
+			h = atDeclsHead(kw, prelude)
 		default:
-			head = atRulesHead(kw, prelude)
+			h = atRulesHead(kw, prelude)
 		}
-		tkn := lex.Token(tinName, tin, head, src[sI:idx])
+		tkn := lex.Token(tinName, tin, h, src[sI:idx])
 		advance(pnt, src, sI, idx)
 		return tkn
 	}
