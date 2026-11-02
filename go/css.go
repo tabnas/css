@@ -480,10 +480,10 @@ func makeActions(_lowercaseProperties bool, position bool) map[tabnas.FuncRef]an
 		"@cssKeyframe": mk(func(r *tabnas.Rule) {
 			r.Node = withPos(map[string]any{"type": "keyframe", "values": []any{}, "declarations": []any{}}, r.O0, false)
 		}),
-		"@cssAtRules":   mk(func(r *tabnas.Rule) { r.Node = withPos(makeAtRules(r.O0), r.O0, false) }),
-		"@cssAtDecls":   mk(func(r *tabnas.Rule) { r.Node = withPos(makeAtDecls(r.O0), r.O0, false) }),
-		"@cssKeyframes": mk(func(r *tabnas.Rule) { r.Node = withPos(makeKeyframes(r.O0), r.O0, false) }),
-		"@cssAtStmt":    mk(func(r *tabnas.Rule) { r.Node = withPos(makeAtStmt(r.O0), r.O0, true) }),
+		"@cssAtRules":   mk(func(r *tabnas.Rule) { r.Node = withPos(atRuleNode(r.O0, "rules"), r.O0, false) }),
+		"@cssAtDecls":   mk(func(r *tabnas.Rule) { r.Node = withPos(atRuleNode(r.O0, "declarations"), r.O0, false) }),
+		"@cssKeyframes": mk(func(r *tabnas.Rule) { r.Node = withPos(atRuleNode(r.O0, "keyframes"), r.O0, false) }),
+		"@cssAtStmt":    mk(func(r *tabnas.Rule) { r.Node = withPos(atRuleNode(r.O0, ""), r.O0, true) }),
 
 		// Field setters.
 		"@cssSelector": mk(func(r *tabnas.Rule) { appendField(r, "selectors", tokenVal(r)) }),
@@ -531,28 +531,37 @@ func makeActions(_lowercaseProperties bool, position bool) map[tabnas.FuncRef]an
 	}
 }
 
-func atRuleVal(tok *tabnas.Token) (kw, prelude string) {
-	if tok == nil {
-		return "", ""
-	}
-	kw, _ = tok.Val.(string)
-	if tok.Use != nil {
-		if p, ok := tok.Use["prelude"].(string); ok {
-			prelude = p
+// atRuleNode is an at-rule's node: the head the lexer put in the token's
+// value (the node's type and the fields read from the at-keyword and the
+// prelude or params), copied, and the body array where the at-rule has a
+// block. The head is built in the lexer so that a reader of the rule passes
+// (the transducer part, alchemy/transduce.alc) sees the node as the walk
+// builds it: a pass carries a token's value, never its Use bag.
+func atRuleNode(tok *tabnas.Token, body string) map[string]any {
+	node := map[string]any{}
+	if tok != nil {
+		if head, ok := tok.Val.(map[string]any); ok {
+			for k, v := range head {
+				node[k] = v
+			}
 		}
 	}
-	return kw, prelude
+	if body != "" {
+		node[body] = []any{}
+	}
+	return node
 }
 
-func makeAtRules(tok *tabnas.Token) map[string]any {
-	kw, prelude := atRuleVal(tok)
+// atRulesHead is the head of a block at-rule node whose body is a list of
+// rules (@media, @supports, @document, @host, and generic block at-rules).
+func atRulesHead(kw, prelude string) map[string]any {
 	switch {
 	case kw == "media":
-		return map[string]any{"type": "media", "media": prelude, "rules": []any{}}
+		return map[string]any{"type": "media", "media": prelude}
 	case kw == "supports":
-		return map[string]any{"type": "supports", "supports": prelude, "rules": []any{}}
+		return map[string]any{"type": "supports", "supports": prelude}
 	case kw == "host":
-		return map[string]any{"type": "host", "rules": []any{}}
+		return map[string]any{"type": "host"}
 	case kw == "document" || strings.HasSuffix(kw, "-document"):
 		// `vendor` is always present on a document node (the empty
 		// string when the at-keyword carries no prefix), as in the
@@ -561,51 +570,42 @@ func makeAtRules(tok *tabnas.Token) map[string]any {
 			"type":     "document",
 			"document": prelude,
 			"vendor":   vendorPrefix(kw),
-			"rules":    []any{},
 		}
 	default:
-		return map[string]any{"type": kw, kw: prelude, "rules": []any{}}
+		return map[string]any{"type": kw, kw: prelude}
 	}
 }
 
-func makeAtDecls(tok *tabnas.Token) map[string]any {
-	kw, prelude := atRuleVal(tok)
+// atDeclsHead is the head of a block at-rule node whose body is
+// declarations (@font-face, @page, and generic declaration at-rules).
+func atDeclsHead(kw, prelude string) map[string]any {
 	switch kw {
 	case "font-face":
-		return map[string]any{"type": "font-face", "declarations": []any{}}
+		return map[string]any{"type": "font-face"}
 	case "page":
 		// A @page prelude is a selector group: `@page toc, index:blank`.
 		return map[string]any{
-			"type":         "page",
-			"selectors":    splitSelectors(prelude),
-			"declarations": []any{},
+			"type":      "page",
+			"selectors": splitSelectors(prelude),
 		}
 	default:
-		return map[string]any{"type": kw, "declarations": []any{}}
+		return map[string]any{"type": kw}
 	}
 }
 
-func makeKeyframes(tok *tabnas.Token) map[string]any {
-	kw, name := atRuleVal(tok)
+// keyframesHead is the head of a @keyframes node (possibly vendor-prefixed).
+func keyframesHead(kw, name string) map[string]any {
 	n := map[string]any{"type": "keyframes", "name": name}
 	if v := vendorPrefix(kw); v != "" {
 		n["vendor"] = v
 	}
-	n["keyframes"] = []any{}
 	return n
 }
 
-func makeAtStmt(tok *tabnas.Token) map[string]any {
-	kw := ""
-	params := ""
-	if tok != nil {
-		kw, _ = tok.Val.(string)
-		if tok.Use != nil {
-			if p, ok := tok.Use["params"].(string); ok {
-				params = p
-			}
-		}
-	}
+// atStmtHead is a statement at-rule node (@import, @charset, @namespace,
+// ...), whole: the at-keyword is the node type and the field carrying its
+// params.
+func atStmtHead(kw, params string) map[string]any {
 	// `@custom-media --name <media query>` splits its params into a name and
 	// a media query, as in the reworkcss model.
 	if kw == "custom-media" {
@@ -815,8 +815,16 @@ func matchAtRule(lex *tabnas.Lex, src string, sI int, tins cssTins) *tabnas.Toke
 		default:
 			tinName, tin = "#ATR", tins.atr
 		}
-		tkn := lex.Token(tinName, tin, kw, src[sI:idx])
-		tkn.Use = map[string]any{"prelude": prelude}
+		var head map[string]any
+		switch tinName {
+		case "#ATK":
+			head = keyframesHead(kw, prelude)
+		case "#ATD":
+			head = atDeclsHead(kw, prelude)
+		default:
+			head = atRulesHead(kw, prelude)
+		}
+		tkn := lex.Token(tinName, tin, head, src[sI:idx])
 		advance(pnt, src, sI, idx)
 		return tkn
 	}
@@ -829,8 +837,7 @@ func matchAtRule(lex *tabnas.Lex, src string, sI int, tins cssTins) *tabnas.Toke
 	if pEnd < len(src) && src[pEnd] == ';' {
 		end = pEnd + 1
 	}
-	tkn := lex.Token("#ATS", tins.ats, kw, src[sI:end])
-	tkn.Use = map[string]any{"params": params}
+	tkn := lex.Token("#ATS", tins.ats, atStmtHead(kw, params), src[sI:end])
 	advance(pnt, src, sI, end)
 	return tkn
 }

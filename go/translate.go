@@ -16,6 +16,9 @@ type TranslationParts struct {
 	Lift     *TranslationPart
 	Embed    *TranslationPart
 	Render   *TranslationPart
+	// Transduce is the transducer part: the stylesheet's JSON events from
+	// the grammar's rule passes, for a host that reads parser events.
+	Transduce *TranslationPart
 }
 
 //go:embed translate/manifest.json
@@ -24,9 +27,13 @@ var translationManifest string
 //go:embed translate/render.alc
 var translationRender string
 
+//go:embed translate/transduce.alc
+var translationTransduce string
+
 var translationParts = TranslationParts{
-	Manifest: translationManifest,
-	Render:   &TranslationPart{Entry: "css-render", Source: translationRender},
+	Manifest:  translationManifest,
+	Render:    &TranslationPart{Entry: "css-render", Source: translationRender},
+	Transduce: &TranslationPart{Entry: "css-transduce", Source: translationTransduce},
 }
 
 // Translate returns CSS's immutable translation parts: the manifest, whose
@@ -36,7 +43,10 @@ var translationParts = TranslationParts{
 // takes a node's members in any order, so the plain maps Parse returns,
 // which a host walks in sorted key order, are written as the TypeScript and
 // Rust trees are. There is no embed, so a host composes a translation into
-// CSS only from CSS itself or from a program that builds the tree.
+// CSS only from CSS itself or from a program that builds the tree. The
+// transducer part, css-transduce, makes the stylesheet's JSON events from
+// the grammar's rule passes, a statement at a time, for a host that reads
+// parser events.
 // Each call returns a copy of its own, so that what one caller changes
 // is not what another reads.
 func Translate() *TranslationParts {
@@ -44,6 +54,7 @@ func Translate() *TranslationParts {
 	parts.Lift = copyPart(parts.Lift)
 	parts.Embed = copyPart(parts.Embed)
 	parts.Render = copyPart(parts.Render)
+	parts.Transduce = copyPart(parts.Transduce)
 	return &parts
 }
 

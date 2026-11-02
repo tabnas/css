@@ -17,14 +17,15 @@ import (
 // hold them to the files.
 
 type translateSpec struct {
-	Reads  string   `json:"reads"`
-	Writes string   `json:"writes"`
-	Root   string   `json:"root"`
-	Schema string   `json:"schema"`
-	Lift   *string  `json:"lift"`
-	Embed  *string  `json:"embed"`
-	Render string   `json:"render"`
-	Loss   []string `json:"loss"`
+	Reads     string   `json:"reads"`
+	Writes    string   `json:"writes"`
+	Root      string   `json:"root"`
+	Schema    string   `json:"schema"`
+	Lift      *string  `json:"lift"`
+	Embed     *string  `json:"embed"`
+	Render    string   `json:"render"`
+	Transduce string   `json:"transduce"`
+	Loss      []string `json:"loss"`
 }
 
 func readTranslateSpec(t *testing.T) translateSpec {
@@ -75,6 +76,23 @@ func TestTranslationParts(t *testing.T) {
 	}
 	if parts.Render.Source != string(render) {
 		t.Fatalf("embedded render differs from %s: run npm run embed in ts", spec.Render)
+	}
+}
+
+// The transducer part the manifest names is the one the package carries.
+func TestTranslationTransduce(t *testing.T) {
+	inCheckout(t)
+	spec := readTranslateSpec(t)
+	parts := Translate()
+	if parts.Transduce == nil || parts.Transduce.Entry != "css-transduce" {
+		t.Fatalf("transduce entry is %#v", parts.Transduce)
+	}
+	transduce, err := os.ReadFile("../" + spec.Transduce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parts.Transduce.Source != string(transduce) {
+		t.Fatalf("embedded transducer differs from %s: run npm run embed in ts", spec.Transduce)
 	}
 }
 
