@@ -377,7 +377,17 @@ func (o CssOptions) toMap() map[string]any {
 	return m
 }
 
-// MakeJsonic returns a reusable Jsonic instance configured for CSS parsing.
+// MakeJsonic returns a reusable Jsonic instance configured for CSS parsing:
+// jsonic's base (jsonic.Make) with Css installed, as jsonic.Make() then
+// j.UseDefaults(Css, Defaults, opts) builds it, and with lex.window
+// declared, so that Tabnas.ParseReader reads a reader a window at a time
+// rather than whole (admin ADR-30). The cssToken matcher reads the source
+// only through the window, filling it where a scan reaches its end; the
+// fixed tokens, space, lines and the comments it declines are the engine's
+// own matchers; and the actions read only the tokens. The window is
+// declared here, on the parser this package makes whole, and not in Css,
+// which a host may install beneath matchers of its own. It is the
+// counterpart of TypeScript's make and Rust's make_with.
 func MakeJsonic(opts ...CssOptions) *tabnas.Tabnas {
 	j := jsonic.Make()
 	var m map[string]any
@@ -387,6 +397,8 @@ func MakeJsonic(opts ...CssOptions) *tabnas.Tabnas {
 	if err := j.UseDefaults(Css, Defaults, m); err != nil {
 		panic(fmt.Sprintf("css: plugin initialisation failed: %v", err))
 	}
+	yes := true
+	j.SetOptions(tabnas.Options{Lex: &tabnas.LexOptions{Window: &yes}})
 	return j
 }
 
@@ -692,111 +704,168 @@ var declsKw = map[string]bool{
 
 // buildCssTokenMatcher builds the single lex matcher. See the TypeScript
 // plugin (src/css.ts) for the canonical commentary; the two are kept in step.
+//
+// The token is cut from the text the lexer holds: the whole source, or in a
+// parse from a reader a window of it (lex.window, admin ADR-30), where
+// lex.Src is the window's text and the cursor counts from the window's
+// start. Each scan reads forward from the cursor to what ends it, so one
+// that stops inside the window gives what the whole text gives. One that
+// reaches the window's end may have stopped short, so cutCssToken reports
+// an edge, before it makes a token or moves the cursor; the matcher then
+// asks the window for twice what it holds past the cursor (Lex.Fill) and
+// cuts again over the grown text. Where the window does not grow, the
+// source ends there, and the cut is made with the end of the window taken
+// for the end of the source. A long token so costs its length to read, not
+// its square. In a whole text Lex.Fill only answers, and the first cut
+// stands.
 func buildCssTokenMatcher(lowercaseProperties bool, tins cssTins) tabnas.MakeLexMatcher {
 	return func(_ *tabnas.LexConfig, _ *tabnas.Options) tabnas.LexMatcher {
 		return func(lex *tabnas.Lex, rule *tabnas.Rule) *tabnas.Token {
-			pnt := lex.Cursor()
-			src := lex.Src
-			sI := pnt.SI
-			if sI >= len(src) {
-				return nil
-			}
-			c := src[sI]
-			name := rule.Name
-
-			// Defer whitespace.
-			if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
-				return nil
-			}
-
-			// Comments: a node at a list position, otherwise deferred (skipped).
-			if c == '/' && sI+1 < len(src) && src[sI+1] == '*' {
-				if !commentNodeRules[name] {
-					return nil
+			final := !lex.Windowed()
+			for {
+				src := lex.Src
+				tkn, edge := cutCssToken(lex, src, rule.Name, lowercaseProperties, tins, final)
+				if !edge {
+					return tkn
 				}
-				e := strings.Index(src[sI+2:], "*/")
-				// An unclosed comment is an error, not a comment running to
-				// EOF (the builtin comment matcher, which handles comments
-				// away from list positions, does the same).
-				if e < 0 {
-					return lex.Bad("unterminated_comment")
+				held := len(src) - lex.Cursor().SI
+				lex.Fill(max(held+1, 2*held))
+				if len(lex.Src) <= len(src) {
+					final = true
 				}
-				contentEnd := sI + 2 + e
-				end := contentEnd + 2
-				tkn := lex.Token("#CC", tins.cc, src[sI+2:contentEnd], src[sI:end])
-				advance(pnt, src, sI, end)
-				return tkn
 			}
-
-			// Value position.
-			if name == "declval" {
-				if c == '{' || c == '}' || c == ';' || c == ':' {
-					return nil
-				}
-				endI := scanValueEnd(src, sI)
-				if UNTERMINATED == endI {
-					return lex.Bad("unterminated_comment")
-				}
-				val := strings.TrimSpace(stripComments(src[sI:endI]))
-				tkn := lex.Token("#VL", tabnas.TinVL, val, src[sI:endI])
-				advance(pnt, src, sI, endI)
-				return tkn
-			}
-
-			// A top-level selector-group comma.
-			if c == ',' {
-				tkn := lex.Token("#GC", tins.gc, ",", ",")
-				advance(pnt, src, sI, sI+1)
-				return tkn
-			}
-
-			// An at-rule.
-			if c == '@' {
-				return matchAtRule(lex, src, sI, tins)
-			}
-
-			// Other fixed punctuation belongs to the grammar.
-			if c == '{' || c == '}' || c == ';' {
-				return nil
-			}
-
-			// A selector or a property name.
-			kind, brace := scanToBraceOrEnd(src, sI)
-			if UNTERMINATED == brace {
-				return lex.Bad("unterminated_comment")
-			}
-			if kind == selectorKind {
-				end := scanSelectorEnd(src, sI)
-				if UNTERMINATED == end {
-					return lex.Bad("unterminated_comment")
-				}
-				sel := strings.TrimSpace(stripComments(src[sI:end]))
-				tkn := lex.Token("#TX", tabnas.TinTX, sel, src[sI:end])
-				advance(pnt, src, sI, end)
-				return tkn
-			}
-			eI := scanPropEnd(src, sI)
-			if eI == sI {
-				return nil
-			}
-			// `/` and `*` are property characters (the `*prop` / `//prop`
-			// IE hacks), so a trailing `/*...*/` hack comment lands inside
-			// the scanned name; strip comments out of it, as reworkcss does.
-			prop := stripComments(src[sI:eI])
-			if prop == "" {
-				return nil
-			}
-			if lowercaseProperties {
-				prop = strings.ToLower(prop)
-			}
-			tkn := lex.Token("#TX", tabnas.TinTX, prop, src[sI:eI])
-			advance(pnt, src, sI, eI)
-			return tkn
 		}
 	}
 }
 
-func matchAtRule(lex *tabnas.Lex, src string, sI int, tins cssTins) *tabnas.Token {
+// cutCssToken cuts one token at the cursor from src, the text the lexer
+// holds. Unless final, a scan that reads to the end of src reports an edge
+// (true) and nothing else; with final, the end of src is the end of the
+// source.
+func cutCssToken(lex *tabnas.Lex, src string, name string, lowercaseProperties bool, tins cssTins, final bool) (*tabnas.Token, bool) {
+	pnt := lex.Cursor()
+	sI := pnt.SI
+	if sI >= len(src) {
+		return nil, !final
+	}
+	c := src[sI]
+
+	// Defer whitespace.
+	if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+		return nil, false
+	}
+
+	// Comments: a node at a list position, otherwise deferred (skipped).
+	// Whether a `/` opens one depends on the byte after it.
+	if c == '/' && sI+1 >= len(src) && !final {
+		return nil, true
+	}
+	if c == '/' && sI+1 < len(src) && src[sI+1] == '*' {
+		if !commentNodeRules[name] {
+			return nil, false
+		}
+		e := strings.Index(src[sI+2:], "*/")
+		// An unclosed comment is an error, not a comment running to
+		// EOF (the builtin comment matcher, which handles comments
+		// away from list positions, does the same).
+		if e < 0 {
+			if !final {
+				return nil, true
+			}
+			return lex.Bad("unterminated_comment"), false
+		}
+		contentEnd := sI + 2 + e
+		end := contentEnd + 2
+		tkn := lex.Token("#CC", tins.cc, src[sI+2:contentEnd], src[sI:end])
+		advance(pnt, src, sI, end)
+		return tkn, false
+	}
+
+	// Value position.
+	if name == "declval" {
+		if c == '{' || c == '}' || c == ';' || c == ':' {
+			return nil, false
+		}
+		endI := scanValueEnd(src, sI)
+		if atEnd(src, endI) && !final {
+			return nil, true
+		}
+		if UNTERMINATED == endI {
+			return lex.Bad("unterminated_comment"), false
+		}
+		val := strings.TrimSpace(stripComments(src[sI:endI]))
+		tkn := lex.Token("#VL", tabnas.TinVL, val, src[sI:endI])
+		advance(pnt, src, sI, endI)
+		return tkn, false
+	}
+
+	// A top-level selector-group comma.
+	if c == ',' {
+		tkn := lex.Token("#GC", tins.gc, ",", ",")
+		advance(pnt, src, sI, sI+1)
+		return tkn, false
+	}
+
+	// An at-rule.
+	if c == '@' {
+		return matchAtRule(lex, src, sI, tins, final)
+	}
+
+	// Other fixed punctuation belongs to the grammar.
+	if c == '{' || c == '}' || c == ';' {
+		return nil, false
+	}
+
+	// A selector or a property name.
+	kind, brace := scanToBraceOrEnd(src, sI)
+	if atEnd(src, brace) && !final {
+		return nil, true
+	}
+	if UNTERMINATED == brace {
+		return lex.Bad("unterminated_comment"), false
+	}
+	// Both scans below stop at or before what ended the lookahead, which
+	// skipped what they skip and stopped at a `{`, `;` or `}`, none of which
+	// they read past, so they read only text the lookahead read.
+	if kind == selectorKind {
+		end := scanSelectorEnd(src, sI)
+		if UNTERMINATED == end {
+			return lex.Bad("unterminated_comment"), false
+		}
+		sel := strings.TrimSpace(stripComments(src[sI:end]))
+		tkn := lex.Token("#TX", tabnas.TinTX, sel, src[sI:end])
+		advance(pnt, src, sI, end)
+		return tkn, false
+	}
+	eI := scanPropEnd(src, sI)
+	if eI == sI {
+		return nil, false
+	}
+	// `/` and `*` are property characters (the `*prop` / `//prop` IE
+	// hacks), so a trailing `/*...*/` hack comment lands inside the
+	// scanned name; strip comments out of it, as reworkcss does.
+	prop := stripComments(src[sI:eI])
+	if prop == "" {
+		return nil, false
+	}
+	if lowercaseProperties {
+		prop = strings.ToLower(prop)
+	}
+	tkn := lex.Token("#TX", tabnas.TinTX, prop, src[sI:eI])
+	advance(pnt, src, sI, eI)
+	return tkn, false
+}
+
+// atEnd reports whether a scan that stopped at i read to the end of src: it
+// ran off the end, which clampLen bounds, or met an unclosed comment
+// (UNTERMINATED), whose `*/` may lie past the end.
+func atEnd(src string, i int) bool {
+	return UNTERMINATED == i || i >= len(src)
+}
+
+// matchAtRule lexes an at-rule starting at `@`. Unless final, a scan that
+// reads to the end of src reports an edge, as in cutCssToken.
+func matchAtRule(lex *tabnas.Lex, src string, sI int, tins cssTins, final bool) (*tabnas.Token, bool) {
 	pnt := lex.Cursor()
 	kEnd := sI + 1
 	for kEnd < len(src) && isAtChar(src[kEnd]) {
@@ -804,9 +873,15 @@ func matchAtRule(lex *tabnas.Lex, src string, sI int, tins cssTins) *tabnas.Toke
 	}
 	kw := src[sI+1 : kEnd]
 
+	// The lookahead reads from the `@` on, through the keyword, so where it
+	// stops inside src the keyword stopped inside it too, and so does the
+	// params scan below, which stops where it stops.
 	kind, idx := scanToBraceOrEnd(src, sI)
+	if atEnd(src, idx) && !final {
+		return nil, true
+	}
 	if UNTERMINATED == idx {
-		return lex.Bad("unterminated_comment")
+		return lex.Bad("unterminated_comment"), false
 	}
 	if kind == selectorKind {
 		prelude := strings.TrimSpace(src[kEnd:idx])
@@ -831,11 +906,11 @@ func matchAtRule(lex *tabnas.Lex, src string, sI int, tins cssTins) *tabnas.Toke
 		}
 		tkn := lex.Token(tinName, tin, h, src[sI:idx])
 		advance(pnt, src, sI, idx)
-		return tkn
+		return tkn, false
 	}
 	pEnd := scanValueEnd(src, kEnd)
 	if UNTERMINATED == pEnd {
-		return lex.Bad("unterminated_comment")
+		return lex.Bad("unterminated_comment"), false
 	}
 	params := strings.TrimSpace(src[kEnd:pEnd])
 	end := pEnd
@@ -844,7 +919,7 @@ func matchAtRule(lex *tabnas.Lex, src string, sI int, tins cssTins) *tabnas.Toke
 	}
 	tkn := lex.Token("#ATS", tins.ats, atStmtHead(kw, params), src[sI:end])
 	advance(pnt, src, sI, end)
-	return tkn
+	return tkn, false
 }
 
 func advance(pnt *tabnas.Point, src string, sI, end int) {

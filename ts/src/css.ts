@@ -11,6 +11,7 @@ import {
   Config,
   TabnasOptions,
   Lex,
+  Token,
 } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
 
@@ -574,98 +575,157 @@ const COMMENT_NODE_RULES: Record<string, true> = {
 //   - otherwise a single selector (up to a top-level `,` or `{`) or a
 //     property name (up to `:`) -> #TX
 // Fixed punctuation and whitespace are deferred to the builtin matchers.
+//
+// The token is cut from the text the lexer holds: the whole source, or in a
+// parse from a reader a window of it (`lex.window`, admin ADR-30), where
+// `lex.src` is the window's text and the cursor counts from the window's
+// start. Each scan reads forward from the cursor to what ends it, so one that
+// stops inside the window gives what the whole text gives. One that reaches
+// the window's end may have stopped short, so the cut answers `EDGE`, before
+// it makes a token or moves the cursor; the matcher then asks the window for
+// twice what it holds past the cursor (`lex.fill`) and cuts again over the
+// grown text. Where the window does not grow, the source ends there, and the
+// cut is made with the end of the window taken for the end of the source. A
+// long token so costs its length to read, not its square. In a whole text
+// `lex.fill` only answers, and the first cut stands.
 function buildCssTokenMatcher(lowercaseProperties: boolean) {
   return function makeCssTokenMatcher(_cfg: Config, _opts: TabnasOptions) {
     return function cssTokenMatcher(lex: Lex, rule: Rule) {
-      const { pnt } = lex
-      const src: string = lex.src as unknown as string
-      const { sI, cI } = pnt
-      const c = src[sI]
       const name = (rule as any).name
-
-      if (undefined === c) return undefined
-      // Defer whitespace to the space/line matchers.
-      if (' ' === c || '\t' === c || '\r' === c || '\n' === c) return undefined
-
-      // Comments: a node at a list position, otherwise deferred (and skipped).
-      if ('/' === c && '*' === src[sI + 1]) {
-        if (true !== COMMENT_NODE_RULES[name]) return undefined
-        let e = src.indexOf('*/', sI + 2)
-        // An unclosed comment is an error, not a comment running to EOF (the
-        // builtin comment matcher, which handles comments away from list
-        // positions, does the same).
-        if (e < 0) return lex.bad('unterminated_comment', sI, src.length)
-        const tkn = lex.token('#CC', src.substring(sI + 2, e),
-          src.substring(sI, e + 2), pnt)
-        advance(pnt, src, sI, e + 2)
-        return tkn
+      let final = !lex.windowed
+      for (;;) {
+        const src: string = lex.src as unknown as string
+        const tkn = cutCssToken(lex, src, name, lowercaseProperties, final)
+        if (EDGE !== tkn) return tkn
+        const held = src.length - lex.pnt.sI
+        lex.fill(Math.max(held + 1, 2 * held))
+        if (lex.src.length <= src.length) final = true
       }
-
-      // Value position: read a declaration value up to the next top-level
-      // `;`/`}` and emit one #VL (comments stripped, trailing space trimmed).
-      if ('declval' === name) {
-        if ('{' === c || '}' === c || ';' === c || ':' === c) return undefined
-        const endI = scanValueEnd(src, sI)
-        if (UNTERMINATED === endI) return lex.bad('unterminated_comment', sI, src.length)
-        const val = stripComments(src.substring(sI, endI)).trim()
-        const tkn = lex.token('#VL', val, src.substring(sI, endI), pnt)
-        advance(pnt, src, sI, endI)
-        return tkn
-      }
-
-      // A top-level selector-group comma.
-      if (',' === c) {
-        const tkn = lex.token('#GC', ',', ',', pnt)
-        advance(pnt, src, sI, sI + 1)
-        return tkn
-      }
-
-      // An at-rule.
-      if ('@' === c) return matchAtRule(lex, src, sI, cI)
-
-      // Other fixed punctuation belongs to the grammar.
-      if ('{' === c || '}' === c || ';' === c) return undefined
-
-      // A selector or a property name, by `{`-before-`;` lookahead.
-      const brace = scanToBraceOrEnd(src, sI)
-      if (UNTERMINATED === brace.index) return lex.bad('unterminated_comment', sI, src.length)
-      if (brace.kind === 'selector') {
-        // One selector of a (possible) group: up to the next top-level `,`/`{`
-        // (comments stripped, surrounding space trimmed).
-        const end = scanSelectorEnd(src, sI)
-        if (UNTERMINATED === end) return lex.bad('unterminated_comment', sI, src.length)
-        const sel = stripComments(src.substring(sI, end)).trim()
-        const tkn = lex.token('#TX', sel, src.substring(sI, end), pnt)
-        advance(pnt, src, sI, end)
-        return tkn
-      }
-      // A property name: the identifier up to `:`, whitespace, `;` or `}`.
-      const eI = scanPropEnd(src, sI)
-      if (eI === sI) return undefined
-      // `/` and `*` are property characters (the `*prop` / `//prop` IE hacks),
-      // so a trailing `/*...*/` hack comment lands inside the scanned name;
-      // strip comments out of it, as reworkcss does.
-      let prop = stripComments(src.substring(sI, eI))
-      if ('' === prop) return undefined
-      if (lowercaseProperties) prop = prop.toLowerCase()
-      const tkn = lex.token('#TX', prop, src.substring(sI, eI), pnt)
-      advance(pnt, src, sI, eI)
-      return tkn
     }
   }
+}
+
+// What a cut answers where a scan read to the end of the text the lexer
+// holds while the source may have more: see `buildCssTokenMatcher`.
+const EDGE: unique symbol = Symbol('css-edge')
+
+// Cut one token at the cursor from `src`, the text the lexer holds. Unless
+// `final`, a scan that reads to the end of `src` answers EDGE; with `final`,
+// the end of `src` is the end of the source.
+function cutCssToken(
+  lex: Lex,
+  src: string,
+  name: string,
+  lowercaseProperties: boolean,
+  final: boolean,
+): Token | undefined | typeof EDGE {
+  const { pnt } = lex
+  const { sI, cI } = pnt
+  const c = src[sI]
+
+  if (undefined === c) return final ? undefined : EDGE
+  // Defer whitespace to the space/line matchers.
+  if (' ' === c || '\t' === c || '\r' === c || '\n' === c) return undefined
+
+  // Comments: a node at a list position, otherwise deferred (and skipped).
+  // Whether a `/` opens one depends on the character after it.
+  if ('/' === c && src.length <= sI + 1 && !final) return EDGE
+  if ('/' === c && '*' === src[sI + 1]) {
+    if (true !== COMMENT_NODE_RULES[name]) return undefined
+    let e = src.indexOf('*/', sI + 2)
+    // An unclosed comment is an error, not a comment running to EOF (the
+    // builtin comment matcher, which handles comments away from list
+    // positions, does the same).
+    if (e < 0) {
+      if (!final) return EDGE
+      return lex.bad('unterminated_comment', sI, src.length)
+    }
+    const tkn = lex.token('#CC', src.substring(sI + 2, e),
+      src.substring(sI, e + 2), pnt)
+    advance(pnt, src, sI, e + 2)
+    return tkn
+  }
+
+  // Value position: read a declaration value up to the next top-level
+  // `;`/`}` and emit one #VL (comments stripped, trailing space trimmed).
+  if ('declval' === name) {
+    if ('{' === c || '}' === c || ';' === c || ':' === c) return undefined
+    const endI = scanValueEnd(src, sI)
+    if (atEnd(src, endI) && !final) return EDGE
+    if (UNTERMINATED === endI) return lex.bad('unterminated_comment', sI, src.length)
+    const val = stripComments(src.substring(sI, endI)).trim()
+    const tkn = lex.token('#VL', val, src.substring(sI, endI), pnt)
+    advance(pnt, src, sI, endI)
+    return tkn
+  }
+
+  // A top-level selector-group comma.
+  if (',' === c) {
+    const tkn = lex.token('#GC', ',', ',', pnt)
+    advance(pnt, src, sI, sI + 1)
+    return tkn
+  }
+
+  // An at-rule.
+  if ('@' === c) return matchAtRule(lex, src, sI, cI, final)
+
+  // Other fixed punctuation belongs to the grammar.
+  if ('{' === c || '}' === c || ';' === c) return undefined
+
+  // A selector or a property name, by `{`-before-`;` lookahead.
+  const brace = scanToBraceOrEnd(src, sI)
+  if (atEnd(src, brace.index) && !final) return EDGE
+  if (UNTERMINATED === brace.index) return lex.bad('unterminated_comment', sI, src.length)
+  // Both scans below stop at or before what ended the lookahead, which
+  // skipped what they skip and stopped at a `{`, `;` or `}`, none of which
+  // they read past, so they read only text the lookahead read.
+  if (brace.kind === 'selector') {
+    // One selector of a (possible) group: up to the next top-level `,`/`{`
+    // (comments stripped, surrounding space trimmed).
+    const end = scanSelectorEnd(src, sI)
+    if (UNTERMINATED === end) return lex.bad('unterminated_comment', sI, src.length)
+    const sel = stripComments(src.substring(sI, end)).trim()
+    const tkn = lex.token('#TX', sel, src.substring(sI, end), pnt)
+    advance(pnt, src, sI, end)
+    return tkn
+  }
+  // A property name: the identifier up to `:`, whitespace, `;` or `}`.
+  const eI = scanPropEnd(src, sI)
+  if (eI === sI) return undefined
+  // `/` and `*` are property characters (the `*prop` / `//prop` IE hacks),
+  // so a trailing `/*...*/` hack comment lands inside the scanned name;
+  // strip comments out of it, as reworkcss does.
+  let prop = stripComments(src.substring(sI, eI))
+  if ('' === prop) return undefined
+  if (lowercaseProperties) prop = prop.toLowerCase()
+  const tkn = lex.token('#TX', prop, src.substring(sI, eI), pnt)
+  advance(pnt, src, sI, eI)
+  return tkn
+}
+
+// Whether a scan that stopped at `i` read to the end of `src`: it ran off
+// the end, which a `\` escape can overshoot by one, or met an unclosed
+// comment (UNTERMINATED), whose `*/` may lie past the end.
+function atEnd(src: string, i: number): boolean {
+  return UNTERMINATED === i || src.length <= i
 }
 
 // Lex an at-rule starting at `@`. Classifies it block-vs-statement by lookahead
 // and, for blocks, by keyword, emitting #ATR/#ATD/#ATK or #ATS, each with the
 // node's head as its value: what the grammar's constructor makes of the
-// keyword and the prelude or params.
-function matchAtRule(lex: Lex, src: string, sI: number, cI: number) {
+// keyword and the prelude or params. Unless `final`, a scan that reads to the
+// end of `src` answers EDGE, as in `cutCssToken`.
+function matchAtRule(lex: Lex, src: string, sI: number, cI: number, final: boolean) {
   const { pnt } = lex
   let kEnd = sI + 1
   while (kEnd < src.length && isAtChar(src.charCodeAt(kEnd))) kEnd++
   const kw = src.substring(sI + 1, kEnd)
 
+  // The lookahead reads from the `@` on, through the keyword, so where it
+  // stops inside `src` the keyword stopped inside it too, and so does the
+  // params scan below, which stops where it stops.
   const brace = scanToBraceOrEnd(src, sI)
+  if (atEnd(src, brace.index) && !final) return EDGE
   if (UNTERMINATED === brace.index) return lex.bad('unterminated_comment', sI, src.length)
   if (brace.kind === 'selector') {
     // Block at-rule: the prelude is the text between the keyword and `{`.
@@ -967,12 +1027,28 @@ Css.defaults = {
   position: false,
 } as CssOptions
 
+// Build a CSS parser whole: jsonic's base with the plugin installed, as
+// `new Tabnas().use(jsonic).use(Css, options)` builds it, and with
+// `lex.window` declared, so that `tn.parseReader` reads a reader a window at
+// a time rather than whole (admin ADR-30). The cssToken matcher reads the
+// source only through the window, filling it where a scan reaches its end;
+// the fixed tokens, space, lines and the comments it declines are the
+// engine's own matchers; and the actions read only the tokens. The window
+// is declared here, on the parser this package makes whole, and not in
+// `Css`, which a host may install beneath matchers of its own. It is the
+// counterpart of Go's `MakeJsonic` and Rust's `make_with`.
+function make(options: Partial<CssOptions> = {}): Tabnas {
+  const tn = new Tabnas().use(jsonic).use(Css, options)
+  tn.options({ lex: { window: true } })
+  return tn
+}
+
 // VERSION is this package's version. It MUST equal package.json "version":
 // the release orchestrator rewrites both, and the version test fails the
 // build if they drift. Mirrors `const VERSION` in go/css.go.
 const VERSION = '0.5.18'
 
-export { Css, VERSION }
+export { Css, VERSION, make }
 export type { CssOptions }
 
 export { translate } from './translate'

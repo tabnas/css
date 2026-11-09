@@ -238,16 +238,41 @@ pub fn css(parser: &mut Tabnas, options: &Options) -> Result<(), PluginError> {
 }
 
 /// A jsonic engine with the plugin installed, with the default options.
+///
+/// It declares `lex.window`, as [`make_with`] does.
 pub fn make() -> Tabnas {
     make_with(Options::default())
 }
 
-/// A jsonic engine with the plugin installed, with `options`.
+/// A jsonic engine with the plugin installed, with `options`: the
+/// counterpart of the canonical `make(options)` and Go's `MakeJsonic`.
+///
+/// It also declares `lex.window`, so that [`Tabnas::parse_reader`] reads a
+/// reader a window at a time rather than whole (admin ADR-30). The
+/// `cssToken` matcher reads the source only through the lexer's window and
+/// `fill`; the fixed tokens, space, lines and the comments it declines are
+/// the engine's own matchers; and the actions read only the tokens, the
+/// lex subscriber listing the astral characters for the positions as the
+/// tokens go by. The window is declared here, on the parser this crate makes
+/// whole, and not in [`plugin`] or [`css`], which a host may install
+/// beneath matchers of its own.
+///
+/// ```
+/// let parser = tabnas_css::make();
+/// let ast = parser.parse_reader("a { color: red }".as_bytes()).unwrap();
+/// assert_eq!(
+///     ast.to_json().to_string(),
+///     r#"{"type":"stylesheet","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"color","value":"red"}]}]}"#
+/// );
+/// ```
 pub fn make_with(options: Options) -> Tabnas {
     let mut parser = tabnas_jsonic::make();
     parser
         .use_plugin(plugin(), Some(options.to_value()))
         .expect("the css plugin installs on jsonic");
+    parser
+        .set_options(|options| options.lex.window = true)
+        .expect("lex.window sets");
     parser
 }
 

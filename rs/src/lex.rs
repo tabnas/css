@@ -402,7 +402,7 @@ fn skip_string(src: &[u8], mut i: usize) -> usize {
 fn scan_to_brace_or_end(src: &[u8], i: usize) -> (Kind, usize) {
     let mut scan = Scan { i, depth: 0 };
     loop {
-        if let Some(found) = scan.step(src) {
+        if let Some(found) = scan.step(src, 0) {
             return found;
         }
     }
@@ -419,22 +419,25 @@ struct Scan {
 
 impl Scan {
     /// Take one step: past a string, a comment, an escape or one byte.
-    /// `Some` is the scan's answer.
-    fn step(&mut self, src: &[u8]) -> Option<(Kind, usize)> {
-        let Some(&c) = src.get(self.i) else {
+    /// `Some` is the scan's answer. `src` is the text the lexer holds, and
+    /// `base` the source's byte offset of its first byte: the scan's
+    /// positions are the source's, as the kept ones in [`BraceScans`] are.
+    fn step(&mut self, src: &[u8], base: usize) -> Option<(Kind, usize)> {
+        let at = self.i - base;
+        let Some(&c) = src.get(at) else {
             // i may be one past the end; see skip_string.
             return Some((Kind::Decl, self.i));
         };
         if c == b'"' || c == b'\'' {
-            self.i = skip_string(src, self.i);
+            self.i = base + skip_string(src, at);
             return None;
         }
-        if c == b'/' && src.get(self.i + 1) == Some(&b'*') {
-            let n = skip_comment(src, self.i);
+        if c == b'/' && src.get(at + 1) == Some(&b'*') {
+            let n = skip_comment(src, at);
             if UNTERMINATED == n {
                 return Some((Kind::Decl, UNTERMINATED));
             }
-            self.i = n;
+            self.i = base + n;
             return None;
         }
         // A CSS escape (`\(`, `\'`, `\3A `, …) hides the next character from
@@ -473,6 +476,14 @@ impl Scan {
 /// later start the cursor reaches in that state takes the kept answer. Any
 /// other start scans afresh and becomes the one kept. The cursor only moves
 /// forward, so a parse's scanning is linear in its length.
+///
+/// The kept positions are the source's, and the text is read where the
+/// lexer holds it: in a parse from a reader, the window, which may have
+/// dropped the text behind the cursor. A kept cursor whose text the window
+/// no longer holds is passed over, and the start scans afresh, which costs
+/// time and never changes an answer. An answer the scan found only by
+/// reading to the end of the window is not kept while the source may have
+/// more: the matcher fills the window and asks again.
 #[derive(Clone, Copy, Debug)]
 struct BraceScans {
     from: usize,
@@ -484,34 +495,73 @@ struct BraceScans {
 pub(crate) const BRACE_SCAN: &str = "tabnas-css/brace-scan";
 
 impl BraceScans {
-    /// The answer for a token starting at `s_i`, keeping the state under
-    /// [`BRACE_SCAN`] with one map lookup: the matcher asks on every `#TX`,
-    /// and a flat stylesheet is mostly misses.
-    fn scan(ctx: &mut Context, src: &[u8], s_i: usize) -> (Kind, usize) {
+    /// The answer for a token starting at byte `at` of `src`, the text the
+    /// lexer holds, whose first byte is the source's byte `base`: its kind,
+    /// and where it ended in `src` (or [`UNTERMINATED`]). The state is kept
+    /// under [`BRACE_SCAN`] with one map lookup: the matcher asks on every
+    /// `#TX`, and a flat stylesheet is mostly misses. Unless `exhausted`,
+    /// the end of `src` may not be the source's, and an answer found there
+    /// is not kept.
+    fn scan(
+        ctx: &mut Context,
+        src: &[u8],
+        base: usize,
+        at: usize,
+        exhausted: bool,
+    ) -> (Kind, usize) {
+        let s_i = base + at;
+        let held = |found: (Kind, usize)| match found.1 {
+            UNTERMINATED => found,
+            end => (found.0, end - base),
+        };
         let Some(Value::Array(slot)) = ctx.u.get_mut(BRACE_SCAN) else {
-            let found = scan_to_brace_or_end(src, s_i);
-            let kept = BraceScans::fresh(s_i, found);
-            ctx.u
-                .insert(BRACE_SCAN.to_string(), Value::array(kept.fields().to_vec()));
-            return found;
+            let found = BraceScans::fresh_scan(src, base, at);
+            if exhausted || !BraceScans::at_end(src, base, found) {
+                let kept = BraceScans::fresh(s_i, found);
+                ctx.u
+                    .insert(BRACE_SCAN.to_string(), Value::array(kept.fields().to_vec()));
+            }
+            return held(found);
         };
         let fields = Arc::make_mut(slot);
         if let Some(mut kept) = BraceScans::decode(fields) {
-            if kept.from <= s_i && s_i < kept.found.1 && kept.cursor.i <= s_i {
-                while kept.cursor.i < s_i && kept.cursor.step(src).is_none() {}
+            if kept.from <= s_i
+                && s_i < kept.found.1
+                && base <= kept.cursor.i
+                && kept.cursor.i <= s_i
+            {
+                while kept.cursor.i < s_i && kept.cursor.step(src, base).is_none() {}
                 let reached = kept.cursor.i == s_i && 0 == kept.cursor.depth;
                 kept.encode(fields);
                 if reached {
-                    return kept.found;
+                    return held(kept.found);
                 }
             }
         }
         // An unclosed comment's answer is kept too: a scan from a later start
         // the cursor reaches meets the same `/*`, and the engine's recovery
         // asks again at the very start it failed at, up to its skip budget.
-        let found = scan_to_brace_or_end(src, s_i);
-        BraceScans::fresh(s_i, found).encode(fields);
-        found
+        let found = BraceScans::fresh_scan(src, base, at);
+        if exhausted || !BraceScans::at_end(src, base, found) {
+            BraceScans::fresh(s_i, found).encode(fields);
+        }
+        held(found)
+    }
+
+    /// [`scan_to_brace_or_end`] from byte `at` of `src`, its answer at the
+    /// source's position.
+    fn fresh_scan(src: &[u8], base: usize, at: usize) -> (Kind, usize) {
+        match scan_to_brace_or_end(src, at) {
+            (kind, UNTERMINATED) => (kind, UNTERMINATED),
+            (kind, end) => (kind, base + end),
+        }
+    }
+
+    /// Whether `found`, at the source's position, was read to the end of
+    /// `src`: an unclosed comment, or the end of the text, which a `\`
+    /// escape can overshoot by one.
+    fn at_end(src: &[u8], base: usize, found: (Kind, usize)) -> bool {
+        UNTERMINATED == found.1 || base + src.len() <= found.1
     }
 
     fn fresh(from: usize, found: (Kind, usize)) -> BraceScans {
@@ -797,9 +847,17 @@ enum Plan {
         raw: String,
         end: usize,
     },
+    /// A scan read to the end of the text the lexer holds while the source
+    /// may have more: [`css_token`] fills the window and plans again.
+    Edge,
 }
 
 /// Decide the token at byte `s_i` of `src`, read under the rule `rule`.
+///
+/// `src` is the text the lexer holds: the whole source, or in a parse from
+/// a reader the window. Unless `exhausted`, a scan that reads to the end of
+/// `src` answers [`Plan::Edge`]; with `exhausted`, the end of `src` is the
+/// end of the source.
 ///
 /// `buildCssTokenMatcher` in `ts/src/css.ts`, step for step: whitespace is
 /// declined (the engine's space and line matchers take it), a comment is a
@@ -812,11 +870,16 @@ fn plan_token(
     s_i: usize,
     rule: &str,
     lower: bool,
+    exhausted: bool,
     brace: &mut dyn FnMut(usize) -> (Kind, usize),
 ) -> Plan {
     let bytes = src.as_bytes();
+    // Whether a scan that stopped at `i` read to the end of `src`: it ran
+    // off the end, which a `\` escape can overshoot by one, or met an
+    // unclosed comment, whose `*/` may lie past the end.
+    let edge = |i: usize| !exhausted && (UNTERMINATED == i || bytes.len() <= i);
     let Some(&c) = bytes.get(s_i) else {
-        return Plan::Decline;
+        return if exhausted { Plan::Decline } else { Plan::Edge };
     };
     if c == b' ' || c == b'\t' || c == b'\r' || c == b'\n' {
         return Plan::Decline;
@@ -830,12 +893,17 @@ fn plan_token(
     };
 
     // Comments: a node at a list position, otherwise declined, and then
-    // skipped by the engine's builtin comment matcher.
+    // skipped by the engine's builtin comment matcher. Whether a `/` opens
+    // one depends on the byte after it.
+    if c == b'/' && edge(s_i + 1) {
+        return Plan::Edge;
+    }
     if c == b'/' && bytes.get(s_i + 1) == Some(&b'*') {
         if !is_comment_node_rule(rule) {
             return Plan::Decline;
         }
         return match find_comment_end(bytes, s_i) {
+            None if !exhausted => Plan::Edge,
             None => Plan::Bad,
             Some(e) => emit(
                 "#CC",
@@ -854,6 +922,9 @@ fn plan_token(
             return Plan::Decline;
         }
         let end = scan_value_end(bytes, s_i);
+        if edge(end) {
+            return Plan::Edge;
+        }
         if UNTERMINATED == end {
             return Plan::Bad;
         }
@@ -879,7 +950,13 @@ fn plan_token(
             k_end += 1;
         }
         let kw = safe_slice(src, s_i + 1, k_end).to_string();
+        // The lookahead reads from the `@` on, through the keyword, so where
+        // it stops inside `src` the keyword stopped inside it too, and so
+        // does the params scan below, which stops where it stops.
         let (kind, index) = brace(s_i);
+        if edge(index) {
+            return Plan::Edge;
+        }
         if UNTERMINATED == index {
             return Plan::Bad;
         }
@@ -939,9 +1016,15 @@ fn plan_token(
 
     // A selector or a property name, by `{`-before-`;` lookahead.
     let (kind, index) = brace(s_i);
+    if edge(index) {
+        return Plan::Edge;
+    }
     if UNTERMINATED == index {
         return Plan::Bad;
     }
+    // Both scans below stop at or before what ended the lookahead, which
+    // skipped what they skip and stopped at a `{`, `;` or `}`, none of which
+    // they read past, so they read only text the lookahead read.
     if Kind::Selector == kind {
         // One selector of a (possible) group: up to the next top-level `,`
         // or `{`, comments stripped and surrounding space trimmed.
@@ -977,6 +1060,20 @@ fn plan_token(
 /// The `cssToken` matcher, registered as `@css-token` and named by the
 /// grammar's options at order 1e5, ahead of every builtin matcher.
 ///
+/// The token is planned over the text the lexer holds: the whole source,
+/// or in a parse from a reader (`lex.window`, admin ADR-30) the window,
+/// which keeps the text from the oldest token the parser holds to what it
+/// has read, and which [`Lexer::window`] gives from the cursor on. Each
+/// scan reads forward from the cursor to what ends it, so one that stops
+/// inside the window gives what the whole text gives. One that reaches the
+/// window's end may have stopped short: the plan is then [`Plan::Edge`],
+/// and the matcher asks the window for twice what it holds past the cursor
+/// ([`Lexer::fill`]) and plans again over the grown text. Where the window
+/// does not grow, the source ends there, and the plan is made with the end
+/// of the window taken for the end of the source. A long token so costs its
+/// length to read, not its square. In a whole text `fill` only answers, and
+/// the first plan stands.
+///
 /// Two things here are deliberate and easy to "fix" wrongly:
 ///
 /// - The end of a token may be ONE PAST the source. A `\` at the last
@@ -1000,30 +1097,45 @@ pub(crate) fn css_token(
     lower: bool,
 ) -> Option<Token> {
     let point = lexer.point();
-    let s_i = point.site.si;
-    let (plan, chars, overshoot) = {
-        let src = lexer.source();
-        let bytes = src.as_bytes();
-        let mut brace = |at: usize| BraceScans::scan(ctx, bytes, at);
-        let plan = plan_token(src, s_i, rule.name.as_str(), lower, &mut brace);
+    let mut exhausted = !lexer.windowed();
+    let (plan, chars, overshoot) = loop {
+        // `held` is the text the lexer holds, and the cursor is byte
+        // `s_i` of it, the source's byte `point.site.si`.
+        let ahead = lexer.window().len();
+        let held = lexer.source();
+        let s_i = held.len() - ahead;
+        let base = point.site.si - s_i;
+        let bytes = held.as_bytes();
+        let mut brace = |at: usize| BraceScans::scan(ctx, bytes, base, at, exhausted);
+        let plan = plan_token(held, s_i, rule.name.as_str(), lower, exhausted, &mut brace);
         let (chars, overshoot) = match &plan {
             Plan::Decline => return None,
+            Plan::Edge => {
+                let read = held[s_i..].chars().count();
+                lexer.fill(read.saturating_mul(2).max(read + 1));
+                if lexer.window().len() <= ahead {
+                    exhausted = true;
+                }
+                continue;
+            }
             Plan::Bad => (
-                safe_slice(src, s_i, src.len())
+                safe_slice(held, s_i, held.len())
                     .chars()
                     .take(BAD_SPAN)
                     .count(),
                 0,
             ),
             Plan::Emit { end, .. } => (
-                safe_slice(src, s_i, (*end).min(src.len())).chars().count(),
-                end.saturating_sub(src.len()),
+                safe_slice(held, s_i, (*end).min(held.len()))
+                    .chars()
+                    .count(),
+                end.saturating_sub(held.len()),
             ),
         };
-        (plan, chars, overshoot)
+        break (plan, chars, overshoot);
     };
     match plan {
-        Plan::Decline => None,
+        Plan::Decline | Plan::Edge => None,
         Plan::Bad => Some(lexer.bad_span(
             "unterminated_comment",
             point.site.pos,
@@ -1058,11 +1170,18 @@ pub(crate) fn css_token(
 ///   at once, as the canonical does, and record and skip it under
 ///   recovery, so that work is the engine's now. `test/spec/comments.tsv`
 ///   and `tests/plugin.rs` pin the answers in every mode.
+/// - In a parse from a reader, which has no source to list them from, it
+///   lists the astral characters of each token's text for the positions
+///   (`plugin::note_astral`).
 pub(crate) fn lex_subscriber(token: &mut Token, _rule: &mut Rule, ctx: &mut Context) {
     if TIN_ZZ == token.tin {
         if let Some(Value::Number(n)) = ctx.u.get(OVERSHOOT) {
             token.site.ci += *n as usize;
         }
+    }
+    // A parse from a reader a window at a time has no source in its context.
+    if ctx.source.is_empty() {
+        crate::plugin::note_astral(token, ctx);
     }
 }
 

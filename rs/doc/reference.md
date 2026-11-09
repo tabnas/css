@@ -163,6 +163,21 @@ is recorded and runs again on a derived engine.
 A jsonic engine (`tabnas_css::tabnas_jsonic::make()`) with the plugin installed,
 with the default options.
 
+It declares `lex.window` on the engine, so that `parse_reader` reads CSS
+from a `std::io::Read` a window at a time rather than whole,
+and gives the tree and the errors that a parse of the same text gives.
+The plugin declares no window of its own, since a host may install it
+beneath matchers of its own.
+
+```rust
+let parser = tabnas_css::make();
+let tree = parser.parse_reader("a { color: red }".as_bytes()).unwrap();
+assert_eq!(
+    tree.to_json().to_string(),
+    r#"{"type":"stylesheet","rules":[{"type":"rule","selectors":["a"],"declarations":[{"type":"declaration","property":"color","value":"red"}]}]}"#
+);
+```
+
 ### `fn make_with(options: Options) -> tabnas::Tabnas`
 
 The same, with `options`.

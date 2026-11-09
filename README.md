@@ -150,6 +150,14 @@ new Tabnas().use(jsonic).use(Css, { position: true })
 // every node gains for example position: { start: { line, column }, end: { line, column } }
 ```
 
+## Reading from a reader
+
+`make` in TypeScript and Rust and `MakeJsonic` in Go build the parser
+whole and declare the engine's `lex.window`, so that the engine's reader
+entry point, `parseReader`, `ParseReader` or `parse_reader`, reads CSS a
+window at a time rather than whole. It gives the tree and the errors that
+a parse of the same text gives.
+
 ## Documentation
 
 Full documentation follows the [Diátaxis](https://diataxis.fr)

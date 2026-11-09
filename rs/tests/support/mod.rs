@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 
 use tabnas_css::{Node, Value};
 
+pub mod corpus;
+
 /// The repository root: the directory holding `test/spec`.
 ///
 /// Walks up from this crate rather than counting `..` hops, so moving the

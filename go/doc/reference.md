@@ -55,6 +55,12 @@ j := tabnascss.MakeJsonic()
 ast, err := j.Parse(`@media screen { a { color: blue } }`)
 ```
 
+It declares `lex.window` on the engine, so that `j.ParseReader(r)` reads
+CSS from an `io.Reader` a window at a time rather than whole,
+and gives the tree and the errors that a parse of the same text gives.
+The `Css` plugin declares no window of its own, since a host may install
+it beneath matchers of its own.
+
 A plugin-registration failure (a programming error with static inputs)
 panics rather than misbehaving silently.
 
