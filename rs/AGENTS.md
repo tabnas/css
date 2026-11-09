@@ -24,9 +24,10 @@ rules. This file covers only what is specific to this crate.
 | `tests/debug_model.rs` | the grammar composed with `tabnas-debug`, the Rust half of `ts/test/debug-model.test.ts` |
 | `tests/memory.rs` | a counting allocator holding a parse's peak memory, flat and nested, under ceilings |
 | `tests/reworkcss.rs` | the pinned reworkcss/css corpus, fetched by the test itself |
+| `tests/reader.rs` | a parse from a reader against the parse of the same text: `make` declares `lex.window` and the plugin does not; every fixture row, with its options and with positions on, the corpus, every scan at the window's edge, tokens longer than the window, and a long document, under windows of a few characters and the engine's own |
 | `tests/perf.rs`, `tests/version.rs` | the instance-reuse guard and the version sites |
 | `tests/translate.rs` | the translation parts: the manifest and the render `translate()` carries are the repository's files, there is no embed, the manifest's shapes (`tree`, root `object`, schema `css-ast`) and loss lines, and every render definition named `css-...` |
-| `tests/support/mod.rs` | the crate's own fixture loader, JSON reader and canonical compare; `tabnas-support` is not a dependency |
+| `tests/support/mod.rs`, `tests/support/corpus.rs` | the crate's own fixture loader, JSON reader and canonical compare, and the reworkcss corpus as `tests/reworkcss.rs` and `tests/reader.rs` read it; `tabnas-support` is not a dependency |
 | `doc/*.md`, `README.md` | the four Diátaxis pages and the crate front page, all gated by the prose gate |
 | `examples/parse.rs` | the binary the TS/Rust differential probe drives |
 
@@ -40,7 +41,11 @@ tokens. `install` in `src/plugin.rs` puts the canonical option overrides
 `cssToken` matcher at order 1e5, the actions, a `parse.prepare` hook, a
 lex subscriber and the `tabnas-css/depth` guard on an engine. The engine implements
 the whole alternate surface, so a field the grammar grows needs no
-teaching here; a new ACTION does, in `register_actions`.
+teaching here; a new ACTION does, in `register_actions`. `make` and
+`make_with` then declare `lex.window`, so that `parse_reader` reads a
+window of the source at a time; `plugin()` and `css()` declare nothing,
+since a host may install the plugin beneath matchers of its own (the root
+`AGENTS.md`, "A parse from a reader").
 
 The dependencies are sibling checkouts, the standard tabnas development
 model: clone `parser`, `json`, `jsonic` and `debug` from
@@ -146,7 +151,11 @@ memory profile or a stack overflow.
   asks on every `#TX`: a fresh key and list per token cost a flat
   stylesheet 5 to 10% of its parse. `tests/repeat.rs` pins linear time
   for both kinds of group, and the recovery rows with a stray `(` or `[`
-  in `tests/plugin.rs` pin the depth-0 check.
+  in `tests/plugin.rs` pin the depth-0 check. Its positions are the
+  source's, and it reads the text where the lexer holds it, which in a
+  parse from a reader is the window: a kept cursor whose text the window
+  has dropped is passed over, and an answer read to the window's end is
+  not kept until the source is known to end there.
 - **Lookahead is lazy, and comment nodes are keyed on the rule name.**
   The engine reads a token only when the alternate being tried needs one,
   under the rule trying it; `COMMENT_NODE_RULES` in `lex.rs` names the
@@ -161,7 +170,11 @@ memory profile or a stack overflow.
   parse, so a caller's seeded context cannot reach them
   (`tests/plugin.rs` seeds each; the arena is read only by `Css::parse`,
   which takes no seed, so its clear is a guard the test cannot observe).
-  A new key goes in the hook too.
+  A new key goes in the hook too. In a parse from a reader with
+  `position` on, the hook seeds the astral list empty, with how far it
+  reaches (`tabnas-css/astral-seen`), and the lex subscriber adds each
+  token's astral characters as the tokens go by (`note_astral`): such a
+  parse has no source to list them from.
 - **A second install applies its options.** `use_plugin` again, or
   `derive`, reruns `install`: the matcher and the actions (which capture
   the options) are re-registered by name, and the rules in `RULES` are

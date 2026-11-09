@@ -62,8 +62,15 @@ const ARENA: &str = "tabnas-css/arena";
 const NODES: &str = "tabnas-css/nodes";
 
 /// The `ctx.u` key holding the scalar positions of the source's astral
-/// characters, built when the first position is recorded.
+/// characters: in a whole text, built when the first position is recorded,
+/// and in a parse from a reader, from the tokens as they go by
+/// ([`note_astral`]).
 const ASTRAL: &str = "tabnas-css/astral";
+
+/// The `ctx.u` key holding how far into the source, in scalars, a parse
+/// from a reader has listed its astral characters. Set, with positions on,
+/// only in such a parse.
+const ASTRAL_SEEN: &str = "tabnas-css/astral-seen";
 
 /// The meta [`Css::parse`](crate::Css::parse) passes to ask for the arena
 /// store; a parse without it builds the tree.
@@ -205,7 +212,10 @@ fn with_node(rule: &Rule, ctx: &mut Context, edit: impl FnOnce(&mut Value)) {
 /// port counts UTF-16 code units since the same points. The difference is the
 /// astral characters in between, looked up in a sorted list built once per
 /// parse, so the cost per position is a binary search, and nothing at all for
-/// a source with no astral character.
+/// a source with no astral character. A parse from a reader holds no source
+/// to build it from, and the start of a line may lie behind its window, so
+/// there the list is built from the tokens as they go by ([`note_astral`]),
+/// each before any action reads its position.
 fn col16(ctx: &mut Context, pos: usize, ci: usize) -> usize {
     if !ctx.u.contains_key(ASTRAL) {
         let wide: Vec<Value> = if ctx.source.bytes().any(|b| 0xF0 <= b) {
@@ -237,6 +247,38 @@ fn col16(ctx: &mut Context, pos: usize, ci: usize) -> usize {
     let low = wide.partition_point(|v| at(v) < from);
     let high = wide.partition_point(|v| at(v) < pos);
     ci + (high - low)
+}
+
+/// In a parse from a reader with positions on, add the astral characters
+/// of `token`'s text to the list [`col16`] reads. The lexer gives every
+/// character of the source in some token, in order, a token cut again or
+/// read again covering what came before, so the list holds every astral
+/// character before the end of the last token, and each once.
+pub(crate) fn note_astral(token: &Token, ctx: &mut Context) {
+    let Some(Value::Number(seen)) = ctx.u.get(ASTRAL_SEEN) else {
+        return;
+    };
+    let seen = *seen as usize;
+    let start = token.site.pos;
+    let text = token.src.as_str();
+    let count = text.chars().count();
+    if start + count <= seen {
+        return;
+    }
+    if text.bytes().any(|b| 0xF0 <= b) {
+        let wide: Vec<Value> = text
+            .chars()
+            .enumerate()
+            .filter(|&(k, c)| seen <= start + k && 2 == c.len_utf16())
+            .map(|(k, _)| Value::Number((start + k) as f64))
+            .collect();
+        if let Some(Value::Array(list)) = ctx.u.get_mut(ASTRAL) {
+            Arc::make_mut(list).extend(wide);
+        }
+    }
+    if let Some(Value::Number(seen)) = ctx.u.get_mut(ASTRAL_SEEN) {
+        *seen = (start + count) as f64;
+    }
 }
 
 fn point(line: usize, column: usize) -> Value {
@@ -541,12 +583,20 @@ pub(crate) fn install(parser: &mut Tabnas, options: &Options) -> Result<(), Plug
     register_actions(parser, options.position);
 
     // The plugin's per-parse state starts empty on every parse, whatever
-    // the caller seeded `ctx.u` with.
-    parser.parse_prepare_ref("@css-prepare", |ctx| {
+    // the caller seeded `ctx.u` with. A parse from a reader, which has no
+    // source here, lists the astral characters as its tokens go by, for
+    // positions (`note_astral`).
+    let position = options.position;
+    parser.parse_prepare_ref("@css-prepare", move |ctx| {
         ctx.u.shift_remove(NODES);
         ctx.u.shift_remove(ASTRAL);
+        ctx.u.shift_remove(ASTRAL_SEEN);
         ctx.u.shift_remove(OVERSHOOT);
         ctx.u.shift_remove(BRACE_SCAN);
+        if position && ctx.source.is_empty() {
+            ctx.u.insert(ASTRAL.to_string(), list());
+            ctx.u.insert(ASTRAL_SEEN.to_string(), Value::Number(0.0));
+        }
     });
     if first {
         parser.subscribe_lex(lex::lex_subscriber);

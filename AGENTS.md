@@ -175,6 +175,57 @@ A node-building child rule **inherits** its parent's node; the array pushers
 write the just-built child into the parent's `rules`/`declarations`/`keyframes`
 array.
 
+### A parse from a reader
+
+The engine parses from a reader as well as from a string
+(`tn.parseReader`, `Tabnas.ParseReader`, `Tabnas::parse_reader`; admin
+ADR-30 and ADR-33), and reads a grammar that declares `lex.window` a
+window at a time: the parse holds the text from the oldest token it may
+cut again to a margin, 64 KiB, past its cursor, rather than all of it.
+The parser this package builds whole declares it, after the plugin is
+installed on jsonic's base: `make(options?)` in TypeScript,
+`MakeJsonic(opts...)` in Go, `make()` and `make_with(options)` in Rust.
+The plugin (`Css`, `plugin()`, `css()`) declares nothing, since a host may
+install it beneath matchers of its own, and jsonic's base declares nothing
+either. dmog builds css with these constructors.
+
+Everything css reads, it reads through the window. The fixed tokens,
+space, lines and the comments the matcher declines are the engine's own
+matchers, and the actions read only the tokens. The `cssToken` matcher's
+scans read forward from the cursor to what ends them, so one that stops
+inside the window gives what the whole text gives; one that reaches the
+window's end (a lookahead for its `{`, `;` or `}`, a value, a comment's
+`*/`, the character after a `/`) may have stopped short. The matcher then
+answers before it makes a token or moves the cursor (`EDGE` in
+TypeScript, an edge in Go, `Plan::Edge` in Rust), asks the window for
+twice what it holds past the cursor (`lex.fill`, `Lex.Fill`,
+`Lexer::fill`) and cuts again over the grown text. Where the window does
+not grow, the source ends there, and the cut takes the end of the window
+for the end of the source. A long token so costs its length to read, not
+its square, and in a whole text `fill` only answers. Two Rust details:
+`BraceScans` keeps its positions as the source's, reads the text where
+the lexer holds it, and passes over a kept cursor whose text the window
+has dropped, which costs a scan and never changes an answer; and with
+`position` on, the UTF-16 columns count the astral characters before a
+position on its line, which a parse from a reader cannot read from its
+source, so the lex subscriber lists them from the tokens as they go by.
+
+`ts/test/window.test.ts`, `go/window_test.go` and `rs/tests/reader.rs`
+hold it, in each runtime: the constructors declare the window and the
+plugin does not; every fixture row, under its options and again with
+positions on, and the reworkcss corpus, with and without positions,
+parse the same from a reader in pieces of 1, 3 and 64 bytes as from the
+text (TypeScript and Rust also under windows of a few characters); and
+tokens and lookaheads of every kind longer than the window, and a long
+document, do too, with an error at the end placed where the whole text
+places it. Go's small-window hook is unexported, so its long document
+holds every long token among short ones of every kind, past the 64 KiB
+margin. With the matcher's fill taken out (the cut taken as final), the
+tests fail in every runtime, and so they do with the edge of the brace
+lookahead, the at-rule's lookahead or the comment's `*/` taken out. The
+value's own edge is covered first by the property's lookahead, which reads
+through the value to the same `;` or `}`, so a test cannot reach it.
+
 ## Repository map
 
 | Path | What it is |
@@ -187,12 +238,12 @@ array.
 | [`alchemy/render.alc`](alchemy/render.alc) | **CSS's render**, an [alchemy](https://github.com/tabnas/alchemy) library whose entry point `css-render` writes the reader's tree back as CSS text that reads back as the same tree: every node type the contract above lists, rules and at-rules with their selectors, preludes and blocks, comments where the reader keeps them, and the raw text of selectors, values and params as the reader keeps it. The manifest's `translate` object in [`tabnas.plugin.json`](tabnas.plugin.json) names it, names the tree it writes (`schema`: `css-ast`, a stylesheet object at the root, `root`), names no embed (a plain tree has no CSS form, so a host composes a translation into CSS only from CSS itself or from a program that builds the tree), and says what a written document does not keep (`loss`). The render takes a node's members in any order: the TypeScript and Rust trees keep the reader's, `type` first, and the Go port's nodes are plain maps, which a Go host walks in sorted key order, `type` after the members it decides, so a node writes nothing until its type and the members its opening needs have come, and holds back a block that begins before them. [`test/spec/render.tsv`](test/spec/render.tsv) pins documents the render wrote, the same for both orders, and what every reader reads from them. The round trip that runs the render needs alchemy, which this repository does not depend on. |
 | [`alchemy/transduce.alc`](alchemy/transduce.alc) | **CSS's transducer part**, an alchemy library whose entry point `css-transduce` makes the stylesheet's JSON events from the grammar's rule passes (`ParserEvents/1`), a statement at a time, for a host that reads parser events (dmog's `translate` and `run --grammar css`); the manifest's `translate.transduce` names it. Every event is the one the walk of the grammar's value under its default options gives: `stylesheet` opens and closes the document; a `statement`, `decl` or `keyframe` opens with the token that says which node it builds (`#CC`, an at-rule token whose value is the node's head, `#TX` with `#CL` a declaration, no token a rule or a keyframe); `sel` and `kfsel` yield the selectors and keyframe values, the one that pushes `declbody` last; `declval` yields the value. The part's state is a marker per open rule, so nothing grows with a stylesheet's length. dmog holds it to the walk over every fixture, in its three runtimes. |
 | [`ts/embed-translate.js`](ts/embed-translate.js) | Copies the manifest, the render and the transducer part into every runtime: `ts/src/translate.ts` (generated, exported as `translate()`), `go/translate/` (`go:embed`, `Translate()` in `go/translate.go`) and `rs/translate/` (`include_str!`, `translate()` in `rs/src/lib.rs`). Runs in `npm run embed`, after `embed-grammar.js`; `ts/test/translate.test.ts`, `go/translate_test.go` and `rs/tests/translate.rs` hold the copies to the files, so change the files at the root and run the embed. |
-| [`ts/test/`](ts/test/) | TS tests (compiled to `dist-test/`): `css.test.ts` (AST parse cases), `parity.test.ts` (the shared `test/spec/*.tsv` fixtures), `divergent.test.ts` (the divergence register), `reworkcss.test.ts` (the external conformance corpus), `debug-model.test.ts` (`@tabnas/debug` composition / model), `doc-examples.test.ts` (`// =>` assertions in README/doc fences), `leniency.test.ts` (jsonic-leak guard), `perf.test.ts` (instance-reuse guard), `version.test.ts` (exported `VERSION` vs `package.json`), `translate.test.ts` (the translation parts vs the files). |
+| [`ts/test/`](ts/test/) | TS tests (compiled to `dist-test/`): `css.test.ts` (AST parse cases), `parity.test.ts` (the shared `test/spec/*.tsv` fixtures), `divergent.test.ts` (the divergence register), `reworkcss.test.ts` (the external conformance corpus), `debug-model.test.ts` (`@tabnas/debug` composition / model), `doc-examples.test.ts` (`// =>` assertions in README/doc fences), `leniency.test.ts` (jsonic-leak guard), `perf.test.ts` (instance-reuse guard), `version.test.ts` (exported `VERSION` vs `package.json`), `translate.test.ts` (the translation parts vs the files), `window.test.ts` (a parse from a reader against the parse of the same text; see "A parse from a reader"), and `reworkcss-corpus.ts`, the corpus as both conformance and window tests read it. |
 | [`test/spec/`](test/spec/) | Shared `.tsv` conformance fixtures, auto-discovered and run by **all three** runtimes. See [`test/AGENTS.md`](test/AGENTS.md). |
-| [`go/css_test.go`](go/css_test.go), [`go/perf_test.go`](go/perf_test.go), [`go/parity_test.go`](go/parity_test.go), [`go/divergent_test.go`](go/divergent_test.go), [`go/reworkcss_test.go`](go/reworkcss_test.go), [`go/version_test.go`](go/version_test.go), [`go/translate_test.go`](go/translate_test.go) | Go suite — the remaining in-language AST cases, the perf guard, the shared-fixture runner, the divergence register, the external conformance corpus runner, the `VERSION` vs `ts/package.json` drift check, and the translation parts vs the files. |
+| [`go/css_test.go`](go/css_test.go), [`go/perf_test.go`](go/perf_test.go), [`go/parity_test.go`](go/parity_test.go), [`go/divergent_test.go`](go/divergent_test.go), [`go/reworkcss_test.go`](go/reworkcss_test.go), [`go/version_test.go`](go/version_test.go), [`go/translate_test.go`](go/translate_test.go), [`go/window_test.go`](go/window_test.go) | Go suite — the remaining in-language AST cases, the perf guard, the shared-fixture runner, the divergence register, the external conformance corpus runner, the `VERSION` vs `ts/package.json` drift check, the translation parts vs the files, and a parse from a reader against the parse of the same text. |
 | [`go/conformance_test.go`](go/conformance_test.go) | `TestMain` — fetches the pinned corpus before any Go test runs, so the Go conformance runner is never left without one. |
 | [`rs/AGENTS.md`](rs/AGENTS.md) | The crate's own agents guide: what is specific to the Rust port (its layout, how the plugin sits on the Rust engine and what that changes, its gates, and the version sites the release orchestrator does not rewrite). |
-| [`rs/tests/`](rs/tests/) | Rust suite: `parity.rs` (the shared `test/spec/*.tsv` fixtures, every row three ways: `Css::parse`, the plugin on jsonic, the plugin on a bare engine), `divergent.rs` (the divergence register), `reworkcss.rs` (the external conformance corpus, with its own fetch), `css.rs` (what a fixture cannot express, plus the crate's API), `plugin.rs` (the plugin surface: the two result forms, options, a second install, the tree form's depth bound, recovery), `grammar.rs` (the embed vs the file on disk, the installed rules, and the `css` group on every alternate), `repeat.rs` (every repetition a replace loop: rule depth constant over 10,000 items), `debug_model.rs` (`tabnas-debug` composition, the Rust half of `debug-model.test.ts`), `memory.rs` (peak memory held under ceilings by a counting allocator), `perf.rs` (instance-reuse guard), `version.rs` (`VERSION` vs `Cargo.toml` and `ts/package.json`), `translate.rs` (the translation parts `translate()` carries vs the files the manifest names), `support/mod.rs` (the fixture loader, a JSON reader and the canonical compare, standing in for `@tabnas/support`). The doc examples run as doctests via `#[cfg(doctest)]` in `rs/src/lib.rs`. |
+| [`rs/tests/`](rs/tests/) | Rust suite: `parity.rs` (the shared `test/spec/*.tsv` fixtures, every row three ways: `Css::parse`, the plugin on jsonic, the plugin on a bare engine), `divergent.rs` (the divergence register), `reworkcss.rs` (the external conformance corpus, with its own fetch), `css.rs` (what a fixture cannot express, plus the crate's API), `plugin.rs` (the plugin surface: the two result forms, options, a second install, the tree form's depth bound, recovery), `grammar.rs` (the embed vs the file on disk, the installed rules, and the `css` group on every alternate), `repeat.rs` (every repetition a replace loop: rule depth constant over 10,000 items), `debug_model.rs` (`tabnas-debug` composition, the Rust half of `debug-model.test.ts`), `memory.rs` (peak memory held under ceilings by a counting allocator), `perf.rs` (instance-reuse guard), `version.rs` (`VERSION` vs `Cargo.toml` and `ts/package.json`), `translate.rs` (the translation parts `translate()` carries vs the files the manifest names), `reader.rs` (a parse from a reader against the parse of the same text; see "A parse from a reader"), `support/mod.rs` (the fixture loader, a JSON reader and the canonical compare, standing in for `@tabnas/support`), `support/corpus.rs` (the reworkcss corpus, as `reworkcss.rs` and `reader.rs` read it). The doc examples run as doctests via `#[cfg(doctest)]` in `rs/src/lib.rs`. |
 | [`ci/rust/run.sh`](ci/rust/run.sh) | The Rust gate, run by `.github/workflows/rust.yml` and by `make gate-rs`: the sibling checkouts, the MSRV toolchain, the lockfile checks, fmt, build, tests, doctests, clippy and rustdoc. See **Build & test**. |
 | [`test/divergent.tsv`](test/divergent.tsv) | The executable divergence register (ADR-14): one row per input the three ports disagree on, one cell per runtime, read by `ts/test/divergent.test.ts`, `go/divergent_test.go` and `rs/tests/divergent.rs`. It sits BESIDE `test/spec/` because every runtime runs everything in that directory. |
 | [`scripts/divergence-probe.sh`](scripts/divergence-probe.sh), [`go/divergence_probe_test.go`](go/divergence_probe_test.go) | TS/Go differential probe over a deterministic generated corpus, comparing each rejection's error code as well as the verdict, with newlines carried as the fixtures' `\n` escape. A GATE (exits non-zero on divergence); `.github/workflows/divergence.yml` (job `ts-go-probe`) runs it, and is the only CI job that does. The Go half is inert unless `CSS_DUMP_IN`/`CSS_DUMP_OUT` are set. Runs with the default options only. |

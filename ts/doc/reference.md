@@ -26,6 +26,7 @@ npm install @tabnas/parser @tabnas/jsonic @tabnas/css
 | Export | Kind | Description |
 |---|---|---|
 | `Css` | `Plugin` | The plugin function. Register with `engine.use(Css, options)`. |
+| `make` | `(options?) => Tabnas` | Builds the parser whole and declares `lex.window`: see [`make(options?)`](#makeoptions). |
 | `CssOptions` | type | The options object shape (see [Options](#options)). |
 | `VERSION` | `string` | This package's version, always equal to `package.json` "version" (enforced by `ts/test/version.test.ts`). |
 
@@ -66,6 +67,27 @@ comments, and the custom `cssToken` lex matcher).
 The instance is reusable and stateless across parses; build it once
 and reuse it. Building the grammar dominates a parse, so do not
 reconstruct the engine per call.
+
+### `make(options?)`
+
+Builds the parser whole, `new Tabnas().use(jsonic).use(Css, options)`,
+and declares `lex.window` on it, so that `parseReader` reads CSS from a
+reader a window at a time rather than whole. It parses a string
+as that composition does.
+
+```js
+import { make } from '@tabnas/css'
+
+const c = make()
+c.parse('a { color: red }')
+// => { type: 'stylesheet', rules: [ { type: 'rule', selectors: ['a'], declarations: [ { type: 'declaration', property: 'color', value: 'red' } ] } ] }
+```
+
+`c.parseReader(reader)` takes a synchronous reader, an object whose
+`read(buf)` fills a `Uint8Array` and returns how many bytes it wrote, and
+gives the tree and the errors that a parse of the same text gives. The
+`Css` plugin declares no window of its own, since a host may install it
+beneath matchers of its own.
 
 ### `engine.parse(src)`
 

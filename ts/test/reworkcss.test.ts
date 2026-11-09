@@ -26,12 +26,14 @@
 
 import { describe, test } from 'node:test'
 import assert from 'node:assert'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { Tabnas } from '@tabnas/parser'
 import { jsonic } from '@tabnas/jsonic'
 import { Css } from '../dist/css'
+
+import { casesDir, present, readCase, extractErrorCases } from './reworkcss-corpus'
 
 // Pinned upstream. Keep in step with scripts/fetch-reworkcss-tests.sh and
 // go/reworkcss_test.go.
@@ -45,10 +47,6 @@ const THROW_COUNT = 4
 const NOTHROW_COUNT = 2
 const OPTIONED_COUNT = 1 // `parse(src, {silent:true})` — no tabnas equivalent
 
-// At runtime this file is loaded from `dist-test/`, so hop up to the repo root.
-const corpusDir = join(__dirname, '..', '..', 'test', 'reworkcss-css')
-const casesDir = join(corpusDir, 'test', 'cases')
-
 // ABSENT is a FAILURE message, not a skip message. `pretest` fetches the
 // corpus before every run, so reaching this means the fetch itself failed.
 const ABSENT =
@@ -56,7 +54,6 @@ const ABSENT =
   ' conformance claim is UNVERIFIED. Fetch it (pinned) with `npm run' +
   ' install-reworkcss-tests`. This test does NOT skip when the corpus is' +
   ' absent.'
-const present = existsSync(join(corpusDir, 'test', 'parse.js'))
 
 // Registered first in each conformance suite below. It is the guard that
 // makes an unfetched corpus loud: without it the suites would simply contain
@@ -67,16 +64,6 @@ function corpusPresent(): void {
 
 function parseCss(src: string, opts: any = {}): any {
   return new Tabnas().use(jsonic).use(Css, opts).parse(src)
-}
-
-// Byte-identical to upstream test/cases.js `readFile`, including its
-// single-occurrence CRLF replace, so the parser sees exactly the source that
-// produced the expected ASTs (line/column numbers depend on it).
-function readCase(file: string): string {
-  let src = readFileSync(file, 'utf8')
-  src = src.replace(/\r\n/, '\n')
-  src = src.replace(/\n$/, '')
-  return src
 }
 
 // Upstream wraps the tree as {type:'stylesheet', stylesheet:{rules, ...}};
@@ -180,52 +167,6 @@ describe(`reworkcss/css cases (${SHA.slice(0, 7)})`, () => {
 // Half 2: the accept/reject oracle, extracted mechanically from upstream's
 // own test/parse.js so it cannot drift from what reworkcss actually asserts.
 // ---------------------------------------------------------------------------
-
-// Decode a JavaScript single-quoted string literal.
-function decodeJsString(lit: string): string {
-  let out = ''
-  for (let i = 0; i < lit.length; i++) {
-    const c = lit[i]
-    if ('\\' !== c) {
-      out += c
-      continue
-    }
-    const n = lit[++i]
-    if ('n' === n) out += '\n'
-    else if ('r' === n) out += '\r'
-    else if ('t' === n) out += '\t'
-    else if ('f' === n) out += '\f'
-    else if ('b' === n) out += '\b'
-    else if ('v' === n) out += '\v'
-    else if ('0' === n) out += '\0'
-    else if ('u' === n) {
-      out += String.fromCodePoint(parseInt(lit.slice(i + 1, i + 5), 16))
-      i += 4
-    } else if ('x' === n) {
-      out += String.fromCodePoint(parseInt(lit.slice(i + 1, i + 3), 16))
-      i += 2
-    } else out += n
-  }
-  return out
-}
-
-const ASSERT_RE =
-  /assert\.(throws|doesNotThrow)\(\s*function\s*\(\)\s*\{\s*parse\('((?:[^'\\]|\\.)*)'\s*(,[^)]*)?\)/g
-
-type ErrorCase = { kind: string; src: string; optioned: boolean }
-
-function extractErrorCases(): ErrorCase[] {
-  const body = readFileSync(join(corpusDir, 'test', 'parse.js'), 'utf8')
-  const out: ErrorCase[] = []
-  for (const m of body.matchAll(ASSERT_RE)) {
-    out.push({
-      kind: m[1],
-      src: decodeJsString(m[2]),
-      optioned: undefined !== m[3],
-    })
-  }
-  return out
-}
 
 function label(s: string): string {
   const one = JSON.stringify(s)
