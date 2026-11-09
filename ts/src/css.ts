@@ -1046,7 +1046,7 @@ function make(options: Partial<CssOptions> = {}): Tabnas {
 // VERSION is this package's version. It MUST equal package.json "version":
 // the release orchestrator rewrites both, and the version test fails the
 // build if they drift. Mirrors `const VERSION` in go/css.go.
-const VERSION = '0.5.18'
+const VERSION = '0.5.19'
 
 export { Css, VERSION, make }
 export type { CssOptions }
