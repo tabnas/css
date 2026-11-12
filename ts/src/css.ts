@@ -404,10 +404,10 @@ function makeActions(
 
     // Field setters (mutate the current node, which the rule inherited).
     '@cssSelector': (r: Rule) => {
-      ;(r.node as Node).selectors.push(tokenVal(r))
+      appendField(r.node as Node, 'selectors', tokenVal(r))
     },
     '@cssKfValue': (r: Rule) => {
-      ;(r.node as Node).values.push(tokenVal(r))
+      appendField(r.node as Node, 'values', tokenVal(r))
     },
     '@cssDeclVal': (r: Rule) => {
       const n = r.node as Node
@@ -427,20 +427,35 @@ function makeActions(
     // Array pushers (append the built child node to a parent array).
     '@cssPushRule': (r: Rule) => {
       const c = childNode(r)
-      if (undefined !== c) (r.node as Node).rules.push(c)
+      if (undefined !== c) appendField(r.node as Node, 'rules', c)
     },
     '@cssPushDecl': (r: Rule) => {
       const c = childNode(r)
-      if (undefined !== c) (r.node as Node).declarations.push(c)
+      if (undefined !== c) appendField(r.node as Node, 'declarations', c)
     },
     '@cssPushKf': (r: Rule) => {
       const c = childNode(r)
-      if (undefined !== c) (r.node as Node).keyframes.push(c)
+      if (undefined !== c) appendField(r.node as Node, 'keyframes', c)
     },
   }
 }
 
 // Position of a token's first character (1-based line/column).
+// appendField appends an item to one of a node's lists, making the list
+// again when it is gone. An unpruned parse always has the list, since every
+// node is made with its lists, so its value is unchanged. A host that empties
+// the tree behind its stream (tabnas/transduce's ParserEventSource, with its
+// maps emptied too) deletes a map's members once it has seen a close pass of
+// a rule whose node the map is; the loops that append a block's rules,
+// declarations and keyframes (items, decls) close once per item on the
+// block's node, so the next item's append found the list deleted and threw,
+// where the Go port's appendField and the Rust port make it again
+// (tabnas/css#79).
+function appendField(node: Node, field: string, item: any): void {
+  const n = node as any
+  ;(n[field] ??= []).push(item)
+}
+
 function startPos(tok: any): { line: number; column: number } {
   return { line: tok.rI, column: tok.cI }
 }
